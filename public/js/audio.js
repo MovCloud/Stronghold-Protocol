@@ -5,7 +5,8 @@
 //   bossBgm { [bossId]: { intro?, loop } },
 //   voice { [charId]: { start, faceEnemy, select, place, skill1…skill4, squad, squadFirst, result*, gacha } },
 //   voiceJp / voiceEn / voiceKr / voiceNative { [charId]: { …the same slots } } (日本語 / English / 한국어 / the
-//   operator's own-language dub; settings 语音语言 and the per-operator override; see voiceLine / VOICE_TREES),
+//   operator's own-language dub; the listener's 语音语言 and the per-operator override; see voiceLine / VOICE_TREES),
+//   voiceByLang { cn, jp, en }: this fork's earlier alias of voice / voiceJp / voiceEn, still in the manifest,
 //   sfx.ui { click, buy, sell, refresh, freeze, levelup, merge, equip, ready, timer, yourTurn, … },
 //   sfx.battle { deploy, tokenDeploy, charDie, tokenDie?, enemyDie, enemyHit, heal, killCoin, … },
 //   sfx.units { [charId|tokenId|enemyId]: { attack?, hit?, skill?, die?, born?, mix?: { [role]: { p?, vol? } } } }.
@@ -78,13 +79,18 @@
 //   (`refreshBgm`; the same loop keeps playing).
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
-// which follows the store).
+// which follows the store); a player's own 休整期 / 作战 pick replaces the official track of those keys (bgmChoice.js,
+// `setBgmChoice`; 自选曲 plays the file `setBgmLocal` hands over, decoded outside the LRU cache: `_localBuffer`).
 
-import { sanitizeVoiceOverrides, voiceLangFor, VOICE_LANGS, VOICE_TREES, VOICE_PICKS } from './voicePrefs.js';
+import { sanitizeVoiceOverrides, voiceLangFor, dubTree, VOICE_LANGS, VOICE_TREES, VOICE_PICKS } from './voicePrefs.js';
 export { VOICE_TREES } from './voicePrefs.js';
 import { PHASE } from '../../shared/constants.js';
 import { mediaUrl } from './media.js';
+import { drainMaterialBody, fetchMaterial } from './materialFallback.js';
+import { resolve } from './resourcePacks.js';
+import { normalizeVoiceLanguage } from './voiceLanguage.js';
 import { unhashedUrl } from '../../shared/assetPaths.js';
+import { pickedBgm, sanitizeBgmChoice } from './bgmChoice.js';
 
 const MAX_VOICES = 8;
 // [ASSUMED] Remake anti-spam intervals, retained at high game speeds; not official audio pool parameters (#680).
@@ -369,14 +375,36 @@ export function voiceLine(audio, charId, slot, lang = 'cn', random = Math.random
   const lines = (line) => (Array.isArray(line) ? line : [line]).filter((u) => typeof u === 'string' && u);
   const draw = (list) => (list.length ? list[Math.min(list.length - 1, Math.floor(random() * list.length))] : null);
   const cn = lines(audio?.voice?.[charId]?.[slot]);
-  const tree = VOICE_TREES[lang];
-  const dub = tree ? draw(lines(audio?.[tree]?.[charId]?.[slot])) : null;
+  const dub = VOICE_TREES[lang] ? draw(lines(dubTree(audio, lang)?.[charId]?.[slot])) : null;
   if (dub) {
     const file = (u) => u.slice(u.lastIndexOf('/') + 1);
     return { url: dub, fallback: cn.find((u) => file(u) === file(dub)) ?? draw(cn) };
   }
   const url = draw(cn);
   return url ? { url, fallback: null } : null;
+}
+
+// ---- outfit voices (fork, docs/OUTFITS.md) -------------------------------------------------------------------
+// An outfit with its own voice set (data/outfits.json `voice`) has it in the voice trees under its word key
+// ('char_4064_mlynar_epoque#28'). The operator's language pick still applies (it is the operator's), and the dub falls
+// back like any line (voiceLangFor: the dub, else JP, else 中文; an outfit not dubbed in EN yet speaks JP). A slot the
+// set lacks is the operator's.
+
+let voiceKeyResolver = null;
+/** Set the function that names a unit's outfit voice key ((unitInfo | { charId, ownerId }) => key | null; ui/outfits.js). */
+export function setOutfitVoiceResolver(fn) { voiceKeyResolver = typeof fn === 'function' ? fn : null; }
+/** The outfit voice key of a tracked unit / an operator, or null. */
+export function outfitVoiceKey(u) {
+  try { return (voiceKeyResolver && voiceKeyResolver(u)) || null; } catch { return null; }
+}
+
+/** The line of `slot` in outfit voice set `key` (the operator's language pick, else the global dub), or null. */
+function outfitVoiceLine(am, charId, slot, key) {
+  if (typeof key !== 'string' || !key) return null;
+  const a = am.getManifest()?.audio;
+  if (!a?.voice?.[key]?.[slot]) return null;
+  const own = am.voiceOverrides?.[charId];
+  return voiceLine(a, key, slot, voiceLangFor(key, VOICE_LANGS.includes(own) ? own : am.voiceLang, null, { native: false, audio: a }));
 }
 
 /**
@@ -422,6 +450,31 @@ export function resultSpeaker(pp, random = Math.random, charOf = null) {
   const pool = standing.length ? standing : ops;   // only a wiped-out squad is spoken for by a fallen operator
   if (!pool.length) return null;
   return pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))].id;
+}
+
+/**
+ * The voice languages an operator is voiced with, in button order, the own-language dub last.
+ * @param {any} a manifest `audio`
+ * @param {string} charId
+ * @returns {string[]} e.g. ['cn', 'jp', 'en', 'kr', 'native']; [] when the operator has no voice at all
+ */
+export function voiceLangsOf(a, charId) {
+  if (!a?.voice?.[charId]) return [];
+  const has = (l) => l === 'cn' || Object.keys(a[VOICE_TREES[l]]?.[charId] || {}).length > 0;
+  return [...VOICE_LANGS, 'native'].filter(has);
+}
+
+/**
+ * The language `charId` speaks for the dub preference `pref` — { default: settings 语音语言, native: the 本土语言 switch,
+ * byChar: settings.voiceOverrides } — on the manifest `a` (voicePrefs.js voiceLangFor: its own pick, the own-language
+ * dub, the default, JP, 中文), or null for an operator no dub voices.
+ * @param {any} a manifest `audio`
+ * @param {string} charId
+ * @param {{ default?: string, native?: boolean, byChar?: Record<string, string> } | null | undefined} pref
+ */
+export function effectiveVoiceLang(a, charId, pref) {
+  if (!a?.voice?.[charId]) return null;
+  return voiceLangFor(charId, pref?.default ?? 'en', pref?.byChar || null, { native: pref?.native === true, audio: a });
 }
 
 /** Concurrency + cooldown gate for battle SFX. Pure (time is passed in). */
@@ -561,6 +614,8 @@ export class VoiceGate {
  * missing path with 200 + the SPA's index.html instead, and fetching *that* would fail to decode as silently as a
  * 404 would — so the fallback looks at the declared type too.
  *
+ * Object-storage providers also serve valid recordings as application/octet-stream or binary/octet-stream.
+ * Those replies still have to pass Web Audio decoding; they should not trigger a second request to the raw URL.
  * A response that declares no type at all is not treated as wrong: absence of a header is not evidence of an HTML
  * page, and fetch stubs / minimal hosts legitimately omit it.
  * @param {{ ok?: boolean, headers?: { get?: (n: string) => string | null } }} res
@@ -568,7 +623,7 @@ export class VoiceGate {
 function isAudioResponse(res) {
   if (!res || !res.ok) return false;
   const type = res.headers?.get?.('content-type');
-  return !type || /^\s*audio\//i.test(type);
+  return !type || /^\s*audio\//i.test(type) || /^\s*(?:application|binary)\/octet-stream\s*(?:;|$)/i.test(type);
 }
 export class AudioManager {
   /**
@@ -605,11 +660,11 @@ export class AudioManager {
     this.voiceGate = new VoiceGate();
     this.voiceNode = null;    // { src, gain, url, token } of the line on air
     this.voiceToken = 0;
+    this.voiceLanguage = 'cn';
     this.bondCueNode = null;
     this.bondCueToken = 0;
     this.bondCueScope = null;
     this.voiceOverrides = {};
-    this.voiceLang = 'cn';    // settings 语音语言: cn | jp | en | kr (VOICE_TREES; a missing line falls back to audio.voice)
     this.voiceNative = false; // settings 本土语言: an operator with an own-language dub speaks it unless their own pick wins
     this.startVoiceDone = false; // 行动出发 of this field (the first operator deployed says it)
     this.uiVoices = 0;
@@ -620,6 +675,10 @@ export class AudioManager {
     this.bgmStarting = null;  // { url, token } of the loop _startBgm is loading (kept by _trimBuffers while the token holds)
     this.lobbyTrack = null;   // 自定义大厅音乐: { id, read } of the player's own file (setLobbyTrack), else null
     this.onLobbyTrackFailed = null; // called when that file would not decode (the official track plays instead)
+    this.bgmChoice = { prep: 'official', combat: 'official' }; // the player's 休整期 / 作战 picks (bgmChoice.js)
+    this.bgmChoiceFailed = new Set(); // picks whose track did not load on this page: the official one plays instead
+    this.bgmLocal = { prep: null, combat: null }; // object URLs of the player's 自选曲 files (ui/lobbyMusic.js matchMusic)
+    this.localBgm = null;     // { url, p }: the one decoded 自选曲 (a long file must not evict the whole LRU cache)
     this.units = new Map();   // battle unit id → defId
     this.pendingSkill = new Map(); // unit id → the 'skill' tuple that arrived before the unit was known (see _track)
     this.lastAttacker = new Map(); // target id → { def, at, skillIndex, skillActive } of the hostile attack aimed at it (its impact sound,
@@ -742,6 +801,15 @@ export class AudioManager {
     try { console.warn(`[audio] ${key} unavailable`, err?.message || err || ''); } catch { /* ignore */ }
   }
 
+  /** Change only the listener's voice channel; stale decodes must not start in the old language. */
+  setVoiceLanguage(language) {
+    const next = normalizeVoiceLanguage(language);
+    if (next === this.voiceLanguage) return false;
+    this.voiceLanguage = next;
+    this._stopVoice();
+    return true;
+  }
+
   /**
    * Set channel volumes (0..1) and mute.
    * @param {{ bgm?: number, sfx?: number, voice?: number, muted?: boolean }} v
@@ -762,20 +830,87 @@ export class AudioManager {
     if (this.landWarm && this.ctx && !this.volumes.muted && this.volumes.sfx > 0) this.warmLandings();
   }
 
+  /**
+   * The player's 休整期 / 作战 picks (settings bgmPrep / bgmCombat, bgmChoice.js); the track on screen follows at once.
+   * @param {{ prep?: string, combat?: string }} v
+   */
+  setBgmChoice(v) {
+    const next = { prep: sanitizeBgmChoice(v?.prep), combat: sanitizeBgmChoice(v?.combat) };
+    if (next.prep === this.bgmChoice.prep && next.combat === this.bgmChoice.combat) return;
+    this.bgmChoice = next;
+    const key = this.bgm?.key ?? this.wantBgm;
+    if (key) this.playBgm(key);
+  }
+
+  /**
+   * The player's 自选曲 file of 休整期 / 作战 (an object URL, null: none); the track on screen follows at once.
+   * @param {'prep'|'combat'} kind
+   * @param {string|null} url
+   */
+  setBgmLocal(kind, url) {
+    if (!(kind in this.bgmLocal) || this.bgmLocal[kind] === (url || null)) return;
+    this.bgmLocal = { ...this.bgmLocal, [kind]: url || null };
+    if (this.localBgm && !Object.values(this.bgmLocal).includes(this.localBgm.url)) this.localBgm = null;
+    const key = this.bgm?.key ?? this.wantBgm;
+    if (key) this.playBgm(key);
+  }
+
+  /** The track of a BGM key: the player's pick for 休整期 / 作战 when it has one, the player's own lobby music
+   * (setLobbyTrack), else the manifest's (resolveBgm). */
+  _bgmTrack(key) {
+    const manifest = this.getManifest();
+    const picked = pickedBgm(manifest, key, this.bgmChoice, this.bgmChoiceFailed, this.bgmLocal);
+    if (picked) return picked;
+    if (key === 'lobby' && this.lobbyTrack) return { intro: null, loop: LOCAL_BGM + this.lobbyTrack.id };
+    return resolveBgm(manifest, key);
+  }
+
+  /** Decode a 自选曲 file (an object URL) into the single local slot. Resolves null on failure. */
+  _localBuffer(url) {
+    if (!this.ctx) return Promise.resolve(null);
+    if (this.localBgm?.url === url) return this.localBgm.p;
+    const ctx = this.ctx;
+    const p = (async () => {
+      try {
+        const ab = await (await fetch(url)).arrayBuffer();
+        return await new Promise((resolve) => {
+          try {
+            const r = ctx.decodeAudioData(ab, resolve, () => resolve(null));
+            if (r && typeof r.then === 'function') r.then(resolve, () => resolve(null));
+          } catch { resolve(null); }
+        });
+      } catch (err) {
+        this._warn('bgm-local', err);
+        return null;
+      }
+    })();
+    this.localBgm = { url, p };
+    return p;
+  }
+
   /** Is the music silent — muted, or the BGM volume at 0? Then no BGM is downloaded (playBgm). */
   get bgmSilent() { return this.volumes.muted || this.volumes.bgm <= 0; }
 
+  /** Compatible upstream name, backed by the same listener preference (setVoiceLanguage). */
+  get voiceLang() { return this.voiceLanguage; }
   /**
    * The voice dub (settings 语音语言): a VOICE_LANGS value plays that tree (voiceLine), anything else `audio.voice`
-   * (中文, the default). The line on air finishes in its own dub; the next one follows the setting. A per-operator
-   * override (the second argument, settings.voiceOverrides) wins when this server has that tree (voiceLangFor).
-   * Changing the global language does not clear those overrides.
+   * (中文, the default). The line on air stops when the language or an override changes; the next one follows the
+   * setting. A per-operator override (the second argument, settings.voiceOverrides) wins when this server has that
+   * tree (voiceLangFor). Changing the global language does not clear those overrides.
    * @param {string} lang
    * @param {Record<string, string>} [overrides]
+   * @returns {boolean} whether anything changed
    */
   setVoiceLang(lang, overrides = this.voiceOverrides) {
-    this.voiceLang = VOICE_LANGS.includes(lang) ? lang : 'cn';
-    this.voiceOverrides = sanitizeVoiceOverrides(overrides);
+    const next = sanitizeVoiceOverrides(overrides);
+    const ids = Object.keys(next);
+    const overridesChanged = ids.length !== Object.keys(this.voiceOverrides).length
+      || ids.some((id) => next[id] !== this.voiceOverrides[id]);
+    this.voiceOverrides = next;
+    const languageChanged = this.setVoiceLanguage(lang);
+    if (overridesChanged && !languageChanged) this._stopVoice();
+    return languageChanged || overridesChanged;
   }
 
   /**
@@ -820,29 +955,35 @@ export class AudioManager {
       this.buffers.set(url, hit);
       return hit;
     }
+    const media = mediaUrl(url);
+    // A proven-absent pack: no request and no failure memory — after an install the next call just loads.
+    if (resolve(media).state === 'missing') return Promise.resolve(null);
     const p = (async () => {
       try {
-        let ab;
         if (url.startsWith(LOCAL_BGM)) {
           // 自定义大厅音乐: the bytes of the player's own file (setLobbyTrack), never a request
           const own = this.lobbyTrack;
           if (!own || url !== LOCAL_BGM + own.id) return null;
-          ab = await own.read();
-        } else {
-          // Extension-less URL first so download managers leave the BGM alone; a host without /media/ still works.
-          const media = mediaUrl(url);
-          let res = await fetch(media);
-          if (media !== url && !isAudioResponse(res)) {
-            // Drop the unusable response (404, or a 200 that is really index.html) before trying the original URL.
-            try { await res.body?.cancel?.(); } catch { /* the fallback request matters more than draining this one */ }
-            res = await fetch(url);
-          }
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          ab = await res.arrayBuffer();
+          return await this.decodeBytes(await own.read());
         }
-        const buf = await this.decodeBytes(ab);
-        if (!buf && !url.startsWith(LOCAL_BGM)) this._failed(url);
-        return buf;
+        const decode = async res => {
+          if (!isAudioResponse(res)) {
+            await drainMaterialBody(res);
+            throw Object.assign(new Error('audio response unavailable'), { badAudioType: true });
+          }
+          const buf = await this.decodeBytes(await res.arrayBuffer());
+          // A body that will not decode (a static host's index.html, a proxy's error page) is not an audio answer:
+          // mark it so the caller falls back to the original URL instead of giving up on this line.
+          if (!buf) throw Object.assign(new Error('audio decode failed'), { badAudioType: true });
+          return buf;
+        };
+        // Keep the extension-less route, including its one OpenI retry. Static hosts without /media/ retain
+        // their original-URL compatibility attempt, but cannot trigger a second OpenI retry for the same audio.
+        try { return await fetchMaterial(media, decode); }
+        catch (err) {
+          if (media === url || !(err?.status === 404 || err?.badContentType || err?.badAudioType)) throw err;
+          return await fetchMaterial(url, decode, { fallback: false });
+        }
       } catch (err) {
         this._warn(url, err);
         if (!url.startsWith(LOCAL_BGM)) this._failed(url);
@@ -942,6 +1083,7 @@ export class AudioManager {
   playBgm(key) {
     try {
       this.lastBgmKey = key;
+      if (this.lobbyMusicOverride?.(key)) { this.wantBgm = null; ++this.bgmToken; this._fadeOutBgm(); return; }
       if (!this.ctx) { this.wantBgm = key; return; }
       if (this.bgmSilent) {
         this.wantBgm = key;
@@ -992,16 +1134,18 @@ export class AudioManager {
     this._trimBuffers();
   }
 
-  /** The track of a BGM key: the player's own lobby music (setLobbyTrack), else the manifest's (resolveBgm). */
-  _bgmTrack(key) {
-    if (key === 'lobby' && this.lobbyTrack) return { intro: null, loop: LOCAL_BGM + this.lobbyTrack.id };
-    return resolveBgm(this.getManifest(), key);
-  }
-
   async _startBgm(key, track, token) {
     // kept by _trimBuffers while it loads (before the first await: a cache miss below trims at once)
     this.bgmStarting = { url: track.loop, token };
-    const [intro, loop] = await Promise.all([track.intro ? this._buffer(track.intro) : null, this._buffer(track.loop)]);
+    const loopOf = track.local ? this._localBuffer(track.loop) : this._buffer(track.loop);
+    const [intro, loop] = await Promise.all([track.intro ? this._buffer(track.intro) : null, loopOf]);
+    // a pick that does not load (a failed download, a file the browser cannot decode): the official track of the key
+    // for the rest of the page (a 自选曲 file until another one is chosen)
+    if (!loop && track.choice) {
+      this.bgmChoiceFailed.add(track.choice);
+      if (token === this.bgmToken) { this.bgm = null; this.playBgm(key); }
+      return;
+    }
     if (token !== this.bgmToken || !this.ctx) return;
     // the player's own lobby track that would not load (its file gone or no longer decodable): the official track, and
     // ui/lobbyMedia.js is told (onLobbyTrackFailed) so the switch shows it off
@@ -1053,6 +1197,7 @@ export class AudioManager {
       s.start(loopAt);
       nodes.push({ src: s, gain: g });
       this.bgm = { key, loopUrl: track.loop, nodes, gain };
+      this.lobbyMusicBgmStarted?.(key);
     } catch (err) { this._warn('bgm-start', err); }
   }
 
@@ -1354,8 +1499,8 @@ export class AudioManager {
   // ---- operator battle voice ----------------------------------------------------------------------------------
 
   /**
-   * Play an operator's battle line (the tree voiceLangFor picks — voiceLine; a slot with several lines draws one
-   * at random).
+   * Play an operator's battle line in the listener's dub (the tree voiceLangFor picks — voiceLine; a slot with several
+   * lines draws one at random), with the Chinese file of the same name as its fallback.
    * Every caller is a running battle's own event stream or its settlement, except 选中干员: the detail panel opening on
    * an operator the player tapped, in every phase (ui/detailPanel.js `voice`; the owner's request of 2026-10-08). The
    * line must pass VoiceGate: one at a time, a global gap, a per-unit cooldown, higher priority wins.
@@ -1369,8 +1514,11 @@ export class AudioManager {
     try {
       if (!this.ctx || !this.voiceGain || this.volumes.muted || this.volumes.voice <= 0) return false;
       if (typeof charId !== 'string' || typeof slot !== 'string') return false;
-      // the chosen dub's line (settings 语音语言), with the Chinese file of the same name as its fallback (voiceLine)
-      const pick = () => voiceLine(this.getManifest()?.audio, charId, slot, this._voiceLangOf(charId));
+      // the chosen dub's line (settings 语音语言), with the Chinese file of the same name as its fallback (voiceLine);
+      // (fork, docs/OUTFITS.md) the outfit's own voice set first: an explicit `o.voiceKey` (a battle unit's, null =
+      // none), else the player's own outfit choice for the operator — a slot the set lacks falls back to the operator
+      const voiceKey = o.voiceKey !== undefined ? o.voiceKey : outfitVoiceKey({ charId });
+      const pick = () => outfitVoiceLine(this, charId, slot, voiceKey) || voiceLine(this.getManifest()?.audio, charId, slot, this._voiceLangOf(charId));
       const line = pick();
       if (!line) return false;
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -1748,7 +1896,11 @@ export function installAudio(deps) {
     manifestGetter = typeof deps?.getManifest === 'function' ? deps.getManifest : manifestGetter;
     if (typeof deps?.onFailed === 'function') audio.onFailed = deps.onFailed;
     audio.install();
-    if (deps?.settings) { audio.setVolumes(deps.settings); audio.setVoiceLang(deps.settings.voiceLang, deps.settings.voiceOverrides); audio.setVoiceNative(deps.settings.voiceNative); }
+    if (deps?.settings) {
+      audio.setVolumes(deps.settings);
+      if (typeof deps.settings.voiceLang === 'string') audio.setVoiceLang(deps.settings.voiceLang, deps.settings.voiceOverrides);
+      audio.setVoiceNative(deps.settings.voiceNative);
+    }
     if (typeof deps?.subscribe === 'function' && typeof deps?.getState === 'function') {
       const sync = (s) => {
         try {

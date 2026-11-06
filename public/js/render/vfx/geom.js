@@ -363,6 +363,7 @@ export function buildParticles(ps, r, cam, fd, frameNo) {
         col[2] = (F0[2] * a0 + F1[2] * a1 + F2[2] * a2) * sc;
       }
       let cx = _p[0], cy = _p[1], cz = _p[2];
+      // (+pivot·size, as for the quads above)
       if (pv && (pv[0] || pv[1] || pv[2])) {
         cx += _ax[0] * pv[0] + _ay[0] * pv[1] + _az[0] * pv[2];
         cy += _ax[1] * pv[0] + _ay[1] * pv[1] + _az[1] * pv[2];

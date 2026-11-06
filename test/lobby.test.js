@@ -12,10 +12,11 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { startServer, parseRange, acceptsGzip, pickEncoding, parseTrustProxy } from '../server/index.js';
+import { createHealthMetrics } from '../server/healthMetrics.js';
 import { loadData, lookup, getChess, getBond, getBand, getMode, getConfig, INDEXED_FILES } from '../server/data.js';
 import * as dataModule from '../server/data.js';
 import { CODE_ALPHABET, BOT_NAMES, DEFAULT_DIFFICULTY } from '../server/lobby.js';
-import { sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
+import { sanitizeName, TokenBucket, SessionRegistry, Network, NET_DEFAULTS, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
 import { TestClient } from './helpers/wsClient.js';
@@ -100,6 +101,26 @@ function captureLog() {
   return { errors, log: { info() {}, warn() {}, debug() {}, error: (...a) => errors.push(a.map(String).join(' ')) } };
 }
 
+test('unlimited room admission serializes maxRooms zero in health without reporting full or unavailable', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, MatchClass: Match });
+  t.after(() => srv.close());
+  assert.equal(srv.lobby.opts.maxRooms, 0);
+  assert.equal(srv.registry.maxSessions, 0);
+  assert.equal(srv.network.opts.maxConnections, 0);
+  for (let i = 0; i < 2; i++) {
+    const s = srv.registry.create(`房主${i}`);
+    assert.deepEqual(srv.lobby.create(s, { mode: 'solo', difficulty: 'NORMAL' }), { ok: true });
+  }
+  const response = await httpReq(srv.port, '/healthz');
+  assert.equal(response.status, 200);
+  const health = JSON.parse(response.body);
+  assert.equal(health.ok, true);
+  assert.equal(health.maxRooms, 0);
+  assert.equal(health.rooms, 2);
+  assert.deepEqual(health.limits, { maxRooms: 0, maxRoomsPerAddr: 0, maxMatchesPerAddr: 0, maxBots: 0, maxBotsPerAddr: 0, maintenance: 0,
+    perAddrPeak: { rooms: 0, matches: 0, bots: 0 }, refused: { maxRooms: 0, maxRoomsPerAddr: 0, maxMatchesPerAddr: 0, maxBots: 0, maxBotsPerAddr: 0 } });
+});
+
 // ---------------------------------------------------------------------------------------------------
 // Static HTTP
 // ---------------------------------------------------------------------------------------------------
@@ -144,8 +165,6 @@ describe('static http server', () => {
       publicDir: path.join(tmp, 'public'), dataDir: path.join(tmp, 'data'), sharedDir: path.join(tmp, 'shared'),
       assetIndex: { delayMs: 0 },
     });
-    // the content hashes of public/assets + public/fonts (the ETags of those files): ready before the first request
-    await srv.assetIndex.whenReady();
   });
 
   after(async () => {
@@ -471,6 +490,8 @@ describe('static http server', () => {
     const h = JSON.parse(health.body.toString());
     assert.equal(h.ok, true);
     assert.equal(typeof h.rooms, 'number');
+    assert.ok(['warming', 'ready'].includes(h.performance.status));
+    assert.ok('process' in h.performance && 'mainThread' in h.performance);
     assert.equal(health.headers['cache-control'], 'no-store');
   });
 
@@ -613,7 +634,7 @@ describe('websocket lobby', () => {
     await expectError(c, { t: 'room.join', code: 'AB CD' }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.join', code: { $gt: '' } }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.ready', ready: 'yes' }, ERR.BAD_MSG);
-    await expectError(c, { t: 'room.removeBot', seat: 9 }, ERR.BAD_MSG);
+    await expectError(c, { t: 'room.removeBot', seat: 20 }, ERR.BAD_MSG);
     await expectError(c, { t: 'g.buy', slot: -1 }, ERR.BAD_MSG);
     await expectError(c, { t: 'g.move', uid: 1, to: { area: 'moon' } }, ERR.BAD_MSG);
     await expectError(c, { t: 'ping', c: 'x' }, ERR.BAD_MSG);
@@ -628,10 +649,10 @@ describe('websocket lobby', () => {
     await createRoom(c);
   });
 
-  test('oversized frame (> 64 KB) closes only that socket', async () => {
+  test('oversized frame (> 1 MiB) closes only that socket', async () => {
     const c = await pool.player('Big');
     const bystander = await pool.player('Bystander');
-    c.sendRaw(JSON.stringify({ t: 'ping', c: 1, pad: 'x'.repeat(70 * 1024) }));
+    c.sendRaw(JSON.stringify({ t: 'ping', c: 1, pad: 'x'.repeat((1 << 20) + 4096) }));
     const info = await c.closed;
     assert.equal(info.code, 1009);
     const pong = await bystander.request({ t: 'ping', c: 2 });
@@ -782,7 +803,7 @@ describe('websocket lobby', () => {
   });
 
   // community report #26 (a remake feature): spectator seats — server/lobby.js header
-  test('spectator seats: join / cap / leave / host removal; never a player, never acting, never keeping a room', async () => {
+  test('spectator seats: unlimited join / leave / host removal; never a player, never acting, never keeping a room', async () => {
     const host = await pool.player('Host');
     const st = await createRoom(host);
     assert.deepEqual(st.spectators, []);
@@ -802,12 +823,14 @@ describe('websocket lobby', () => {
       await expectError(s1, msg, ERR.NOT_HOST);
     }
     await expectError(s1, { t: 'g.ready', ready: true }, ERR.WRONG_PHASE);
-    // the cap; spectators never count toward the players: two player seats still free
+    // Unlimited observers still never count toward the four player seats.
     const s2 = await pool.player('Watcher2');
     await expectOk(s2, { t: 'room.spectate', code: st.code });
-    assert.equal(MAX_SPECTATORS, 2);
+    assert.equal(MAX_SPECTATORS, 0);
     const s3 = await pool.player('Watcher3');
-    await expectError(s3, { t: 'room.spectate', code: st.code }, ERR.ROOM_FULL);
+    await expectOk(s3, { t: 'room.spectate', code: st.code });
+    const three = await s3.waitFor('room.state', (s) => s.spectators.length === 3);
+    assert.equal(three.seats.filter(Boolean).length, 2);
     await joinRoom(s3, st.code);
     await expectOk(host, { t: 'room.addBot' });
     const full = await host.waitFor('room.state', (s) => s.seats.every(Boolean));
@@ -915,13 +938,13 @@ describe('websocket lobby', () => {
     await expectOk(host, { t: 'room.leave' });
     const migrated = await a.waitFor('room.state', (s) => s.hostId !== host.id);
     assert.equal(migrated.hostId, a.id, 'lowest remaining seat becomes host');
-    assert.equal(migrated.seats[0], null);
+    assert.equal(migrated.seats[0]?.playerId, a.id, 'the waiting-room host moves to P1');
     await b.waitFor('room.state', (s) => s.hostId === a.id);
 
-    // new joiner takes the lowest free seat (0); host stays with A
+    // new joiner takes the lowest free seat (1); host stays with A at P1
     const c = await pool.player('C');
     const joined = await joinRoom(c, st.code);
-    assert.equal(seatOf(joined, c.id).seat, 0);
+    assert.equal(seatOf(joined, c.id).seat, 1);
     assert.equal(joined.hostId, a.id);
     await expectOk(a, { t: 'room.addBot' });
     const withBot = await c.waitFor('room.state', (s) => s.seats[3]?.isBot);
@@ -1172,6 +1195,12 @@ describe('websocket lobby', () => {
       return pick([{ t: 'hello', name: pick(['Re', '', 'x'.repeat(20)]) }, { t: 'ping', c: pick([1, 'x']) }, { t: pick(['nope', '__proto__', 'toString']) }, { t: 'room.join', code: pick(junk) }]);
     };
     const okCounts = {};
+    // Seed a real legal game action; random lobby churn alone may never hit INFO_CHECK in 500 intents.
+    const coverage = await pool.player('Coverage');
+    for (const msg of [{ t: 'room.create', mode: 'solo', difficulty: 'FUNNY' }, { t: 'room.start' }, { t: 'g.infoReady' }, { t: 'room.leave' }]) {
+      await expectOk(coverage, msg);
+      okCounts[msg.t] = (okCounts[msg.t] || 0) + 1;
+    }
     for (let i = 0; i < 500; i++) {
       const k = Math.floor(rnd() * clients.length);
       let c = clients[k];
@@ -1206,8 +1235,8 @@ describe('websocket lobby', () => {
         assert.ok(sess, 'seated session exists');
         assert.equal(sess.roomCode, room.code);
       }
-      // spectator seats: capped, none in solo rooms, never also a player (here or elsewhere), never the host
-      assert.ok(room.spectators.length <= MAX_SPECTATORS, `room ${room.code} spectator cap`);
+      // Optional spectator cap; none in solo rooms, never also a player (here or elsewhere), never the host.
+      assert.ok(MAX_SPECTATORS === 0 || room.spectators.length <= MAX_SPECTATORS, `room ${room.code} spectator cap`);
       if (room.mode === 'solo') assert.equal(room.spectators.length, 0, 'no spectator seat in a solo room');
       for (const sp of room.spectators) {
         assert.ok(!seen.has(sp.playerId), 'a spectator is seated (or spectating) twice');
@@ -1373,7 +1402,7 @@ describe('lobby timers and match interface', () => {
     await joinRoom(guest, st.code);
     await host.terminate();
     const migrated = await guest.waitFor('room.state', (s) => s.hostId === guest.id, GRACE + 1000);
-    assert.equal(migrated.seats[0], null);
+    assert.equal(migrated.seats[0]?.playerId, guest.id, 'the waiting-room host moves to P1');
     await expectOk(guest, { t: 'room.addBot' });
   });
 
@@ -1537,7 +1566,7 @@ describe('lobby timers and match interface', () => {
     await host.waitFor('m.public');
   });
 
-  test('reconnect window expiry during a match → onLeave; old token no longer resumes; empty room disposed', async () => {
+  test('reconnect window during a match: held while a teammate is online; once nobody is, expiry → onLeave; old token no longer resumes; empty room disposed', async () => {
     const host = await pool.player('Host');
     const st = await createRoom(host);
     const guest = await pool.player('Guest');
@@ -1549,16 +1578,17 @@ describe('lobby timers and match interface', () => {
     await guest.terminate();
     await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.connected === false);
     await delay(WINDOW + 700);
-    assert.deepEqual(m.calls.filter((c) => c[0] === 'onLeave'), [['onLeave', guest.id]]);
+    assert.deepEqual(m.calls.filter((c) => c[0] === 'onLeave'), [], 'held while the host is online (掉线由 AI 接管)');
+
+    // the host drops too and never returns → both windows run out → onLeave for both, room disposed
+    await host.terminate();
+    await delay(WINDOW + 700);
+    assert.deepEqual(m.calls.filter((c) => c[0] === 'onLeave').map((c) => c[1]).sort(), [guest.id, host.id].sort());
+    assert.ok(m.calls.some((c) => c[0] === 'dispose'));
     const back = await pool.connect();
     const w = await back.hello('Guest', guest.token);
     assert.equal(w.resumed, false);
     assert.notEqual(w.playerId, guest.id);
-
-    // host drops too and never returns → room disposed after the window
-    await host.terminate();
-    await delay(WINDOW + 700);
-    assert.ok(m.calls.some((c) => c[0] === 'dispose'));
     await expectError(back, { t: 'room.join', code: st.code }, ERR.ROOM_NOT_FOUND);
   });
 
@@ -1646,7 +1676,7 @@ describe('solo resume window', () => {
     assert.notEqual(w3.playerId, a.id);
   });
 
-  test('co-op sessions keep the plain reconnect window; a solo player back in the lobby too', async () => {
+  test('co-op sessions without a teammate online keep the plain reconnect window; a solo player back in the lobby too', async () => {
     const a = await connect();
     const w = await a.hello('Coop');
     a.id = w.playerId;
@@ -1670,6 +1700,47 @@ describe('solo resume window', () => {
     await delay(WINDOW + 600);
     const s2 = await connect();
     assert.equal((await s2.hello('Idle', ws.token)).resumed, false);
+  });
+
+  test('掉线由 AI 接管: a dropped co-op player is held while a teammate is online; with nobody online the window runs again', async () => {
+    const a = await connect();
+    const wa = await a.hello('HoldA');
+    a.id = wa.playerId;
+    const st = await createRoom(a, 'coop', 'NORMAL');
+    const b = await connect();
+    const wb = await b.hello('HoldB');
+    b.id = wb.playerId;
+    await joinRoom(b, st.code);
+    await expectOk(b, { t: 'room.ready', ready: true });
+    await expectOk(a, { t: 'room.start' });
+    await a.waitFor('m.public', (p) => p.phase === PHASE.INFO_CHECK);
+    const match = srv.lobby.getRoom(st.code).match;
+    await b.terminate();
+    await a.waitFor('room.state', (s) => seatOf(s, b.id)?.connected === false);
+    await delay(WINDOW + 600); // several sweeps past the plain window
+    assert.equal(match.players.get(b.id).left, false, 'held: the teammate is online');
+    assert.equal(srv.registry.byId(b.id)?.matchHeld, true);
+
+    // back in its seat, and dropped again while the teammate stays
+    const b2 = await connect();
+    const w2 = await b2.hello('HoldB', wb.token);
+    assert.equal(w2.resumed, true);
+    assert.equal(w2.playerId, b.id);
+    await a.waitFor('room.state', (s) => seatOf(s, b.id)?.connected === true);
+    await b2.terminate();
+    await a.waitFor('room.state', (s) => seatOf(s, b.id)?.connected === false);
+    await delay(WINDOW + 600);
+    assert.equal(match.players.get(b.id).left, false, 'held again');
+
+    // the last player online drops: both windows run from now, nobody returns → abandoned
+    await a.terminate();
+    await delay(150);
+    assert.equal(match.ended, false, 'the held player got a fresh window, not an instant expiry');
+    await delay(WINDOW + 600);
+    assert.equal(match.ended, true, 'expiry → onLeave for both → abandoned');
+    assert.equal(srv.lobby.getRoom(st.code), null);
+    const c = await connect();
+    assert.equal((await c.hello('HoldB', wb.token)).resumed, false);
   });
 });
 
@@ -1734,7 +1805,9 @@ describe('match result replay', () => {
   }
 
   /** Frames of a resumed socket in arrival order (types + phase), after welcome. */
-  const order = (c) => c.log.filter((m) => m.t !== 'welcome' && m.t !== 'pong').map((m) => m.t + (m.t === 'm.public' ? `:${m.phase}` : ''));
+  // Presence/queue resyncs are independent of the room → final-public → result replay ordering.
+  const social = new Set(['welcome', 'pong', 'presence.state', 'queue.state']);
+  const order = (c) => c.log.filter((m) => !social.has(m.t)).map((m) => m.t + (m.t === 'm.public' ? `:${m.phase}` : ''));
 
   for (const unicast of [true, false]) {
     test(`a human disconnected when the match ends gets room.state, the final m.public and m.result on resume (${unicast ? 'per-player' : 'broadcast'} result)`, async () => {
@@ -1747,7 +1820,7 @@ describe('match result replay', () => {
       const res = await back.waitFor('m.result');
       if (unicast) assert.equal(res.playerId, guest.id, 'the player gets their own result');
       else assert.equal(res.reason, hostResult.reason);
-      assert.deepEqual(order(back), ['room.state', `m.public:${PHASE.RESULT}`, 'm.result']);
+      assert.deepEqual(order(back), ['site.announcement', 'room.state', `m.public:${PHASE.RESULT}`, 'm.result']);
       assert.equal(back.log.find((m) => m.t === 'room.state').inMatch, false);
     });
   }
@@ -1801,12 +1874,13 @@ describe('match result replay', () => {
     await back.hello('Guest', guest.token);
     assert.equal((await back.waitFor('room.closed')).reason, 'timeout');
     assert.equal((await back.waitFor('m.result')).playerId, guest.id);
-    assert.deepEqual(order(back), ['room.closed', `m.public:${PHASE.RESULT}`, 'm.result']);
+    assert.deepEqual(order(back), ['site.announcement', 'room.closed', `m.public:${PHASE.RESULT}`, 'm.result']);
     // delivered once
     await back.terminate();
     const again = await pool.connect();
     await again.hello('Guest', guest.token);
-    await again.expectNone(null, (m) => m.t !== 'welcome', 300);
+    await again.waitFor('queue.state', (m) => m.state === 'idle');
+    await again.expectNone(null, (m) => !social.has(m.t) && m.t !== 'site.announcement', 300);
   });
 
   test('real Match: a human who is away when the match finishes gets its m.result on resume', async () => {
@@ -1900,9 +1974,9 @@ describe('per-network limits', () => {
     const second = await orphan(A, 2);
     assert.equal(second.create.t, 'ok', 'third room from A still allowed');
     assert.equal(second.start.t, 'error');
-    assert.equal(second.start.code, ERR.RATE, 'third concurrent match from A refused');
+    assert.equal(second.start.code, ERR.LIMIT, 'third concurrent match from A refused');
     const third = await orphan(A, 3);
-    assert.equal(third.create.code, ERR.RATE, 'fourth room from A refused');
+    assert.equal(third.create.code, ERR.LIMIT, 'fourth room from A refused');
     assert.match(third.create.detail, /rooms/);
     const h1 = JSON.parse((await httpReq(srv.port, '/healthz')).body.toString());
 
@@ -1943,6 +2017,130 @@ describe('per-network limits', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
+// Cached performance diagnostics: HTTP must not drive sampling or readiness.
+// ---------------------------------------------------------------------------------------------------
+
+describe('health performance lifecycle', () => {
+  test('GET/HEAD only read the same cache; the independent sampler alone resets and advances its window', async (t) => {
+    let tick, at = 1000, resets = 0, reads = 0, clears = 0, disables = 0;
+    const histogram = {
+      count: 1, max: 30e6, percentile: () => 20e6,
+      enable() {}, disable() { disables++; }, reset() { resets++; },
+    };
+    const srv = await startServer({ port: 0, host: '127.0.0.1', combatWorkers: 0, quiet: true,
+      healthMetricsFactory: (opts) => createHealthMetrics({ ...opts,
+        now: () => at, wallNow: () => 1_800_000_000_000 + at,
+        cpuUsage: () => { reads++; return { user: at * 2000, system: at * 500 }; },
+        eventLoopUtilization: () => { reads++; return { active: at * 0.25, idle: at * 0.75 }; },
+        memoryUsage: () => { reads++; return { rss: 10, heapUsed: 3, heapTotal: 6, external: 2, arrayBuffers: 1 }; },
+        createHistogram: () => histogram,
+        setInterval: (fn, ms) => { assert.equal(ms, 10_000); tick = fn; return { unref() {} }; },
+        clearInterval: () => { clears++; },
+      }),
+    });
+    t.after(() => srv.close());
+    const initialReads = reads;
+    const cold = JSON.parse((await httpReq(srv.port, '/healthz')).body);
+    assert.equal(cold.ok, true);
+    assert.equal(cold.performance.status, 'warming');
+    assert.equal(cold.performance.sampledAt, null);
+    assert.equal(cold.performance.process.cpu.percent, null);
+    for (const method of ['GET', 'HEAD', 'GET', 'HEAD']) {
+      const response = await httpReq(srv.port, '/healthz', { method });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers['cache-control'], 'no-store');
+      if (method === 'HEAD') assert.equal(response.body.length, 0);
+      else assert.deepEqual(JSON.parse(response.body).performance, cold.performance);
+    }
+    assert.equal(reads, initialReads);
+    assert.equal(resets, 0);
+    at += 13_000; tick();
+    const sampledReads = reads;
+    const warm = JSON.parse((await httpReq(srv.port, '/healthz')).body);
+    assert.equal(warm.performance.windowMs, 13_000);
+    assert.equal(warm.performance.process.cpu.percent, 250);
+    assert.equal(warm.performance.mainThread.eventLoopUtilization, 0.25);
+    for (const method of ['HEAD', 'GET', 'GET']) {
+      const response = await httpReq(srv.port, '/healthz', { method });
+      if (method === 'GET') assert.deepEqual(JSON.parse(response.body).performance, warm.performance);
+    }
+    assert.equal(reads, sampledReads);
+    assert.equal(resets, 1);
+    const shutdown = srv.close();
+    assert.equal(clears, 1, 'timer stopped at close entry, not after asynchronous shutdown');
+    assert.equal(disables, 1);
+    await Promise.all([shutdown, srv.close()]);
+    assert.equal(clears, 1); assert.equal(disables, 1);
+    tick();
+    assert.equal(reads, sampledReads, 'a late timer callback cannot sample after disposal');
+  });
+
+  test('failed startup/listen never invokes the collector factory', async (t) => {
+    const occupied = await startServer({ port: 0, host: '127.0.0.1', combatWorkers: 0, quiet: true });
+    t.after(() => occupied.close());
+    let created = 0;
+    const healthMetricsFactory = () => { created++; assert.fail('failed boot must not create metrics'); };
+    await assert.rejects(startServer({ port: occupied.port, host: '127.0.0.1', combatWorkers: 0,
+      quiet: true, healthMetricsFactory }), { code: 'EADDRINUSE' });
+    await assert.rejects(startServer({ port: 0, host: '127.0.0.1', combatWorkers: 0,
+      publicDir: 1, quiet: true, healthMetricsFactory }), { code: 'ERR_INVALID_ARG_TYPE' });
+    assert.equal(created, 0);
+  });
+
+  test('partially failed metric initialization releases resources and keeps inline health 200', async (t) => {
+    let disabled = 0, schedules = 0;
+    const warnings = [];
+    const srv = await startServer({ port: 0, host: '127.0.0.1', combatWorkers: 0,
+      log: { ...captureLog().log, warn: (message) => warnings.push(message) },
+      healthMetricsFactory: (opts) => createHealthMetrics({ ...opts,
+        createHistogram: () => ({ enable() { throw new Error('test histogram enable failed'); }, disable() { disabled++; } }),
+        setInterval: () => { schedules++; assert.fail('failed initialization must not start a timer'); },
+      }),
+    });
+    t.after(() => srv.close());
+    for (const method of ['GET', 'HEAD', 'GET']) {
+      const response = await httpReq(srv.port, '/healthz', { method });
+      assert.equal(response.status, 200);
+      if (method === 'GET') {
+        const health = JSON.parse(response.body);
+        assert.equal(health.ok, true);
+        assert.deepEqual(health.combat, { backend: 'inline', workers: 0 });
+        assert.equal(health.performance.status, 'unavailable');
+        assert.equal(health.performance.sampledAt, null);
+      }
+    }
+    assert.equal(warnings.length, 1);
+    assert.equal(disabled, 1); assert.equal(schedules, 0);
+    await Promise.all([srv.close(), srv.close()]);
+    assert.equal(disabled, 1);
+  });
+
+  test('a throwing metric factory/start degrades only diagnostics and cleans a returned partial collector', async (t) => {
+    for (const step of ['factory', 'start']) {
+      await t.test(step, async (t) => {
+        let disposed = 0;
+        const warnings = [];
+        const srv = await startServer({ port: 0, host: '127.0.0.1', combatWorkers: 0,
+          log: { ...captureLog().log, warn: (message) => warnings.push(message) },
+          healthMetricsFactory: () => {
+            if (step === 'factory') throw new Error('test factory failure');
+            return { start() { throw new Error('test start failure'); }, dispose() { disposed++; } };
+          },
+        });
+        t.after(() => srv.close());
+        const health = await httpReq(srv.port, '/healthz');
+        assert.equal(health.status, 200);
+        assert.equal(JSON.parse(health.body).performance.status, 'unavailable');
+        assert.equal(warnings.length, 1);
+        assert.equal(disposed, step === 'start' ? 1 : 0);
+        await Promise.all([srv.close(), srv.close()]);
+        assert.equal(disposed, step === 'start' ? 1 : 0);
+      });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
 // Heartbeat, hello timeout, shutdown
 // ---------------------------------------------------------------------------------------------------
 
@@ -1976,7 +2174,9 @@ describe('heartbeat and shutdown', () => {
     const w = await c.hello('Last');
     c.id = w.playerId;
     await createRoom(c);
-    await srv.close();
+    const shutdown = srv.close();
+    assert.equal(srv.healthMetrics.snapshot().status, 'stopped');
+    await Promise.all([shutdown, srv.close()]);
     const closed = await c.waitFor('room.closed');
     assert.equal(closed.reason, 'shutdown');
     const info = await c.closed;
@@ -2206,6 +2406,51 @@ describe('platform units', () => {
     assert.equal(parseTrustProxy('off'), false);
     assert.equal(parseTrustProxy(undefined), 'auto');
     assert.equal(parseTrustProxy('auto'), 'auto');
+  });
+
+  test('Network: default/explicit zero admission is unlimited; positive socket caps and shutdown still apply', (t) => {
+    const req = (ip) => ({ socket: { remoteAddress: ip }, headers: {} });
+    assert.equal(NET_DEFAULTS.maxConnections, 0);
+    assert.equal(NET_DEFAULTS.maxConnectionsPerAddr, 0);
+    for (const options of [{}, { maxConnections: 0, maxConnectionsPerAddr: 0 }]) {
+      const net = new Network({ registry: new SessionRegistry(), handler: {}, options });
+      t.after(() => net.close());
+      // Exercise counters above the old defaults without opening thousands of sockets.
+      Object.defineProperty(net.conns, 'size', { value: 2001 });
+      net.connsPerKey.set('203.0.113.1', 65);
+      assert.equal(net.admission(req('203.0.113.1')), null);
+      net.close();
+      assert.equal(net.admission(req('203.0.113.1')), 'shutdown');
+    }
+    const capped = new Network({ registry: new SessionRegistry(), handler: {},
+      options: { maxConnections: 2, maxConnectionsPerAddr: 1 } });
+    t.after(() => capped.close());
+    capped.connsPerKey.set('203.0.113.1', 1);
+    assert.equal(capped.admission(req('203.0.113.1')), 'per-address');
+    assert.equal(capped.admission(req('203.0.113.2')), null);
+    Object.defineProperty(capped.conns, 'size', { value: 2 });
+    assert.equal(capped.admission(req('203.0.113.2')), 'full');
+  });
+
+  test('SessionRegistry: default/explicit zero never evicts for capacity and retains expiry policy', () => {
+    assert.equal(NET_DEFAULTS.maxSessions, 0);
+    for (const options of [{}, { maxSessions: 0 }]) {
+      let now = 1000;
+      const reg = new SessionRegistry({ ...options, reconnectWindowMs: 100, now: () => now });
+      const idle = reg.create('Idle');
+      const active = reg.create('Active'); active.connected = true;
+      reg.evictOne = () => { throw new Error('unlimited registries must not capacity-evict'); };
+      Object.defineProperty(reg.byPlayerId, 'size', { value: 20_001, configurable: true });
+      const extra = reg.create('Extra');
+      assert.ok(extra);
+      assert.equal(reg.byToken(idle.token), idle);
+      assert.equal(reg.byId(active.playerId), active);
+      delete reg.byPlayerId.size;
+      assert.equal(reg.size, 3);
+      now += 101;
+      assert.deepEqual(reg.sweep(), [idle, extra]);
+      assert.equal(reg.size, 1);
+    }
   });
 
   test('SessionRegistry: token lookup, expiry sweep, eviction', () => {

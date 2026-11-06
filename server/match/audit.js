@@ -1,5 +1,5 @@
 // server/match/audit.js — rule auditor for sweeps and tests (tools/matchrun.mjs --check, test/match/fullmatch.test.js).
-// (i18n-ignore-file: developer reports in English with the game's terms, never shown to players — docs/I18N.md)
+// (i18n-ignore-file: developer reports in English with the game's terms, never shown to players — docs/development/I18N.md)
 //
 // attachAudit(m) wraps a live Match's phase transitions and a few prep handlers (instance-level wrappers; the engine
 // is untouched) and records every rule violation it observes, next to the structural invariants of invariants.js:
@@ -24,10 +24,11 @@
 //   combat start  nothing overdue in temp, everyone ready, funds lost (carry bands excepted), unfrozen shop cleared,
 //                 one field per alive player
 //   drafts        every seat holds an allowed band with LP = totalHp; 机变: one card per alive player, card ↔ picker
-//                 maps consistent, 6 (co-op) / 3 (solo) cards
+//                 maps consistent, 9 (five/six-seat bounty) / 6 (other co-op) / 3 (solo) cards
 //   联防          decided after the COMBAT_END pause from the players still in: runs iff co-op with ≥ 1 leaker and
 //                 ≥ 1 perfect player; helpers = unite.js helperOrder (PRTS: units > active bond > layers > standing
-//                 units > seat, research 08 §5); leakers = players with counted leaks
+//                 units, research 08 §5; then active bonds > Σ layers > seat, owner 2026-10-17); leakers = players
+//                 with counted leaks
 //   settle        no unite ⇒ loss = min(cap, counted leaks); after 联防 a leaker loses ≤ cap (its leaked enemies'
 //                 offspring count too), everybody else ≤ min(cap, own counted leaks); LP ≤ 0 ⇔ eliminated
 //   final assault fields follow the saved per-match pairs, team LP = Σ alive LP, boss pool = bossPoolHp(); hidden core only
@@ -41,7 +42,8 @@
 //                 silent (deadline 0)
 // Checks never throw into the match: an exception inside a check is itself recorded as a violation.
 
-import { PHASE } from '../../shared/constants.js';
+import { PHASE, MAX_DRAFT_CARDS } from '../../shared/constants.js';
+import { coopDraftCardCount } from '../../shared/playerCapacity.js';
 import { collectViolations } from './invariants.js';
 import { mergeTile, pieceDir, canPlace, placeClass } from './board.js';
 import { bossPoolHp, hiddenEligible } from './finalAssault.js';
@@ -83,6 +85,76 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
     if (!invariants) return;
     audit.phases++;
     for (const v of collectViolations(m, { limit: 10 })) fail(`invariant: ${v}`);
+  };
+  // ---- the fixed pool groups (SiderLock 分组卡池 / Rosmontis parallel drafts) ----------------------------------
+  // A grouped stage keeps its flat first-group fields (installDraftFacade) for single-pool diagnostics; the checks
+  // read the groups and fall back to the stage itself when it has none (the expanded-capacity rooms' flat drafts).
+  // The flat draft's `groups: []` is an explicit empty array (spDraft wire round-trip), not a grouped stage.
+  const draftGroups = (stage) => (stage.groups && stage.groups.length ? stage.groups : [stage]);
+  const checkDraftOrder = (stage, label, wholeRoster = false) => {
+    const groups = draftGroups(stage);
+    const alive = new Set(m.alivePlayers().map((p) => p.playerId));
+    const ordered = groups.flatMap((g) => g.order).filter((pid) => alive.has(pid)).sort();
+    const want = [...alive].sort();
+    if (JSON.stringify(ordered) !== JSON.stringify(want)) fail(`${label}: group orders ${ordered} != living seats ${want}`);
+    if (!stage.groups?.length) return;
+    if (new Set(groups.map((g) => g.id)).size !== groups.length) fail(`${label}: duplicate group id`);
+    if (groups.length !== m.poolGroups.length) fail(`${label}: ${groups.length} groups != ${m.poolGroups.length} fixed pool groups`);
+    for (const g of groups) {
+      const pool = m.poolGroups.find((p) => p.id === g.id);
+      if (!pool || JSON.stringify(g.playerIds) !== JSON.stringify(pool.playerIds)) fail(`${label} group ${g.id}: fixed membership changed`);
+      if (new Set(g.order).size !== g.order.length) fail(`${label} group ${g.id}: duplicate turn`);
+      for (const pid of g.order) if (!g.playerIds.includes(pid)) fail(`${label} group ${g.id}: outsider ${pid} in order`);
+      // Upstream 0.2.2 fixes a group's order when the draft starts and only a skip moves a seat inside it. The strategy
+      // draft's order IS the group's seats — a departed or eliminated seat keeps its place and is skipped when its turn
+      // comes (makeDraftGroups without `living`); the 机变 draft draws over the living seats only (enterSpDraft).
+      if (wholeRoster) {
+        const seats = g.playerIds.slice().sort();
+        const drawn = g.order.slice().sort();
+        if (JSON.stringify(drawn) !== JSON.stringify(seats)) fail(`${label} group ${g.id}: order ${g.order} is not the group's seats ${g.playerIds}`);
+      }
+      // 「AI 队友最后选择」: every human seat before every AI seat, kept through a skip (bandSkip re-inserts the skipper
+      // behind the humans still to pick). With the option off the drawn order stands as it is — an AI seat may lead.
+      if (m.aiPicksLast) {
+        let botSeen = false;
+        for (const pid of g.order) {
+          if (m.players.get(pid)?.isBot) botSeen = true;
+          else if (botSeen) fail(`${label} group ${g.id}: human ${pid} ordered after an AI seat with 「AI 队友最后选择」 on`);
+        }
+      }
+    }
+  };
+  const peerClocks = (stage, group) => draftGroups(stage).filter((g) => g !== group)
+    .map((g) => ({ g, deadline: g.turnDeadline, seconds: g.turnSeconds, token: g.token, timer: g.timer }));
+  const checkDraftClock = (stage, group, seconds, label, peers) => {
+    const groups = draftGroups(stage);
+    const g = group;
+    if (g.untimed !== m.soloUntimed) fail(`${label} group ${g.id ?? 1}: untimed ${g.untimed}, expected ${m.soloUntimed}`);
+    const want = !g.done && g.idx < g.order.length && !g.untimed ? m.scaled(seconds * 1000) : 0;
+    const got = g.turnDeadline ? g.turnDeadline - m.sched.now() : 0;
+    if (Math.abs(got - want) > 1) fail(`${label} group ${g.id ?? 1}: deadline in ${got} ms, expected ${want} ms`);
+    if (g.turnSeconds != null && Math.abs(g.turnSeconds * 1000 - want) > 1) fail(`${label} group ${g.id ?? 1}: turnSeconds ${g.turnSeconds}, expected ${want / 1000}`);
+    const global = groups.length === 1 ? groups[0].turnDeadline || 0 : 0;
+    if (m.deadline !== global) fail(`${label}: global deadline ${m.deadline}, expected ${global}`);
+    for (const p of peers) if (p.g.turnDeadline !== p.deadline || p.g.turnSeconds !== p.seconds || p.g.token !== p.token || p.g.timer !== p.timer) {
+      fail(`${label} group ${g.id ?? 1}: changed group ${p.g.id ?? 1}'s clock`);
+    }
+    const timers = groups.filter((x) => !x.done && !x.untimed && x.timer != null).map((x) => x.timer);
+    if (new Set(timers).size !== timers.length) fail(`${label}: groups share a turn timer`);
+  };
+  const checkBandPicks = (stage) => {
+    for (const g of draftGroups(stage)) {
+      const picks = Object.entries(g.picks);
+      // a concurrent draft lets every seat take the same strategy (twenty-player-rules); only turn drafts dedupe
+      if (!stage.concurrent && new Set(picks.map(([, id]) => id)).size !== picks.length) fail(`band draft group ${g.id ?? 1}: duplicate strategy`);
+      for (const [pid, id] of picks) {
+        if (g.playerIds && !g.playerIds.includes(pid)) fail(`band draft group ${g.id}: outsider ${pid} picked`);
+        if (stage.picks[pid] !== id) fail(`band draft group ${g.id ?? 1}: ${pid} pick differs from the global map`);
+      }
+    }
+    for (const pid of Object.keys(stage.picks)) if (!draftGroups(stage).some((g) => g.picks[pid] === stage.picks[pid])) {
+      fail(`band draft: ${pid} appears only in the global pick map`);
+    }
   };
 
   // ---- per-player prep handlers and round start --------------------------------------------------------------
@@ -298,23 +370,41 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
     check('band draft', () => {
       if (m.phase !== PHASE.BAND_DRAFT) return;
       const d = m.draft;
-      const ids = m.order.map((p) => p.playerId).sort();
-      if (JSON.stringify(d.order.slice().sort()) !== JSON.stringify(ids)) fail(`draft order ${d.order} != seats ${ids}`);
-      // one countdown (user playtest #4 item 4): the step's deadline IS the current turn's, BAND_TURN_SECONDS long
-      if (m.soloUntimed) { if (m.deadline || d.turnDeadline) fail('untimed band draft is timed'); } else {
-        if (m.deadline !== d.turnDeadline) fail(`BAND_DRAFT: deadline ${m.deadline} is not the turn's ${d.turnDeadline}`);
-        expectDeadline(BAND_TURN_SECONDS, 'BAND_DRAFT turn');
+      checkDraftOrder(d, 'band draft', true);
+      checkBandPicks(d);
+      // the expanded-capacity rooms' flat draft keeps the one shared countdown (the step's deadline IS the turn's,
+      // BAND_TURN_SECONDS long)
+      if (!d.groups?.length) {
+        if (m.soloUntimed) { if (m.deadline || d.turnDeadline) fail('untimed band draft is timed'); } else {
+          if (m.deadline !== d.turnDeadline) fail(`BAND_DRAFT: deadline ${m.deadline} is not the turn's ${d.turnDeadline}`);
+          expectDeadline(BAND_TURN_SECONDS, 'BAND_DRAFT turn');
+        }
       }
     });
     return r;
+  });
+  wrap(m, 'startDraftTurn', function (orig, group = m.draftGroup()) {
+    const stage = m.draft;
+    const peers = stage && group ? peerClocks(stage, group) : [];
+    const res = orig(group);
+    check('band turn', () => {
+      if (m.phase !== PHASE.BAND_DRAFT || m.draft !== stage || !group) return;
+      checkDraftClock(stage, group, BAND_TURN_SECONDS, 'BAND_DRAFT', peers);
+      checkBandPicks(stage);
+    });
+    return res;
   });
   wrap(m, 'enterBattleCheck', function (orig) {
     const r = orig();
     runInvariants();
     check('bands', () => {
-      for (const ps of m.order) {
+      for (const ps of m.alivePlayers()) {
         if (!ps.bandId || !gd.bandAllowed(ps.bandId)) fail(`${ps.playerId}: band ${ps.bandId} not allowed`);
         if (ps.lp !== gd.startLp(ps.bandId)) fail(`${ps.playerId}: LP ${ps.lp} != totalHp ${gd.startLp(ps.bandId)} of ${ps.bandId}`);
+      }
+      if (m.draft) {
+        checkBandPicks(m.draft);
+        for (const ps of m.alivePlayers()) if (m.draft.picks[ps.playerId] !== ps.bandId) fail(`${ps.playerId}: assigned band differs from the draft pick`);
       }
       expectDeadline(gd.timer('battleCheck'), 'BATTLE_CHECK', { silentSolo: true });
     });
@@ -331,11 +421,27 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
     });
     return res;
   });
-  wrap(m, 'startSpTurn', function (orig) {
-    const res = orig();
+  wrap(m, 'enterSpDraft', function (orig, ...args) {
+    const res = orig(...args);
+    check('sp orders', () => {
+      if (m.phase === PHASE.SP_DRAFT && m.sp) checkDraftOrder(m.sp, '机变');
+    });
+    return res;
+  });
+  wrap(m, 'startSpTurn', function (orig, group = m.spGroup()) {
+    const stage = m.sp;
+    const peers = stage && group ? peerClocks(stage, group) : [];
+    const res = orig(group);
     check('sp turn', () => {
-      if (m.phase !== PHASE.SP_DRAFT || !m.sp) return;
-      const s = m.sp;
+      if (m.phase !== PHASE.SP_DRAFT || m.sp !== stage) return;
+      const s = stage;
+      // the fixed pool groups: each group's own countdown, the peers' clocks untouched
+      if (s.groups?.length && group) {
+        checkDraftClock(s, group, gd.timer(group.idx === 0 ? 'spFirst' : 'spTurn'), 'SP_DRAFT', peers);
+        return;
+      }
+      // a concurrent draft (Match concurrentDraft): one countdown for the step, armed once (spFirst)
+      if (s.concurrent) { if (!s.done && !m.soloUntimed && m.deadline !== s.turnDeadline) fail('concurrent 机变: deadline is not the step\'s'); return; }
       if (s.idx >= s.order.length) return;
       if (m.soloUntimed) { if (m.deadline) fail('untimed 机变 is timed'); } else expectDeadline(s.idx === 0 ? gd.timer('spFirst') : gd.timer('spTurn'), `SP_DRAFT turn ${s.idx}`);
     });
@@ -345,16 +451,37 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
     const s = m.sp;
     if (m.phase === PHASE.SP_DRAFT && s) check('sp draft', () => {
       const alive = m.alivePlayers().map((p) => p.playerId);
-      const want = m.isSolo ? 3 : 6;
-      if (s.cards.length > want) fail(`${s.cards.length} 机变 cards (max ${want})`);
-      if (s.order.length !== alive.length) fail(`机变 order ${s.order.length} for ${alive.length} alive`);
-      for (const pid of alive) {
-        const idx = s.picks[pid];
-        if (idx == null) fail(`${pid} ends 机变 without a card`);
-        else if (s.taken[idx] !== pid) fail(`${pid} picked card ${idx} held by ${s.taken[idx]}`);
+      // mirror generateDraft's solo count (choices.js): the round's scheduled cards, else the format's, capped
+      const sch = gd.choices.schedule?.[gd.modeId]?.rounds?.[String(m.round)];
+      const soloCount = Number.isInteger(sch?.cards) && sch.cards > 0 ? sch.cards
+        : (gd.choices.format?.solo && Number.isInteger(gd.choices.format.solo.cards) ? gd.choices.format.solo.cards : 3);
+      const want = m.isSolo ? Math.min(MAX_DRAFT_CARDS, soloCount)
+        : s.family === 'bounty' && m.startingPlayerCount >= 5 ? 9 : coopDraftCardCount();
+      checkDraftOrder(s, '机变');
+      for (const g of draftGroups(s)) {
+        // A fixed group with no living member at stage creation keeps its identity but has no selectable page.
+        const count = g.order.length ? want : 0;
+        if (g.cards.length !== count) fail(`机变 group ${g.id ?? 1}: ${g.cards.length} cards, expected ${count}`);
+        if (s.groups && !g.done) fail(`机变 group ${g.id}: finished before all its turns completed`);
+        const cards = new Set(g.cards.map((c) => c.idx));
+        if (cards.size !== g.cards.length) fail(`机变 group ${g.id ?? 1}: duplicate card index`);
+        for (const pid of alive.filter((p) => !g.playerIds || g.playerIds.includes(p))) {
+          const idx = g.picks[pid];
+          if (idx == null) fail(`${pid} ends 机变 without a card`);
+          else if (!cards.has(idx) || (!m.capacityExperiment && g.taken[idx] !== pid)) fail(`${pid} picked card ${idx} held by ${g.taken[idx]} in group ${g.id ?? 1}`);
+        }
+        for (const [pid, idx] of Object.entries(g.picks)) {
+          if (g.playerIds && !g.playerIds.includes(pid)) fail(`机变 group ${g.id}: outsider ${pid} picked`);
+          if (s.picks[pid] !== idx) fail(`机变 group ${g.id ?? 1}: ${pid} pick differs from the global map`);
+          if (!m.capacityExperiment && g.taken[idx] !== pid) fail(`机变 group ${g.id ?? 1}: ${pid} pick is not held`);
+        }
+        const holders = Object.values(g.taken);
+        if (new Set(holders).size !== holders.length) fail(`机变 group ${g.id ?? 1}: a player took two cards`);
+        for (const [idx, pid] of Object.entries(g.taken)) {
+          if (!cards.has(Number(idx)) || g.picks[pid] !== Number(idx)) fail(`机变 group ${g.id ?? 1}: held card ${idx} has no matching pick`);
+        }
       }
-      const holders = Object.values(s.taken);
-      if (new Set(holders).size !== holders.length) fail('a player took two 机变 cards');
+      for (const pid of Object.keys(s.picks)) if (!draftGroups(s).some((g) => g.picks[pid] === s.picks[pid])) fail(`机变: ${pid} appears only in the global pick map`);
     });
     return orig();
   });
@@ -467,9 +594,10 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
       m.fields.forEach((f, i) => { if (f.fieldId !== `b${i + 1}`) fail(`boss field id ${f.fieldId}`); });
       if (!hidden && m.teamLp !== lpSum) fail(`team LP ${m.teamLp} != Σ alive LP ${lpSum}`);
       if (hidden && m.teamLp !== teamLp0) fail(`hidden core changed team LP ${teamLp0} → ${m.teamLp}`);
-      const want = bossPoolHp(gd, hidden ? m.hiddenBossId : m.bossId, alive.length);
+      const want = bossPoolHp(gd, hidden ? m.hiddenBossId : m.bossId, alive.length, { experimental: m.bossPoolLinear });
       if (!m.bossPool || m.bossPool.maxHp !== want) fail(`boss pool ${m.bossPool && m.bossPool.maxHp} != ${want}`);
-      if (hidden && !hiddenEligible(gd, { layerSum: m.hiddenLayerSum, teamLp: m.teamLp })) fail('hidden core entered while not eligible');
+      if (hidden && !hiddenEligible(gd, { layerSum: m.hiddenLayerSum, teamLp: m.teamLp,
+        aliveCount: m.finalAliveCount, experimental: m.capacityExperiment })) fail('hidden core entered while not eligible');
       if (hidden && gd.difficulty === 'FUNNY') fail('hidden core on FUNNY');
     });
     return res;

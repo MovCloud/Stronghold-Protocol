@@ -27,7 +27,7 @@ const dirOf = (id) => path.join(ROOT, 'public', 'assets', 'spine', 'op', id, 'fr
 const have = (id) => existsSync(path.join(dirOf(id), `${id}.skel`)) && existsSync(path.join(dirOf(id), `${id}.atlas`));
 const MODELS = ['char_4058_pepe', 'char_4082_qiubai', 'char_4010_etlchi', 'char_1033_swire2'];
 
-let SpineActor, pointInPolygon, rt, base, core;
+let SpineActor, pointInPolygon, needsClipping, rt, base, core;
 before(async () => {
   // headless pixi: its shader-precision probe and Texture.WHITE ask for a canvas; no WebGL context is needed to build
   // and update a Spine's display tree
@@ -38,7 +38,7 @@ before(async () => {
   base = require('@pixi-spine/base');
   core = require('@pixi/core');
   globalThis.PIXI = { spine: { Spine: rt.Spine } };   // SpineActor builds `new PIXI.spine.Spine(data)`
-  ({ SpineActor, pointInPolygon } = await import('../../public/js/render/spine.js'));
+  ({ SpineActor, pointInPolygon, needsClipping } = await import('../../public/js/render/spine.js'));
 });
 
 const cache = new Map();
@@ -77,11 +77,13 @@ test('pointInPolygon: inside / outside of a convex and a concave polygon', () =>
 });
 
 /**
- * A synthetic skeleton (inline Spine 3.8 JSON and atlas, read by the real runtime — no art needed). The lid clip `cut`
+ * A synthetic skeleton (inline Spine 3.8 JSON and atlas, read by the real runtime — no art needed). (fork) Both clips
+ * carry eyelid names (`lidCut`, `lidBlade`): render/spine.js needsClipping keeps the stencil on for a clip that is
+ * not an eyelid (a weapon cut), and these tests are about the eyelid fallback. The lid clip `lidCut`
  * (±10 × ±5 around bone `eye`) covers a region eyeball `ballR` and a mesh eyeball `ballM` (8 × 8, centred on bone
  * `ball`, which keeps its size — noScale — like 纯烬艾雅法拉's eyeball bones) and a 4 × 4 highlight `glint` 4 above
  * their centre. Idle scales `eye` (stepped): open at 0 s, 0.7 at 1 s, 0.3 at 2 s and 0.05 at 3 s — a slit through the
- * eyeballs' centres. The L-shaped (concave) clip `blade` holds a bent strip `light` wholly inside it, whose mean vertex
+ * eyeballs' centres. The L-shaped (concave) clip `lidBlade` holds a bent strip `light` wholly inside it, whose mean vertex
  * (36, 16) lies in the L's notch.
  */
 function syntheticData() {
@@ -92,13 +94,13 @@ function syntheticData() {
   const json = {
     skeleton: { spine: '3.8.99' },
     bones: [{ name: 'root' }, { name: 'eye', parent: 'root' }, { name: 'ball', parent: 'eye', transform: 'noScale' }],
-    slots: ['cut:eye', 'ballR:ball', 'ballM:ball', 'glint:ball', 'blade:root', 'light:root'].map((s) => ({ name: s.split(':')[0], bone: s.split(':')[1], attachment: s.split(':')[0] })),
+    slots: ['lidCut:eye', 'ballR:ball', 'ballM:ball', 'glint:ball', 'lidBlade:root', 'light:root'].map((s) => ({ name: s.split(':')[0], bone: s.split(':')[1], attachment: s.split(':')[0] })),
     skins: [{ name: 'default', attachments: {
-      cut: { cut: { type: 'clipping', end: 'glint', vertexCount: 4, vertices: [-10, -5, 10, -5, 10, 5, -10, 5] } },
+      lidCut: { lidCut: { type: 'clipping', end: 'glint', vertexCount: 4, vertices: [-10, -5, 10, -5, 10, 5, -10, 5] } },
       ballR: { ballR: { width: 8, height: 8 } },
       ballM: { ballM: mesh([-4, -4, 4, -4, 4, 4, -4, 4], [0, 1, 2, 2, 3, 0]) },
       glint: { glint: { y: 4, width: 4, height: 4 } },
-      blade: { blade: { type: 'clipping', end: 'light', vertexCount: 6, vertices: [20, 0, 60, 0, 60, 10, 30, 10, 30, 40, 20, 40] } },
+      lidBlade: { lidBlade: { type: 'clipping', end: 'light', vertexCount: 6, vertices: [20, 0, 60, 0, 60, 10, 30, 10, 30, 40, 20, 40] } },
       light: { light: mesh([22, 2, 58, 2, 58, 8, 28, 8, 28, 38, 22, 38], [0, 1, 2, 0, 2, 3, 0, 3, 5, 3, 4, 5]) },
     } }],
     animations: { Idle: { bones: { eye: { scale: [
@@ -202,6 +204,34 @@ describe('eyelids on the official skeletons, drawn by the real pixi-spine runtim
     assert.deepEqual(hidden(off), [], 'shown again for the stencil');
     const clip = off.spine.skeleton.slots.find((s) => s.clippingContainer);
     assert.equal(clip.clippingContainer.mask, clip.currentGraphics, 'the mask is back on');
+  });
+
+  test('eyelid-only skeletons may drop their masks (needsClipping false)', () => {
+    for (const id of MODELS) assert.equal(needsClipping(skeletonData(id)), false, id);
+  });
+});
+
+// Miksaparato's Boc outfit cuts its weapon with F_Weapon_mask (→ F_Weapons_3): with the masks off (two clipped
+// skeletons on the field) the eyelid fallback left F_Weapons_5 drawn uncut — an oversized gun.
+const RMIXER = path.join(ROOT, 'public', 'assets', 'outfit', 'spine', 'char_4194_rmixer_boc_12', 'front', 'char_4194_rmixer_boc_12');
+const RMIXER_ENTRY = { anims: {}, animations: {} };
+describe('a weapon clip keeps its stencil mask', { skip: !(existsSync(`${RMIXER}.skel`) && existsSync(`${RMIXER}.atlas`)) && 'the outfit skeleton is not in public/assets (npm run assets)' }, () => {
+  let data;
+  before(() => {
+    const atlas = new base.TextureAtlas(readFileSync(`${RMIXER}.atlas`, 'utf8'), (line, cb) => cb(new core.BaseTexture(null, { width: 1024, height: 1024 })));
+    data = new rt.SkeletonBinary(new rt.AtlasAttachmentLoader(atlas)).readSkeletonData(new Uint8Array(readFileSync(`${RMIXER}.skel`)));
+  });
+
+  test('needsClipping: the weapon mask is not an eyelid', () => assert.equal(needsClipping(data), true));
+
+  test('setClipping(false) on the field budget leaves the mask on and hides nothing', () => {
+    const a = new SpineActor(data, RMIXER_ENTRY);
+    a.setClipping(false);
+    a.update(0.1);
+    assert.equal(a.clipOn, true);
+    assert.deepEqual(hidden(a), []);
+    const clip = a.spine.skeleton.slots.find((s) => s.clippingContainer);
+    assert.equal(clip.clippingContainer.mask, clip.currentGraphics);
   });
 });
 

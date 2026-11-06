@@ -1,6 +1,6 @@
 // server/http/traffic.js — what this server has sent and received since it started (host bandwidth, layer 0):
 //
-//   * HTTP: per category of shared/assetPaths.js trafficCategory (assets / audio / code / data / other) the responses
+//   * HTTP: per category of shared/traffic.js trafficCategory (assets / audio / code / data / other) the responses
 //     and the body bytes actually written (after gzip / brotli; headers not counted), and how many were 304s;
 //   * WebSocket: the connections, the bytes on the wire both ways (the sockets' own counters, after permessage-deflate,
 //     frame headers included, the HTTP upgrade not) and the message payloads before compression — their ratio is what
@@ -10,7 +10,7 @@
 // `snapshot()` is the `traffic` object of GET /healthz?traffic=1 (docs/DEPLOY.md §5). Nothing is stored or sent
 // anywhere else; the counters start at zero with the process.
 
-import { TRAFFIC_CATEGORIES, trafficCategory } from '../../shared/assetPaths.js';
+import { TRAFFIC_CATEGORIES, trafficCategory } from '../../shared/traffic.js';
 
 /** Byte length of a chunk handed to res.write / res.end (a string in `encoding`, utf8 by default). */
 function chunkBytes(chunk, encoding) {

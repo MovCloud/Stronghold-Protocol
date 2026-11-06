@@ -1,0 +1,319 @@
+// The preload store (fork; ported from YuriRestia/Stronghold-Protocol-EN-translation public/js/resources/store.js,
+// which is based on xinhai-ai/Stronghold-Protocol, GPL-3.0-or-later — see NOTICE.md): downloads the manifest's files
+// into Cache Storage and says which ones are already there (shared/resources.js has the rules, docs in its header).
+// No DOM: test/resources/zip-reader.test.js-style suites drive it with an in-memory `caches` and `fetch`.
+//
+// One cache holds every file, keyed by its site path (no query); each entry carries the hash of its bytes in an
+// `X-SP-Resource` header, and a file counts as saved only while that hash is the manifest's. No shared index: the
+// worker saves files the game fetches too (the asset worker's capture list), and per-entry headers mean the two
+// writers can never overwrite each other's records. A run first drops entries whose hash is outdated, then fetches
+// what is missing as `<path>?v=<hash>` — immutable at the CDN, so the origin sends each version once per edge — with
+// `cache: 'no-store'` (no second copy in the HTTP cache; the worker passes such requests through), checks size and
+// SHA-1, and stores it. Audio is fetched through the extension-less /media/… route like the game does
+// (public/js/media.js: download managers would otherwise pop up for each of ~11 000 .mp3 files).
+//
+// Kept beside the mainline ResourceStore (./store.js) instead of merged into it: the two answer different UIs —
+// the resource manager (ui/resourcePanel.js) and the preload manager (ui/preload.js) — with different cache
+// layouts (the hash index vs the per-entry header), and neither depends on the other.
+
+import { ALL_PACKS, CACHE_NAME, MAX_FILE_BYTES, PACKS_PATH } from '../../../shared/resources.js';
+import { mediaUrl } from '../media.js';
+import { contentTypeFor } from '../assetCache.js';
+
+/** Files above this share one lane (a 20 MB texture should not race four others for memory and bandwidth). */
+const BIG_FILE_BYTES = 4 << 20;
+/** The worker re-reads the manifest at most this often during a run (onFlush), so it serves what was saved. */
+const NOTIFY_MS = 4000;
+const MAX_FAILURES = 10;
+
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+/** First `len` hex of the SHA-1 of `bytes`. */
+export async function sha1Prefix(bytes, len = 12) {
+  return hex(await globalThis.crypto.subtle.digest('SHA-1', bytes)).slice(0, len);
+}
+
+export function abortError() {
+  const err = new Error('aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
+export function isQuotaError(err) {
+  return err?.name === 'QuotaExceededError' || /quota/i.test(String(err?.message || ''));
+}
+
+/** Per-pack counters: { files, bytes, doneFiles, doneBytes } for every pack of ALL_PACKS. */
+function emptyPacks() {
+  return Object.fromEntries(ALL_PACKS.map((p) => [p, { files: 0, bytes: 0, doneFiles: 0, doneBytes: 0 }]));
+}
+
+export class PreloadStore {
+  /**
+   * @param {{ version: string, files: { path: string, size: number, hash: string, pack: string }[] }} manifest parseManifest()
+   * @param {{ caches?: any, fetcher?: typeof fetch, origin?: string, smallLanes?: number, now?: () => number }} [opts]
+   */
+  constructor(manifest, { caches = globalThis.caches, fetcher = globalThis.fetch?.bind(globalThis), origin = globalThis.location?.origin,
+    smallLanes = 4, now = () => Date.now() } = {}) {
+    this.manifest = manifest;
+    this.caches = caches;
+    this.fetcher = fetcher;
+    this.origin = origin || 'http://localhost';
+    this.smallLanes = Math.max(1, smallLanes);
+    this.now = now;
+    this.byPath = new Map(manifest.files.map((f) => [f.path, f]));
+  }
+
+  /** Cache key (absolute URL) of a site path. */
+  urlOf(path) { return this.origin + path; }
+
+  /** Write the packs the worker may capture into (the player's selection; [] = none). */
+  async setCapturePacks(packs) {
+    if (!this.caches) return;
+    const cache = await this.caches.open(CACHE_NAME);
+    await cache.put(this.urlOf(PACKS_PATH), new Response(JSON.stringify({ packs: [...packs] }), { headers: { 'Content-Type': 'application/json' } }));
+  }
+
+  /** The cached paths split by state: `present` (current), `stale` (outdated or unmarked), `orphans` (not in the manifest). */
+  async #scan(cache) {
+    let keys;
+    // Chrome refuses Cache.keys() past ~15 000 entries ("Operation too large"): a whole download or import stores more
+    try { keys = await cache.keys(); } catch { return this.#scanManifest(cache); }
+    const present = new Set();
+    const stale = [];
+    const orphans = [];
+    // the hash is a header: one match per cached entry of the manifest (Cache Storage keeps headers with the key)
+    await Promise.all(keys.map(async (req) => {
+      let path;
+      try { path = new URL(req.url).pathname; } catch { return; }
+      if (path.startsWith('/__sp-')) return;
+      const f = this.byPath.get(path);
+      if (!f) { orphans.push(path); return; }
+      const hit = await cache.match(req);
+      if (hit?.headers.get('X-SP-Resource') === f.hash) present.add(path);
+      else stale.push(path);
+    }));
+    return { present, stale, orphans };
+  }
+
+  /** #scan by one lookup per manifest file, for a cache too large to list; orphans stay unknown (none dropped). */
+  async #scanManifest(cache) {
+    const present = new Set();
+    const stale = [];
+    const files = this.manifest.files;
+    for (let i = 0; i < files.length; i += 256) {
+      await Promise.all(files.slice(i, i + 256).map(async (f) => {
+        const hit = await cache.match(this.urlOf(f.path));
+        if (!hit) return;
+        if (hit.headers.get('X-SP-Resource') === f.hash) present.add(f.path);
+        else stale.push(f.path);
+      }));
+    }
+    return { present, stale, orphans: [] };
+  }
+
+  #tally(present) {
+    const packs = emptyPacks();
+    for (const f of this.manifest.files) {
+      const p = packs[f.pack];
+      p.files++;
+      p.bytes += f.size;
+      if (present.has(f.path)) { p.doneFiles++; p.doneBytes += f.size; }
+    }
+    return packs;
+  }
+
+  /** What is saved: { version, packs, savedBytes } (savedBytes counts current files of every pack). */
+  async status() {
+    if (!this.caches) return { version: this.manifest.version, packs: this.#tally(new Set()), savedBytes: 0 };
+    const cache = await this.caches.open(CACHE_NAME);
+    const { present } = await this.#scan(cache);
+    const packs = this.#tally(present);
+    return { version: this.manifest.version, packs, savedBytes: Object.values(packs).reduce((n, p) => n + p.doneBytes, 0) };
+  }
+
+  /**
+   * Download every missing file of `packs` (visuals first, then music, then the voice packs). Aborting `signal` stops
+   * within the files in flight; a failing file is counted and retried by the next run, a full disk stops the run.
+   * @param {{ packs: string[], signal?: AbortSignal, onProgress?: (s: any) => void, onFlush?: () => void }} opts
+   *   onFlush: every few seconds and at the end (the worker re-reads which files it may serve)
+   *   laneLimit: how many small-file lanes may run right now (the page lowers it during a match; default all)
+   * @returns {Promise<{ version: string, packs: any, savedBytes: number, failed: number, failures: { path: string, message: string }[], complete: boolean }>}
+   */
+  async download({ packs, signal, onProgress, onFlush, laneLimit = null }) {
+    const cache = await this.caches.open(CACHE_NAME);
+    const { present, stale, orphans } = await this.#scan(cache);
+    // outdated bytes go first (the worker skips them anyway; this frees the space)
+    for (const path of stale) await cache.delete(this.urlOf(path));
+    const want = new Set(packs);
+    const rank = (f) => ALL_PACKS.indexOf(f.pack);
+    const work = this.manifest.files.filter((f) => want.has(f.pack) && !present.has(f.path) && f.size <= MAX_FILE_BYTES)
+      .sort((a, b) => rank(a) - rank(b));
+    const counters = this.#tally(present);
+    let failed = 0;
+    const failures = [];
+    let lastFlush = this.now();
+    let dirty = stale.length > 0;
+    const flushing = Promise.resolve();
+    let lastEmit = 0;
+    const snapshot = () => ({ version: this.manifest.version, packs: Object.fromEntries(Object.entries(counters).map(([k, v]) => [k, { ...v }])),
+      savedBytes: Object.values(counters).reduce((n, p) => n + p.doneBytes, 0), failed, failures: failures.slice() });
+    const emit = (force = false) => {
+      const now = this.now();
+      if (!onProgress || (!force && now - lastEmit < 150)) return;
+      lastEmit = now;
+      onProgress(snapshot());
+    };
+    const flush = () => {
+      if (!dirty) return flushing;
+      dirty = false;
+      lastFlush = this.now();
+      try { onFlush?.(); } catch { /* a listener */ }
+      return flushing;
+    };
+    /** @type {Error|null} the error that stops every lane (an abort, a full disk) */
+    let stop = null;
+    const check = () => { if (stop) throw stop; if (signal?.aborted) throw abortError(); };
+    const one = async (f) => {
+      check();
+      try {
+        const meanwhile = await cache.match(this.urlOf(f.path));
+        if (meanwhile?.headers.get('X-SP-Resource') === f.hash) {
+          const c = counters[f.pack];
+          c.doneFiles++;
+          c.doneBytes += f.size;
+          emit();
+          return;
+        }
+        const res = await this.fetcher(mediaUrl(`${f.path}?v=${f.hash}`, this.origin), { cache: 'no-store', credentials: 'same-origin', signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const bytes = await res.arrayBuffer();
+        if (bytes.byteLength !== f.size || await sha1Prefix(bytes) !== f.hash) throw new Error('checksum mismatch');
+        check();
+        const headers = { 'Content-Type': res.headers.get('content-type') || 'application/octet-stream',
+          'Content-Length': String(bytes.byteLength), 'X-SP-Resource': f.hash };
+        await cache.put(this.urlOf(f.path), new Response(bytes, { status: 200, headers }));
+        dirty = true;
+        const c = counters[f.pack];
+        c.doneFiles++;
+        c.doneBytes += f.size;
+        if (this.now() - lastFlush >= NOTIFY_MS) await flush();
+      } catch (err) {
+        if (signal?.aborted || err?.name === 'AbortError') throw abortError();
+        if (isQuotaError(err)) {
+          const quota = new Error('quota exceeded');
+          quota.name = 'QuotaExceededError';
+          throw quota;
+        }
+        failed++;
+        if (failures.length < MAX_FAILURES) failures.push({ path: f.path, message: String(err?.message || err) });
+      }
+      emit();
+    };
+    const drain = async (list, lanes, limited) => {
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(lanes, list.length) }, async (_, lane) => {
+        for (;;) {
+          // a lane above the current limit waits (it keeps its place; the others take the files meanwhile)
+          while (limited && laneLimit && lane >= Math.max(1, laneLimit()) && next < list.length) {
+            check();
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          const i = next++;
+          if (i >= list.length) return;
+          await one(list[i]);
+        }
+      }));
+    };
+    emit(true);
+    try {
+      const big = work.filter((f) => f.size > BIG_FILE_BYTES);
+      const small = work.filter((f) => f.size <= BIG_FILE_BYTES);
+      // the first fatal error (an abort, a full disk) wins; the other lanes stop at their next file
+      await Promise.all([drain(small, this.smallLanes, true), drain(big, 1, false)].map((p) => p.catch((err) => { stop ??= err; })));
+      if (stop) throw stop;
+    } finally {
+      // the worker re-reads what it may serve, also after an abort or a full disk
+      dirty = true;
+      await flush();
+    }
+    const complete = failed === 0;
+    // a complete run may drop what the manifest no longer lists; a partial one never deletes anything
+    if (complete && orphans.length) for (const path of orphans) await cache.delete(this.urlOf(path));
+    const result = { ...snapshot(), complete };
+    onProgress?.(result);
+    return result;
+  }
+
+  /**
+   * (fork) Store the files of an asset zip the player picked: every entry that is a file of the manifest with its size
+   * and SHA-1 is saved like a downloaded one (the same header), so the download skips it. `entries`: { path, read }
+   * with `path` a site path (`/assets/…`) and `read()` → { ok, bytes }. Nothing is fetched.
+   * @param {{ path: string, read: () => Promise<{ ok: boolean, bytes?: Uint8Array }> }[]} entries
+   * @param {{ signal?: AbortSignal, onProgress?: (p: { total: number, done: number, saved: number, mismatched: number, skipped: number }) => void }} [opts]
+   * @returns {Promise<{ total: number, done: number, saved: number, mismatched: number, skipped: number }>}
+   */
+  async importEntries(entries, { signal, onProgress } = {}) {
+    // per-file lookups, no Cache.keys(): Chrome refuses to list a cache of a whole pack's size
+    const cache = await this.caches.open(CACHE_NAME);
+    const todo = [];
+    const seen = new Set();
+    let skipped = 0;
+    for (const e of entries) {
+      const f = this.byPath.get(e.path);
+      if (!f || seen.has(f.path)) { skipped++; continue; }
+      seen.add(f.path);
+      todo.push([f, e]);
+    }
+    const p = { total: todo.length, done: 0, saved: 0, mismatched: 0, skipped };
+    let lastEmit = 0;
+    const emit = (force = false) => {
+      const now = this.now();
+      if (!onProgress || (!force && now - lastEmit < 150)) return;
+      lastEmit = now;
+      onProgress({ ...p });
+    };
+    emit(true);
+    for (const [f, e] of todo) {
+      if (signal?.aborted) throw abortError();
+      const old = await cache.match(this.urlOf(f.path));
+      if (old?.headers.get('X-SP-Resource') === f.hash) { p.saved++; p.done++; emit(); continue; }
+      const got = await e.read().catch(() => null);
+      const bytes = got?.ok ? got.bytes : null;
+      if (!bytes || bytes.byteLength !== f.size || await sha1Prefix(bytes) !== f.hash) p.mismatched++;
+      else {
+        try {
+          await cache.put(this.urlOf(f.path), new Response(bytes, { status: 200, headers: {
+            'Content-Type': contentTypeFor(f.path), 'Content-Length': String(bytes.byteLength), 'X-SP-Resource': f.hash } }));
+        } catch (err) {
+          if (isQuotaError(err)) {
+            const quota = new Error('quota exceeded');
+            quota.name = 'QuotaExceededError';
+            throw quota;
+          }
+          throw err;
+        }
+        p.saved++;
+      }
+      p.done++;
+      emit();
+    }
+    emit(true);
+    return { ...p };
+  }
+
+  /** Delete the saved files of `packs` (an unticked voice pack). */
+  async removePacks(packs) {
+    const drop = new Set(packs);
+    if (!drop.size || !this.caches) return 0;
+    const cache = await this.caches.open(CACHE_NAME);
+    let n = 0;
+    for (const f of this.manifest.files) if (drop.has(f.pack) && await cache.delete(this.urlOf(f.path))) n++;
+    return n;
+  }
+
+  /** Delete the whole cache (Settings ▸ Preload assets ▸ Clear cache). */
+  async clear() {
+    if (this.caches) await this.caches.delete(CACHE_NAME);
+  }
+}

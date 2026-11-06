@@ -1,4 +1,4 @@
-// INFO_CHECK, band draft (order / skip / one turn clock / timeouts / highlighted band / 队友已选) and 机变 SP drafts (order /
+// INFO_CHECK, band draft (the group's drawn order / skip / one turn clock / timeouts / highlighted band / 队友已选) and 机变 SP drafts (order /
 // timers / auto-assign / effects); a single human (solo or co-op with AI teammates) is never timed outside battles.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,12 +8,12 @@ import { BAND_TURN_SECONDS } from '../../server/match/Match.js';
 
 const TURN_MS = BAND_TURN_SECONDS * 1000;
 
-test('INFO_CHECK: ends when every human confirmed (bots/departed count as ready) or at the 25 s deadline', () => {
+test('INFO_CHECK: ends when every human confirmed (bots/departed count as ready) or at the 45 s deadline', () => {
   const h = makeMatch({ mode: 'coop', humans: 2, bots: 1, seed: 1 }).start();
   const m = h.m;
   assert.equal(m.phase, PHASE.INFO_CHECK);
   const pub = h.lastBc('m.public');
-  assert.equal(pub.deadline - pub.serverNow, 25000);
+  assert.equal(pub.deadline - pub.serverNow, 45000);
   assert.equal(pub.players.find((p) => p.playerId === 'ai_0').status, 'ready');
   assert.equal(pub.players.find((p) => p.playerId === 'p_0').status, 'deciding');
   assert.deepEqual(m.handle('p_0', { t: 'g.infoReady' }), { ok: true });
@@ -25,7 +25,7 @@ test('INFO_CHECK: ends when every human confirmed (bots/departed count as ready)
   assert.deepEqual(m.handle('p_0', { t: 'g.infoReady' }), { error: ERR.WRONG_PHASE });
   m.dispose();
   const h2 = makeMatch({ mode: 'coop', humans: 2, seed: 1 }).start();
-  h2.sched.advance(24999);
+  h2.sched.advance(44999);
   assert.equal(h2.m.phase, PHASE.INFO_CHECK);
   h2.sched.advance(2);
   assert.equal(h2.m.phase, PHASE.BAND_DRAFT, 'deadline');
@@ -62,6 +62,80 @@ test('band draft (co-op): random order, one pick per turn, NOT_YOUR_TURN, one sk
   assert.equal(h.ps(first).lp, 20);
   h.sched.advance(1);
   assert.equal(m.phase, PHASE.BATTLE_CHECK);
+  m.dispose();
+});
+
+test('band draft: each interleaved fixed group draws its own order; a skip stays in its group and re-inserts the skipper at its end', () => {
+  const seats = ['ai_0', 'p_0', 'ai_1', 'p_1', 'p_2', 'ai_2'].map((playerId, seat) => ({
+    seat, playerId, name: playerId, isBot: playerId.startsWith('ai_'), connected: true,
+  }));
+  const h = makeMatch({ mode: 'coop', seats, seed: 37 }).start();
+  const m = h.m;
+  for (const pid of ['p_0', 'p_1', 'p_2']) m.handle(pid, { t: 'g.infoReady' });
+  h.sched.advance(1);
+  assert.equal(m.phase, PHASE.BAND_DRAFT);
+  const [a, b] = m.draft.groups;
+  // upstream 0.2.2: a group's order is its OWN seats after one shuffle — nothing reorders a human ahead of an AI seat.
+  assert.deepEqual(a.order.slice().sort(), a.playerIds.slice().sort());
+  assert.deepEqual(b.order.slice().sort(), b.playerIds.slice().sort());
+  // the AI seats that drew first picked at once, so each group now waits on one of its own humans
+  const pa = m.draftTurn('p_0');
+  const pb = m.draftTurn('p_2');
+  assert.ok(!pa.startsWith('ai_') && !pb.startsWith('ai_'), `each group waits on its own human (${a.order} / ${b.order})`);
+  // a skip never crosses groups: only the skipper's own order moves, and the skipper goes to the END of it
+  const aOrder = a.order.slice();
+  const bAt = b.idx;
+  const bOrder = b.order.slice();
+  assert.deepEqual(m.handle(pb, { t: 'g.bandSkip' }), { ok: true });
+  assert.deepEqual(b.order, [...bOrder.slice(0, bAt), ...bOrder.slice(bAt + 1), pb], 'the skipper goes to the end of its own group');
+  assert.equal(m.draftTurn('p_2'), b.order[bAt], 'the turn passes to the next seat of the same group');
+  const next = m.draftTurn('p_2');
+  assert.ok(!next.startsWith('ai_'), `the group's other human takes the turn (${b.order})`);
+  assert.deepEqual(a.order, aOrder, 'the other group is untouched');
+  assert.equal(m.draftTurn('p_0'), pa, 'the other group retains its current picker');
+  // the last entry of a group's order has nobody to pass to (a skip never crosses groups)
+  assert.equal(a.order.length - a.idx, 1, `group a drew its human last (${a.order})`);
+  assert.equal(m.handle(pa, { t: 'g.bandSkip' }).error, ERR.BAD_TARGET, 'the last entry of a group order has nobody to pass to');
+  assert.deepEqual(a.order, aOrder, 'the refused skip left the order alone');
+  for (const [pid, bandId] of [[pa, 'band_amiya'], [next, 'band_amiya'], [pb, 'band_sarkazb']]) {
+    assert.deepEqual(m.handle(pid, { t: 'g.band', bandId }), { ok: true });
+  }
+  assert.equal(Object.keys(m.draft.picks).length, 6, 'both groups resolved every seat (the AI seats that drew first picked at once)');
+  for (const g of m.draft.groups) assert.equal(new Set(Object.values(g.picks)).size, g.order.length, 'no strategy twice inside a group');
+  h.sched.advance(1);
+  assert.equal(m.phase, PHASE.BATTLE_CHECK);
+  assert.equal(Object.keys(m.draft.picks).length, 6);
+  m.dispose();
+});
+
+test('band draft: a disconnect, a reconnect and AI 托管 leave the fixed order alone', () => {
+  const h = makeMatch({ mode: 'coop', humans: 3, bots: 2, seed: 38 }).start();
+  const m = h.m;
+  for (const pid of ['p_0', 'p_1', 'p_2']) m.handle(pid, { t: 'g.infoReady' });
+  h.sched.advance(1);
+  const order = m.draft.order.slice();
+  const first = order[0];
+  const other = order.find((pid) => pid !== first && !pid.startsWith('ai_'));
+  // upstream 0.2.2: the order is fixed for the whole draft — a disconnect, a reconnect and a 托管 toggle never reorder it.
+  m.onDisconnect(first);
+  assert.deepEqual(m.draft.order, order, 'a disconnect never reorders the group');
+  assert.equal(m.draftTurn(), first, 'the disconnected seat keeps its place and its turn');
+  m.onReconnect(first);
+  assert.deepEqual(m.draft.order, order, 'a reconnect never reorders the group');
+  assert.equal(m.draftTurn(), first);
+  assert.deepEqual(m.handle(other, { t: 'g.autoplay', on: true }), { ok: true });
+  assert.deepEqual(m.draft.order, order, 'a 托管 toggle never reorders the group');
+  assert.equal(m.draftTurn(), first, 'the current picker keeps the turn');
+  assert.deepEqual(m.handle(other, { t: 'g.autoplay', on: false }), { ok: true });
+  // the turn and the picks still resolve, in that fixed order
+  assert.deepEqual(m.handle(first, { t: 'g.band', bandId: 'band_amiya' }), { ok: true });
+  assert.equal(h.ps(first).bandId, 'band_amiya');
+  assert.equal(m.draftTurn(), order[1], 'the next seat of the fixed order takes the turn');
+  h.sched.advance(1);
+  assert.equal(m.draftTurn(), other, 'the AI seats pick at once, then the next human of the order takes the turn');
+  const bandId = m.defaultBand(other);
+  assert.deepEqual(m.handle(other, { t: 'g.band', bandId }), { ok: true });
+  assert.equal(h.ps(other).bandId, bandId);
   m.dispose();
 });
 
@@ -169,6 +243,33 @@ test('机变 (co-op): 6 shared cards, random order, 30 s first / 16 s others, ti
   m2.dispose();
 });
 
+test('every co-op 机变 orders its group\'s living seats; a disconnect and a reconnect never reorder them', () => {
+  const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans: 2, bots: 2, seed: 39, fake: true }).start();
+  const m = h.m;
+  h.toPrep(1);
+  for (const ps of m.alivePlayers()) ps.lp = 200;
+  for (const round of m.gd.spRounds()) {
+    assert.ok(h.drive(() => m.phase === PHASE.ROUND_START && m.round === round), `reached round ${round}`);
+    assert.ok(h.run(() => m.phase === PHASE.SP_DRAFT), `reached round ${round} 机变`);
+    // upstream 0.2.2: the 机变 order is the group's LIVING seats after one shuffle — nothing reorders a human ahead of an
+    // AI seat (round 6 of this seed draws ai_0 first), and no connectivity change reorders it either.
+    const group = m.sp.groups[0];
+    const living = group.playerIds.filter((pid) => m.players.get(pid).alive).sort();
+    assert.deepEqual(m.sp.order.slice().sort(), living, `round ${round}: the order is the group's living seats`);
+    if (round === m.gd.spRounds()[0]) {
+      const order = m.sp.order.slice();
+      const first = m.spTurn();
+      m.onDisconnect(first);
+      assert.deepEqual(m.sp.order, order, 'a disconnect never reorders the 机变 order');
+      assert.equal(m.spTurn(), first, 'the disconnected seat keeps its turn');
+      m.onReconnect(first);
+      assert.deepEqual(m.sp.order, order, 'a reconnect never reorders it either');
+      assert.equal(m.spTurn(), first);
+    }
+  }
+  m.dispose();
+});
+
 test('机变 (solo): 3 cards, untimed; supply/shop cards give the item, bounty cards add enemies to the next battle', () => {
   // solo NORMAL: R6 道具补给, R9 战术决策
   const h = makeMatch({ mode: 'solo', difficulty: 'NORMAL', seed: 3, fake: true }).start();
@@ -272,7 +373,7 @@ test('a single human (a 同盟 room started alone or with AI teammates only) is 
   const h = makeMatch({ mode: 'coop', humans: 2, bots: 1, seed: 12 }).start();
   assert.equal(h.m.soloUntimed, false);
   const pub = h.lastBc('m.public');
-  assert.equal(pub.deadline - pub.serverNow, 25000, 'INFO_CHECK 25 s');
+  assert.equal(pub.deadline - pub.serverNow, 45000, 'INFO_CHECK 45 s');
   h.toPrep(1);
   assert.ok(h.m.deadline > 0, 'co-op prep is timed');
   h.m.dispose();

@@ -123,7 +123,8 @@ test('npm test runs every test file and nothing else under test/: no helper, no 
   const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })
     .flatMap((d) => (d.isDirectory() ? walk(`${dir}/${d.name}`) : [`${dir}/${d.name}`]));
   const underTest = walk('test');
-  const tests = [...underTest, ...walk('plugins/_template')].filter((f) => f.endsWith('.test.js'));
+  const tests = [...underTest, ...walk('plugins/_template'), ...walk('deploy/stardust/feedback')]
+    .filter((f) => /\.test\.(?:js|mjs)$/.test(f));
   assert.deepEqual(picked, [...tests, 'test/e2e/coop.e2e.mjs'].sort());
   assert.ok(!picked.some((f) => /^test\/(fixtures|helpers)\/|\/fixtures\//.test(f)), 'a fixture or helper would run as a test');
   // every other module under test/ is imported by the tests (or is untrusted bait): one that uses node:test is a test

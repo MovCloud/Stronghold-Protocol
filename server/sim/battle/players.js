@@ -35,6 +35,8 @@ export class BattlePlayers {
       bandId: p.bandId ?? null,
       playerEffects: clone(p.playerEffects ?? []),
       lpForBoss: p.lpForBoss ?? null,
+      // 联防: the Fever gauge this player's own combat ended with (sim/fever.js; match/unite.js)
+      feverCarry: Number.isFinite(p.feverCarry) && p.feverCarry > 0 ? p.feverCarry : 0,
       dp: this.flags.dpInit,
       units: [],
       input: p,
@@ -46,7 +48,7 @@ export class BattlePlayers {
       // `leakedInTotal` are the HUD capsule's counters of this player's own field (only enemies the round scheduled:
       // spawns.js `_queueSpawn` / `inTotal`, deploy.js), `resolved` is derived from them at result time.
       killed: 0, total: 0, leaked: [], perfect: true, killedInTotal: 0, leakedInTotal: 0,
-      layerGains: {}, coins: 0, damageDealt: 0, bossDamage: 0, healingDone: 0, deaths: 0, unitsEnd: [], unitStats: [],
+      layerGains: {}, coins: 0, bank: 0, damageDealt: 0, bossDamage: 0, healingDone: 0, deaths: 0, unitsEnd: [], unitStats: [],
     };
     const late = [];
     for (const u of p.units ?? []) {

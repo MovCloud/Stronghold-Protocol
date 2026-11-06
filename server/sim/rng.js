@@ -8,6 +8,15 @@ export function createRng(seed = 1) {
   return rngFromState((Number(seed) >>> 0) || 0x9e3779b9);
 }
 
+/**
+ * A PRNG continuing from `rng.state()` of another one (match checkpoints, server/match/snapshot.js): the same stream
+ * from that position on.
+ * @param {number} state uint32
+ */
+export function createRngFromState(state) {
+  return rngFromState(Number(state) >>> 0);
+}
+
 function rngFromState(s) {
   const next = () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -46,6 +55,7 @@ function rngFromState(s) {
   rng.state = () => s;
   /** Independent stream at the same position, including internal state zero. */
   rng.clone = () => rngFromState(s);
+  rng.setState = (v) => { s = Number(v) >>> 0; };
   return rng;
 }
 

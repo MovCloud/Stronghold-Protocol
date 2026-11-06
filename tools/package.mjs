@@ -19,11 +19,13 @@
 // packs/ (the content packs that ship with the repository, docs/PACKS.md; a pack installed on this machine and not
 // committed stays out), plugins/ (only its readme, author guide and templates — docs/PLUGINS.md; a server's own plugins are git-ignored and
 // never ship), schemas/, the plugin author harness,
-// the start scripts, the tools a player runs (setup, vendor = the postinstall, fetch-assets + tools/assets, doctor, plugin, and
+// the root start-server.cmd and the other start scripts, the tools a player runs (setup, vendor = the postinstall, fetch-assets + tools/assets, doctor, plugin, and
 // what setup starts: tools/local-extract, crop-board-atlas), the research tables the Node server (server/sim/
 // nodeData.js fallback) and fetch-assets read, package.json / package-lock.json, LICENSE / NOTICE.md /
 // THIRD-PARTY-NOTICES.md, README.md, CHANGELOG.md, the player and plugin author docs. `npm ci --omit=dev` in the
-// stage adds the production node_modules and (postinstall) public/vendor. The full zip adds the git-ignored art: the
+// stage adds the production node_modules and (postinstall) public/vendor. The Stardust fork also ships the exact
+// offline name-policy engine/data/license files shared/names.js needs; every other deploy/ path stays refused.
+// The full zip adds the git-ignored art: the
 // files data/assets.json lists, public/fonts, and the local-client extraction (public/assets/local/,
 // data/local-assets.json) when present, including the battlefield scenes under public/assets/local/scene/
 // when this machine extracted them. Missing scenes are not an error: the board keeps the metal tiles, and the
@@ -33,7 +35,6 @@
 // Korean and own-language dubs (default: yes, so the 0.3.0 full zip ships them; about +180 MB, measured after download).
 // Left out: test/ except test/helpers/battleHarness.js, the maintainer tools (build-data, golden, botbench, i18n, check-imports, this file …),
 // scripts/make-windows-bundle.mjs, the other docs (DESIGN, SIM, the research notes, docs/img …), public/dev/, handoff/,
-// .github/, types/, lint / editor / Docker files (Docker builds from a git clone).
 // Also left out, by the maintainer's decision of 2026-10-23 (§35.66): the external-AI / LLM integration. The explicit
 // list is LLM_RELEASE_EXCLUDE in server/match/llmRelease.js (re-exported below). A release tree gets
 // server/release-without-llm and the server then ignores external-AI settings. The #673 framework and the built-in
@@ -44,6 +45,7 @@
 //   docs/AI-STRATEGY.md, docs/EXTERNAL_AI.md, docs/EXTERNAL_AI_ZH.md
 //   tools/ai/   (the example agent and its knowledge / context / plan / playbook tools)
 //   test/fixtures/llm-advisor.json
+// .github/, types/, lint / editor / Docker files (Docker builds from a git clone).
 //
 // Checks, all of them in --dry-run too (which writes nothing): the refusal list below; every relative import of a
 // shipped module and every `node <file>` of the player npm scripts resolves to a shipped file; a full zip has every file
@@ -58,9 +60,9 @@
 // vendor, assets. `npm test` (`node --test`, and test/ is not shipped), golden, build-data, lint, typecheck and this
 // file are removed, so a player never gets a run that reports zero tests and exits 0. The same stage rewrites the
 // shipped Markdown (GitHub #530): a relative link whose target is in the zip stays relative; a picture becomes
-// <repo>/raw/v<tag>/<path>; another missing file becomes <repo>/blob/v<tag>/<path>; `../../releases/latest` becomes
-// the repository releases/latest URL. The tag is `v` plus the package version with a trailing `-dev` removed. The
-// copies in the git checkout stay relative.
+// <repo>/raw/<tag>/<path>; another missing file becomes <repo>/blob/<tag>/<path>; `../../releases/latest` becomes
+// the repository releases/latest URL. This six-player fork's 0.2.5, 0.2.6 and 0.3.0 packages point to their own release tags; other
+// versions use `v` plus the package version with a trailing `-dev` removed. The git checkout stays relative.
 // The account name comes from the OS at run time (never written in the repository): SP_PACKAGE_SCAN_USER=0 skips it
 // (a name that is a common word), SP_PACKAGE_SCAN_NAMES=a,b adds more names to refuse.
 //
@@ -115,24 +117,31 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const FOLDER = 'Stronghold-Protocol';
 
 /** Root files a player gets. */
-export const ROOT_FILES = ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md', 'README.md', 'CHANGELOG.md'];
+export const ROOT_FILES = ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md', 'README.md', 'CHANGELOG.md', 'start-server.cmd'];
 /** The player docs. */
-export const PLAYER_DOCS = ['docs/PLAYING.md', 'docs/DEPLOY.md', 'docs/PLUGINS.md', 'docs/PLUGIN-GUIDE.md',
-  'docs/PLUGIN-DSL.md', 'docs/PLUGIN-API.md', 'docs/SKINS.md', 'docs/plugin-catalog.example.json'];
+export const PLAYER_DOCS = ['docs/PLAYING.md', 'docs/DEPLOY.md', 'docs/EXPERIMENTAL-MULTIPLAYER.md', 'docs/PLUGINS.md', 'docs/PLUGIN-GUIDE.md',
+  'docs/PLUGIN-DSL.md', 'docs/PLUGIN-API.md', 'docs/plugin-catalog.example.json'];
 /** The author harness has no test-only dependencies; the rest of test/ stays out. */
 export const AUTHOR_TEST_FILES = ['test/helpers/battleHarness.js'];
 /** Only these repository-owned plugin resources ship, even if an owner's plugin was accidentally tracked. */
 export const isPluginResource = (rel) => rel === 'plugins/README.md' || rel === 'plugins/AGENTS.md' || rel.startsWith('plugins/_template/');
 /** Research tables read at run time: server/sim/nodeData.js (the Node sim's fallback) and tools/fetch-assets.mjs. */
-export const RUNTIME_RESEARCH = ['docs/research/03-operators.json', 'docs/research/05-enemies.json', 'docs/research/05-maps.json', 'docs/research/07-assets.json'];
+export const RUNTIME_RESEARCH = ['docs/research/03-operators.json', 'docs/research/05-enemies.json', 'docs/research/05-maps.json', 'docs/research/07-assets.json', 'docs/research/08-skins.json'];
 /** The start scripts (scripts/make-windows-bundle.mjs is the maintainer's Windows pack, docs/WINDOWS.md). */
 export const PLAYER_SCRIPTS = ['scripts/install-service-windows.ps1', 'scripts/launch.mjs', 'scripts/open-browser.mjs',
   'scripts/run-server.cmd', 'scripts/start-windows-sandbox.bat', 'scripts/start-windows.bat', 'scripts/start-windows.ps1', 'scripts/start.sh'];
 /** The tools a player runs (npm run setup / doctor / assets, the postinstall) and the ones setup starts. */
-export const PLAYER_TOOLS = ['tools/crop-board-atlas.mjs', 'tools/doctor.mjs', 'tools/fetch-assets.mjs', 'tools/fetch-stats-assets.mjs', 'tools/setup.mjs', 'tools/vendor.mjs', 'tools/plugin.mjs'];
+export const PLAYER_TOOLS = ['tools/crop-board-atlas.mjs', 'tools/doctor.mjs', 'tools/fetch-assets.mjs', 'tools/fetch-stats-assets.mjs', 'tools/install-skins.mjs', 'tools/prepare-operator-skins.mjs', 'tools/setup.mjs', 'tools/vendor.mjs', 'tools/plugin.mjs'];
 /** Whole tool directories: fetch-assets' modules, the local-client extraction setup runs. */
 export const PLAYER_TOOL_DIRS = ['tools/assets/', 'tools/local-extract/'];
 /** Whole runtime directories (their tracked files). */
+/** Pure offline moderation used by shared/names.js, including transitive vendor/data and their licenses — NOT the auth service. */
+export const STARDUST_NAME_RUNTIME = ['name-policy.mjs', 'name-dictionary.mjs', 'name-sensitive-dictionary.mjs',
+  'name-filter-vendor.mjs', 'name-filter-node.mjs', 'NAME-DICTIONARY-LICENSE.txt', 'NAME-FILTER-LICENSE.txt',
+  'NAME-CATEGORIES-LICENSE.txt', 'NAME-POLITICAL-LICENSE.txt'].map((f) => `deploy/stardust/auth/${f}`);
+/** The players' feedback board (server/index.js mounts it on /feedback): its module and page, never its tests or env samples. */
+export const FEEDBACK_RUNTIME = ['policy.mjs', 'server.mjs', 'store.mjs'].map((f) => `deploy/stardust/feedback/${f}`)
+  .concat(['feedback.css', 'feedback.js', 'index.html'].map((f) => `deploy/stardust/feedback/public/${f}`));
 export const RUNTIME_DIRS = ['server/', 'shared/', 'data/', 'public/', 'packs/', 'schemas/'];
 /** Written into the stage, never taken from the checkout: the pack index of the shipped packs, and the release marker. */
 export const GENERATED_PACK_INDEX = 'packs/index.json';
@@ -199,12 +208,13 @@ const GENERIC_USERS = new Set(['root', 'user', 'admin', 'node', 'runner', 'ubunt
 
 export const posixRel = (rel) => String(rel).split('\\').join('/');
 
-/** True for a path the refusal list names (or lies under), a `.env` file or a `.venv*` directory anywhere. */
+/** Refusal list entries, `.env` / `.venv*` anywhere, and deploy/ except the exact offline moderation files. */
 export function isRefused(rel) {
   const p = posixRel(rel);
   const parts = p.split('/');
   const base = parts[parts.length - 1];
   if (base === '.env' || base.startsWith('.env.')) return true;
+  if ((p === 'deploy' || p.startsWith('deploy/')) && !STARDUST_NAME_RUNTIME.includes(p) && !FEEDBACK_RUNTIME.includes(p)) return true;
   if (parts.some((s) => s.startsWith('.venv'))) return true;
   if (p.startsWith('plugins/') && !isPluginResource(p)) return true;
   if (AUTHOR_TEST_FILES.includes(p)) return false;
@@ -223,13 +233,14 @@ export function isJunk(rel) {
 /** Whether a tracked file belongs in the player package. */
 export function isPlayerFile(rel) {
   const p = posixRel(rel);
-  if (!p || isRefused(p) || isJunk(p) || p === 'data/local-assets.json' || p === 'data/local-fx.json' || p === GENERATED_PACK_INDEX) return false;
   // The marker is generated into the stage. The LLM paths stay on dev even if a later allowlist would have taken them.
   if (p === LLM_RELEASE_MARKER || isLlmReleasePath(p)) return false;
+  if (!p || isRefused(p) || isJunk(p) || p === 'data/local-assets.json' || p === 'data/local-fx.json' || p === GENERATED_PACK_INDEX) return false;
   if (NOT_TRACKED_SHIP.some((d) => p.startsWith(d))) return false;
   if (isPluginResource(p) || AUTHOR_TEST_FILES.includes(p)) return true;
   if (RUNTIME_DIRS.some((d) => p.startsWith(d)) || PLAYER_TOOL_DIRS.some((d) => p.startsWith(d))) return true;
-  return ROOT_FILES.includes(p) || PLAYER_DOCS.includes(p) || RUNTIME_RESEARCH.includes(p) || PLAYER_SCRIPTS.includes(p) || PLAYER_TOOLS.includes(p);
+  return ROOT_FILES.includes(p) || PLAYER_DOCS.includes(p) || RUNTIME_RESEARCH.includes(p) || PLAYER_SCRIPTS.includes(p) || PLAYER_TOOLS.includes(p)
+    || STARDUST_NAME_RUNTIME.includes(p) || FEEDBACK_RUNTIME.includes(p);
 }
 
 /**
@@ -447,7 +458,8 @@ export function playerPackageProblems(pkg, files) {
 }
 
 /**
- * `v` + version, with a trailing `-dev` removed (`0.2.5-dev` → `v0.2.5`, `0.2.4` → `v0.2.4`).
+ * This fork's 0.2.5, 0.2.6 and 0.3.0 bundles point at their six-player release tags. Other versions use `v` + version,
+ * with a trailing `-dev` removed (`0.2.5-dev` → `v0.2.5`, `0.2.4` → `v0.2.4`).
  * [ASSUMED] an unreleased `-dev` build points player docs at the tag that version will use.
  * @param {string} version
  */
@@ -498,6 +510,21 @@ export function rewritePlayerDoc(text, fromFile, shipped, version) {
     return rewriteDocLine(line, fromFile, shipped, version);
   }).join('\n');
 }
+// Inline code first (the backtick group), then markdown links — a link-looking text inside code spans is not a link.
+const DOC_LINK_OR_CODE = /(?<!\\)(`+).*?\1(?!`)|(!?\[[^\]]*\]\()([^)\s]+)\)/g;
+
+/** Every markdown link of a document outside fenced code and inline code spans, as `[match, prefix, href]` triples. */
+export function markdownLinkMatches(text) {
+  const out = [];
+  let fenced = false;
+  for (const line of String(text).split('\n')) {
+    if (/^```/.test(line)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    for (const m of line.matchAll(DOC_LINK_OR_CODE)) if (!m[1]) out.push([m[0], m[2], m[3]]);
+  }
+  return out;
+}
+
 
 /**
  * Names refused in the personal scan: this machine's account name (unless SP_PACKAGE_SCAN_USER=0, a generic or short
@@ -662,9 +689,9 @@ export function packageOutIsUnsafe(out, root = REPO) {
   const inside = (a, b) => { const rel = path.relative(a, b); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
   return inside(r, o) || inside(o, r);
 }
-
 /** The first non-empty line of a tool's stderr: what it refused, before the usage hint tools print after it. */
 const errLine = (text) => String(text || '').trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || '';
+
 
 /**
  * Zip `cwd`/`folder` (FOLDER unless named: the asset pack's folder) into `zipPath`: Info-ZIP `zip`, else a bsdtar
@@ -715,7 +742,10 @@ export function stageProblems(stage, planned, { env = process.env, libsPlanned =
   const problems = [];
   const staged = listTree(stage, '', { junk: true });
   const held = libsPlanned ? staged : staged.filter((f) => !isLib(f));
-  for (const f of held) if (!planned.has(f)) problems.push(`in the stage but not planned: ${f}`);
+  for (const f of held) {
+    if (!planned.has(f)) problems.push(`in the stage but not planned: ${f}`);
+    if (isRefused(f) || isJunk(f)) problems.push(`refused: ${f}`);
+  }
   const have = new Set(held);
   for (const f of planned) if (!have.has(f)) problems.push(`planned but not staged: ${f}`);
   // test/ is present for the one author helper; check its leaves, and every plugin leaf, against the same allowlist.
@@ -950,7 +980,7 @@ export function assetPackReadme(p) {
     '文件「校验不符」，那个版本不再列出的文件被「跳过」，都不会收下，游戏照常从服务器加载它们。',
     '',
     '【怎么导入】',
-    '1. 用 HTTPS 地址或本机的 http://localhost 打开游戏（http://局域网IP 不能导入，浏览器不允许）。',
+    '1. 打开游戏；HTTPS、http://localhost 和 http://局域网IP 都可以导入，浏览器需允许本地存储。',
     '2. 在标题画面点「导入素材包」，再点「选择 zip」选这个文件，或把它拖进窗口；',
     '   解压以后也可以点「选择文件夹」，选解压出来的文件夹。',
     '3. 等进度走完。结果里「跳过 1 个」是这份说明本身。',
@@ -976,8 +1006,7 @@ export function assetPackReadme(p) {
     'the game loads those from the server as usual.',
     '',
     '[How to import]',
-    '1. Open the game over HTTPS, or at http://localhost on the computer that runs the server (a plain http:// LAN address',
-    '   cannot import: the browser does not allow it).',
+    '1. Open the game over HTTPS, http://localhost, or a plain http:// LAN address. Browser local storage must be available.',
     '2. On the title screen press "Import asset pack", then "Choose zip" and pick this file, or drop it on the dialog.',
     '   After unzipping, "Choose folder" takes the unzipped folder too.',
     '3. Wait for the progress bar. The one skipped file in the result is this text.',

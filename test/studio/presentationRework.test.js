@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { fixture } from '../helpers/contentFixtures.js';
 import { png } from '../helpers/pluginFixtures.js';
+import { link } from '../helpers/links.js';
 import { createPlugin, templateById, manifestText } from '../../server/studio/templates/index.js';
 import { createPluginFiles } from '../../server/studio/files.js';
 import { createAuthoring } from '../../server/studio/authoring.js';
@@ -137,13 +138,13 @@ test('P2: external overlay effect sheets enforce decoding and FX subset, ordinar
 });
 
 test('candidates refuse hidden links before staging, use clone fallback, and clean failed edits/timeouts', async t => {
-  const m = setup(t); fs.symlinkSync(m.dir, path.join(m.dir, '.hidden'));
+  const m = setup(t); link(m.dir, path.join(m.dir, '.hidden'), 'dir');
   await assert.rejects(editMediaDraft(m.files, m.id, () => assert.fail('must not stage'), { dataDir: path.resolve('data') }), { code: 'PLUGIN_STUDIO_PATH' });
   noCandidates(m); fs.unlinkSync(path.join(m.dir, '.hidden'));
-  const link = fs.linkSync, copy = fs.copyFileSync; let cloned = 0;
+  const linkSync = fs.linkSync, copy = fs.copyFileSync; let cloned = 0;
   fs.linkSync = () => { throw Object.assign(new Error('cross-device'), { code: 'EXDEV' }); };
   fs.copyFileSync = (from, to, flags) => { assert.equal(flags, fs.constants.COPYFILE_FICLONE); cloned++; return copy(from, to, flags); };
-  try { const c = createCandidate(m.files, m.id); c.cleanup(); } finally { fs.linkSync = link; fs.copyFileSync = copy; }
+  try { const c = createCandidate(m.files, m.id); c.cleanup(); } finally { fs.linkSync = linkSync; fs.copyFileSync = copy; }
   assert.ok(cloned); noCandidates(m);
   await assert.rejects(editMediaDraft(m.files, m.id, () => { throw new Error('edit failure'); }, { dataDir: path.resolve('data') })); noCandidates(m);
   await assert.rejects(checkCandidate({ dir: m.dir }, { timeoutMs: 1 }), { code: 'PLUGIN_STUDIO_TRIAL_TIMEOUT' });

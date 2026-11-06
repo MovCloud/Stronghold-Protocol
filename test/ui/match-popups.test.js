@@ -47,7 +47,7 @@ test("phasePopupOf: 联防 gets the plate (the official faces) with the banner's
 });
 
 test('the round plate fits inside 回合开始 (server DELAYS.ROUND_START)', () => {
-  const delay = Number(read('server/match/match/common.js').match(/ROUND_START:\s*(\d+)/)?.[1]);
+  const delay = Number(read('server/match/match/common.js').match(/ROUND_START:\s*(?:delay\('[^']+',\s*)?(\d+)/)?.[1]);
   assert.ok(delay > 0);
   assert.ok(P.ROUND_POPUP_MS + 280 <= delay, `${P.ROUND_POPUP_MS} + the fold within ${delay} ms`);
 });
@@ -65,7 +65,9 @@ test('the official roundStartDialog sprites it draws are in the asset list', () 
 
 test('screens/game.js: the round plate at 回合开始, 获得 only for the players still in, the other banners kept', () => {
   const g = read('public/js/screens/game.js');
-  assert.match(g, /if \(phase === PHASE\.ROUND_START && b && pub\?\.round > 0\) \{\n\s+setBanner\(null\);\n\s+setRoundPop\(\{ round: pub\.round, left: roundsToBoss\(pub\), sub: b\.sub, watching: spectator \|\| !alive, key: phaseKey \}\);/);
+  // (this fork: the boss round's and the hidden round's 回合开始 open with their plates first — test/ui/boss-plates.test.js)
+  assert.match(g, /const roundStart = phase === PHASE\.ROUND_START && pub\?\.round > 0;/);
+  assert.match(g, /\} else if \(roundStart && b\) \{\n\s+setBanner\(null\);\n\s+setRoundPop\(\{ round: pub\.round, left: roundsToBoss\(pub\), sub: b\.sub, watching: spectator \|\| !alive, key: phaseKey \}\);/);
   assert.match(g, /<\$\{RoundPopup\} key=\$\{roundPop\.key\} round=\$\{roundPop\.round\} gain=\$\{roundGain\} left=\$\{roundPop\.left\} sub=\$\{roundPop\.sub\}\n\s+watching=\$\{roundPop\.watching\}/);
   assert.match(g, /\$\{!hasOffers && banner && !banner\.plate && !roundPop \? html`<\$\{PhaseBanner\}/, 'the other phases keep the banner, while an offer dialog stays unobscured');
   assert.match(g, /useEffect\(\(\) => \{ preloadPopupArt\(\); \}, \[\]\);/);

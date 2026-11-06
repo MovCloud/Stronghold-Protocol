@@ -1,4 +1,4 @@
-// server/sim/content/support/meta.js — prep-side helpers shared by content wave B (docs/META.md registry API).
+// server/sim/content/support/meta.js — prep-side helpers shared by content wave B (docs/development/META.md registry API).
 //
 // registerSupportMeta(registry) is called once from bonds.js → registerMeta. It installs
 //   global:contentb_info   onBattleStart: writes `ev.input.contentInfo` (read in battles with support.contentInfo()):
@@ -42,7 +42,7 @@ export function registerSupportMeta(registry) {
           gainedChess: rs.gainedChess | 0, arts: rs.arts | 0,
         },
         matchBands,
-        teammates: mates.map((t) => ({ playerId: t.playerId, bandId: t.bandId() })),
+        teammates: mates.map((t) => ({ playerId: t.playerId, bandId: t.bandId(), bandIds: typeof t.bandIds === 'function' ? t.bandIds() : [t.bandId()].filter(Boolean) })),
       };
     },
   });

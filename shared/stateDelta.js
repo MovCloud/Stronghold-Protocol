@@ -1,14 +1,20 @@
-// Opt-in state-delta v1. Only m.public / m.private use this transport; all other messages keep their wire format.
-// Arrays of equal length are patched by index. Length/type changes replace the subtree (no splice ambiguity).
-// Applying a patch is copy-on-write: already emitted views are never changed.
+// State-delta transport v1 (opt-in per socket; after xinhai-ai/Stronghold-Protocol 2abc60f, GPL-3.0-or-later).
+// Only m.public / m.private ride it: the server wraps them as m.state { kind, seq, full } or { kind, seq, base, patch };
+// every other message keeps its wire format. A socket that never negotiated (hello.stateDelta) gets plain frames.
+// Arrays of equal length are patched by index; a length or type change replaces the subtree (no splice ambiguity).
+// Applying a patch is copy-on-write: an emitted view, a baseline and the previous view are never changed.
 export const STATE_DELTA_VERSION = 1;
 export const isStateKind = (kind) => kind === 'm.public' || kind === 'm.private';
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const safeKey = (k) => typeof k === 'string' && !['__proto__', 'prototype', 'constructor'].includes(k);
+const safeKey = (k) => typeof k === 'string' && k !== '__proto__' && k !== 'prototype' && k !== 'constructor';
 const MAX_OPS = 4096;
 const MAX_DEPTH = 64;
 
-/** Diff JSON values. null means use a full frame instead. Ops: [path, value] sets; [path] deletes an object key. */
+/**
+ * Diff two JSON values. Ops: [path, value] sets, [path] deletes an object key. null: send a full frame instead
+ * (too many ops, too deep, or an unsafe key).
+ * @returns {Array<[Array<string|number>, any] | [Array<string|number>]> | null}
+ */
 export function diffState(before, after) {
   const ops = [], path = [];
   let overflow = false;
@@ -28,10 +34,9 @@ export function diffState(before, after) {
       for (let i = 0; i < b.length && !overflow; i++) child(i, a[i], b[i]);
     } else if (record(a) && record(b)) {
       for (const key of Object.keys(a)) {
-        if (!Object.hasOwn(b, key)) {
-          if (!safeKey(key)) { overflow = true; return; }
-          path.push(key); emit(undefined, true); path.pop();
-        }
+        if (Object.hasOwn(b, key)) continue;
+        if (!safeKey(key)) { overflow = true; return; }
+        path.push(key); emit(undefined, true); path.pop();
         if (overflow) return;
       }
       for (const key of Object.keys(b)) {
@@ -44,13 +49,15 @@ export function diffState(before, after) {
       emit(b);
     }
   };
+  // The top level is always a record carrying `t`, never replaced as a whole.
+  if (!record(before) || !record(after) || before.t !== after.t) return null;
   walk(before, after);
   return overflow ? null : ops;
 }
 
-/** Throws on malformed paths/ops; failure cannot mutate the baseline or a previously emitted view. */
+/** Apply diffState ops copy-on-write. Throws on a malformed op or path; a failure changes nothing. */
 export function applyStatePatch(base, ops) {
-  if (!Array.isArray(ops) || ops.length > MAX_OPS) throw new Error('bad patch');
+  if (!record(base) || !Array.isArray(ops) || ops.length > MAX_OPS) throw new Error('bad patch');
   let next = base;
   const update = (node, path, index, op) => {
     const key = path[index];
@@ -78,42 +85,50 @@ export function applyStatePatch(base, ops) {
   return next;
 }
 
-/** Browser transport decoder. A gap blocks that channel until a full frame; request one coalesced resync. */
+/**
+ * Browser decoder, one per socket (reset with the socket: the server keeps its baselines per socket too).
+ * receive() answers the decoded m.public / m.private, `null` for a duplicate, or `{ failed: true }` when the chain is
+ * broken (a delta without its base, a malformed frame) — the caller then reconnects, which restarts both sides with
+ * full frames. The view handed out is a private copy: the UI may mutate it without touching the next baseline.
+ */
 export class StateReceiver {
   constructor() {
+    /** @type {Map<string, { seq: number, view: any }>} */
     this.states = new Map();
+    /** Lanes waiting for a full frame (a broken chain): the next full frame on them is a resync. */
     this.missing = new Set();
   }
 
   reset() { this.states.clear(); this.missing.clear(); }
 
-  /** @returns {{ message: any, resync: boolean }} */
+  /** A broken chain blocks its lane until a full frame re-syncs it (Misyra backpressure semantics). */
+  fail(kind) {
+    // One request covers every channel: the server re-sends the whole room state at once (public/js/net.js), so a
+    // second lane that breaks while one is already waiting does not ask again.
+    const resync = this.missing.size === 0;
+    this.missing.add(kind);
+    return { failed: true, resync };
+  }
+
+  /** @returns {{ message: any, resync: boolean } | { failed: true, resync: boolean } | null} */
   receive(frame) {
-    const { kind, seq } = frame;
-    if (!isStateKind(kind)) return { message: null, resync: false };
-    const fail = () => {
-      this.states.delete(kind);
-      const resync = this.missing.size === 0;
-      this.missing.add(kind);
-      return { message: null, resync };
-    };
-    if (!Number.isSafeInteger(seq) || seq <= 0) return fail();
-    const previous = this.states.get(kind);
-    if (previous?.seq === seq) return { message: null, resync: false }; // duplicate, never emit twice
-    // A full frame is a baseline only when it is NEWER than the one this channel holds. An older or reordered one
-    // would rewind the baseline and make every following delta fail, so it is dropped exactly like a stale delta.
-    if (previous && seq < previous.seq) return fail();
+    const kind = frame?.kind, seq = frame?.seq;
+    if (!isStateKind(kind)) return { failed: true, resync: false }; // not a state frame at all: there is no lane to block
+    if (!Number.isSafeInteger(seq) || seq <= 0) return this.fail(kind); // a state frame we cannot use blocks its lane
+    let view;
     if (Object.hasOwn(frame, 'full')) {
-      if (!record(frame.full) || frame.full.t !== kind) return fail();
-      this.states.set(kind, { seq, view: frame.full });
-      this.missing.delete(kind);
-      return { message: frame.full, resync: false };
+      if (!record(frame.full) || frame.full.t !== kind) return this.fail(kind);
+      view = frame.full;
+    } else {
+      const previous = this.states.get(kind);
+      if (previous?.seq === seq) return null; // a duplicate is never emitted twice
+      if (!previous || frame.base !== previous.seq) { this.states.delete(kind); return this.fail(kind); }
+      try { view = applyStatePatch(previous.view, frame.patch); } catch { this.states.delete(kind); return this.fail(kind); }
     }
-    if (!previous || frame.base !== previous.seq || seq <= previous.seq) return fail();
-    try {
-      const view = applyStatePatch(previous.view, frame.patch);
-      this.states.set(kind, { seq, view });
-      return { message: view, resync: false };
-    } catch { return fail(); }
+    this.states.set(kind, { seq, view });
+    this.missing.delete(kind);
+    // The stored view is the next baseline (and shares subtrees with the previous one): hand out a copy.
+    // JSON round trip, not structuredClone (missing in some supported Safari versions).
+    return { message: JSON.parse(JSON.stringify(view)), resync: false };
   }
 }

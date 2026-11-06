@@ -1,14 +1,13 @@
 // Client entry: boot (fonts, identity, socket), net → store wiring, router, global overlays.
 //
-// Router (derived from the store, no URL routes):
-//   not entered            → Title
+// Router (derived from the store, no URL routes; no title screen — the nickname: ui/nickname.js):
 //   m.public.phase ≠ LOBBY → Game (screens/game.js: briefing / band draft / match / result by phase)
 //   room.inMatch           → Game (match starting, m.public on its way)
 //   in a room              → Room
 //   otherwise              → Lobby
-// Deep link `?room=CODE`: remembered at boot, auto-joined once the player has entered and the
+// Deep link `?room=CODE`: remembered at boot, auto-joined once the player has a name and the
 // session is online (after a short grace period in case the server restores a room on resume).
-// Reloading a tab that already passed the title re-enters automatically (sessionStorage flag) and
+// Boot connects with the remembered nickname (the gate's callsign; a first visit: 博士 + four digits) and
 // resumes the server session with the saved token; stale room/match state is dropped if the
 // server does not re-push it within RESTORE_GRACE_MS after `welcome`. Boot waits for
 // `identity.init()` (which token this tab may use without stealing another live tab's session)
@@ -40,33 +39,46 @@
 // Polyfills first (older Safari / Firefox ESR): every module evaluated after this one sees them.
 import './ui/compat.js';
 import { render } from '../vendor/preact.module.js';
-import { useErrorBoundary } from '../vendor/hooks.module.js';
-import { html, UiHosts, Button, MicroLabel, closeAllDialogs } from './ui/components.js';
+import { useEffect, useErrorBoundary } from '../vendor/hooks.module.js';
+import { html, UiHosts, Button, MicroLabel, closeAllDialogs, confirmDialog } from './ui/components.js';
 import { ConnectionBanner } from './ui/connBanner.js';
+import { AnnouncementBanner, AnnouncementHost } from './ui/announcement.js';
+import { announcementFromMessage } from '../../shared/announcements.js';
+import { MatchNotice, matchNoticeText, replayingRound, MATCH_NOTICE_REFRESH_MS } from './ui/matchNotice.js';
+import { controlActionName } from './ui/matchControl.js';
 import { ToastHost, toast, toastError, describeError } from './ui/toasts.js';
 import { net, identity, NetError } from './net.js';
+import { createAuthProbe } from './authProbe.js';
+import './queueCancellation.js';
 import { store, useStore, emptyMatch, selectRoute, sessionResetNotice, isSpectating } from './store.js';
-import { data } from './data.js';
+import { data, useData } from './data.js';
 import { GAME_FILES } from './ui/gameComponents.js';
-import { TitleScreen, sanitizeName } from './screens/title.js';
-import { LobbyScreen, rememberRoom, parseRoomParam, joinKnown } from './screens/lobby.js';
+import { NameHost, sanitizeName, defaultName } from './ui/nickname.js';
+import { LobbyScreen, rememberRoom, parseRoomParam, joinRoom } from './screens/lobby.js';
 import { RoomScreen, TrustedNotice } from './screens/room.js';
 import { GameScreen } from './screens/game.js';
 import { preloadBootArt } from './ui/protocolBoot.js';
 import { audio, installAudio } from './audio.js';
+import { roomCue, cueGate } from './ui/roomCues.js';
 import { installLobbyMedia } from './ui/lobbyMedia.js';
 import { settingsStore } from './ui/settings.js';
+import { matchMusic, installLobbyMusic } from './ui/lobbyMusic.js';
 import { GuideHost } from './ui/guide.js';
 import { installDeviceSupport, useFullscreen, useScreenWakeLock } from './ui/device.js';
 import { isCombatPhase } from './ui/gameLogic/phases.js';
 import { registerImportedAssetWorker } from './assetCache.js';
+import { installAssetHints } from './ui/assetSection.js';
+import { loadAssetSource } from './assetDownload.js';
+import { loadSiteConfig } from './ui/siteConfig.js';
+import { codeSource } from './codeSource.js';
 import { LoadoutHost } from './screens/loadout.js';
 import { StatsHost, useStatsOpen } from './screens/stats.js';
 import { CoveredVersionVote } from './ui/versionVote.js';
 import { installRehearsal } from './battle/rehearsal.js';
-import { recordResult, installStatsRecorder } from './ui/stats.js';
+import { recordResult, recordQuit, installStatsRecorder } from './ui/stats.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync, installSkinsSync, installCardSync, installSettingsViews, loadoutStore } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { acceptDamageSnapshot } from './ui/damageBoard.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 import { recordError, installTrafficMeter } from './diag.js';
@@ -76,10 +88,12 @@ import { sanitizeVersions, roomVersion, isDefaultVersion, matchFrameVersion } fr
 
 const RESTORE_GRACE_MS = 1500;
 const JOIN_DELAY_MS = 350;
+/** The gap between the hellos that ask again for a shared seat after SESSION_IN_USE (identity.retryClaim). */
+const CLAIM_RETRY_GAP_MS = 5000;
 const TICKER_KEEP = 20;
 const EMOTE_KEEP = 20;
 
-const SCREENS = { title: TitleScreen, lobby: LobbyScreen, room: RoomScreen, game: GameScreen };
+const SCREENS = { lobby: LobbyScreen, room: RoomScreen, game: GameScreen };
 
 /** Copy of a server message without transport fields. */
 function payload(msg) {
@@ -105,6 +119,17 @@ let matchAt = 0;
 let restoreTimer = null;
 let joinTimer = null;
 let joinInFlight = false;
+let claimRetryTimer = null;
+let claimRetrying = false;
+const authProbe = createAuthProbe({
+  ask: () => confirmDialog({
+    title: t('登录已失效'),
+    text: t('登录已过期，无法连接服务器。重新登录后会自动回到当前对局。'),
+    okText: t('重新登录'),
+    cancelText: t('取消'),
+    micro: 'SIGN-IN EXPIRED',
+  }),
+});
 /** The rehearsal installer (battle/rehearsal.js): its tasks follow the match on screen (see wireNet's store hook). */
 let rehearsal = null;
 
@@ -127,7 +152,7 @@ function schedulePendingJoin() {
     }
     joinInFlight = true;
     try {
-      await joinKnown('room.join', code);
+      await joinRoom(code);
     } catch (err) {
       toastError(err);
     } finally {
@@ -160,21 +185,33 @@ function backToLobby() {
   const s = store.get();
   if (s.room || s.match.public) closeAllDialogs();
   store.set({ room: null, match: emptyMatch(), ticker: [], emotes: [] });
-  store.patch('ui', { restoring: false });
+  store.patch('ui', { restoring: false, resumed: false });
 }
 
 /** The unofficial plugins a server counts in welcome / /healthz `content.plugins` (absent: none — DESIGN §32 P1a). */
 const pluginCount = (content) => (content && Number.isInteger(content.plugins) && content.plugins > 0 ? content.plugins : 0);
 
+// the first room state after a welcome re-sends the room as it was (reconnect / restored page): no room cue for it
+let roomCueQuiet = false;
+const roomCueGate = cueGate();
+
 function onWelcome(msg) {
+  roomCueQuiet = true;
+  clearTimeout(claimRetryTimer);
+  claimRetryTimer = null;
+  claimRetrying = false;
+  authProbe.onWelcome();
   identity.saveToken(msg.token);
   identity.rememberMatch(null);
   const prev = store.get();
   const prevId = prev.me.playerId;
   const name = typeof msg.name === 'string' && msg.name ? msg.name : prev.me.name;
-  identity.saveName(name);
+  if (name) {
+    identity.saveName(name);
+    try { localStorage.setItem('ark.callsign', name); } catch { /* storage may be unavailable */ }
+  }
   store.set({
-    me: { playerId: msg.playerId ?? null, name, token: typeof msg.token === 'string' ? msg.token : null },
+    me: { playerId: msg.playerId ?? null, name, token: typeof msg.token === 'string' ? msg.token : null, ...(msg.owner === true ? { owner: true } : {}) },
     // the server's content identity (DESIGN §32): the diagnostics name it (diag.js contentLine)
     content: msg.content && typeof msg.content.vanilla === 'string' ? { vanilla: msg.content.vanilla } : null,
     // how many unofficial plugins it has (P1a — absent: none; content.js fetches the catalogue only when there are some)
@@ -185,6 +222,11 @@ function onWelcome(msg) {
     versions: sanitizeVersions(msg.versions),
   });
   welcomeAt = Date.now();
+  // The server rebound this tab's session: until its match state (or a room outside a match) arrives, a match screen
+  // still loading is a match being restored after a server restart (ui/gameLoading.js 正在恢复对局…).
+  store.patch('ui', { resumed: msg.resumed === true });
+  // A retained ticket is not a fresh population sample from this new socket.
+  if (Object.hasOwn(prev.queue || {}, 'waitingCount')) store.set({ queue: { ...prev.queue, waitingCount: undefined } });
 
   if (msg.takeoverFrom === prevId && prevId != null) {
     toast(t('你已接管AI席位，资金、阵容与席位已保留'), 'info');
@@ -193,6 +235,7 @@ function onWelcome(msg) {
     // expired on it): whatever we showed before is gone — back to the lobby cleanly and say why.
     const notice = sessionResetNotice(prev, msg.playerId);
     backToLobby();
+    store.set({ queue: { state: 'idle', ticketId: null }, presence: null });
     if (notice) toast(t(notice), 'warn', { ttl: 7000 });
   } else if (prev.room || prev.match.public) {
     // Resumed session: the server re-pushes room/match state; drop whatever it doesn't.
@@ -222,6 +265,9 @@ function onRoomState(msg) {
     return;
   }
   const prevRoom = store.get().room;
+  const cue = roomCue(prevRoom, room, myId, { quiet: roomCueQuiet });
+  roomCueQuiet = false;
+  if (cue && roomCueGate(cue)) audio.sfx(cue, { volume: 0.7 });
   // A (new) match starts: forget the previous match's state so stale results never show.
   if (room.inMatch && !(prevRoom && prevRoom.inMatch && prevRoom.code === room.code)) store.set({ match: emptyMatch() });
   // The room switched its version (DESIGN §35.23): a result still on screen (a settlement, a spectator's view) names the old
@@ -230,7 +276,8 @@ function onRoomState(msg) {
   store.set({ room });
   identity.rememberMatch(room.inMatch && seats.some((seat) => seat?.playerId === myId)
     ? { name: store.get().me.name, code: room.code || '' } : null);
-  if (room.mode === 'coop' && typeof room.code === 'string') rememberRoom(room.code, room.test === true);
+  if (room.mode === 'coop' && typeof room.code === 'string') rememberRoom(room.code);
+  if (!room.inMatch && store.get().ui.resumed) store.patch('ui', { resumed: false });
   maybeFinishRestore();
 }
 
@@ -238,22 +285,78 @@ const CLOSE_REASON = {
   // 'timeout' = this player was removed after staying disconnected past the lobby grace (server/lobby.js)
   host_left: N_('创建者已离开，同盟已解散'), timeout: N_('由于长时间断开连接，你已离开同盟'), empty: N_('同盟已解散'),
   kicked: N_('你已被移出同盟'), ended: N_('模拟已结束'), expired: N_('同盟已过期'), shutdown: N_('服务器维护中，同盟已关闭'),
+  // the match's game node restarted / stopped answering, so its match cannot continue (server/cluster/coordinator.js closeReasonFor)
+  'node-restarted': N_('对局服务器已重启，本局模拟已中断'), 'node-unavailable': N_('对局服务器连接中断，本局模拟已结束'),
+  // 挂机移出 while offline: the next connection hears it here instead of m.removed (server Match _removeIdle)
+  afk: N_('连续多个回合没有任何操作，你已被移出对局'),
+};
+
+/**
+ * The outcome lines of the match's votes (m.notice): 重刷本局 (setupVote.js), 投票移出 (kickVote.js) and 比赛控制
+ * (matchControl.js) — the vote panels vanish when a vote ends, so its result is told here. [text, toast kind] or null.
+ */
+const VOTE_NOTICE = {
+  rerollPassed: () => [t('重刷投票通过，开局信息已重新随机'), 'success'],
+  rerollFailed: (m) => [m.reason === 'timeout' ? t('重刷投票超时，未通过') : t('重刷投票未通过'), 'info'],
+  rerollCancelled: () => [t('重刷投票已取消'), 'info'],
+  kickPassed: (m) => [t('{name} 已被投票移出对局', { name: typeof m.name === 'string' && m.name ? m.name : t('博士') }), 'info'],
+  kickFailed: (m) => [m.reason === 'timeout' ? t('移出投票超时，未通过') : t('移出投票未通过'), 'info'],
+  kickCancelled: (m) => [m.reason === 'reconnected' ? t('该玩家已重新连接，移出投票取消') : t('移出投票已取消'), 'info'],
+  // 比赛控制 (ui/matchControl.js controlActionName): the action that the whole room agreed to. `solo` (the server's
+  // soloUntimed: 独立模拟, or a 同盟 room with AI teammates only — the same rule that leaves its phases untimed)
+  // means there was no vote: the server applied it directly, so the line names the result only.
+  controlPassed: (m) => {
+    if (m.solo) {
+      if (m.action === 'pause') return [t('已暂停'), 'info'];
+      if (m.action === 'resume') return [t('已继续作战'), 'info'];
+      return [t('已修改为 {n} 倍速', { n: m.speed }), 'success'];
+    }
+    return [t('控制投票通过，{action}已生效', { action: controlActionName(m.action) }), 'success'];
+  },
+  controlRejected: (m) => [m.reason === 'timeout' ? t('控制投票超时，未通过') : t('控制投票未通过'), 'info'],
+  controlCancelled: (m) => [t('控制投票已取消'), 'info'],
 };
 
 function wireNet() {
   net.on('status', (snap) => {
+    authProbe.onStatus(snap);
     const cur = store.get().connection;
     store.set({
+      ...(snap.status !== 'online' && Object.hasOwn(store.get().queue || {}, 'waitingCount')
+        ? { queue: { ...store.get().queue, waitingCount: undefined } } : {}),
       connection: {
-        status: snap.status, ping: snap.ping, attempt: snap.attempt, retryAt: snap.retryAt,
+        status: snap.status, ping: snap.ping, loadState: snap.loadState ?? 'unknown', loadDetails: snap.loadDetails ?? null, clusterLoad: snap.clusterLoad ?? null, attempt: snap.attempt, retryAt: snap.retryAt,
         lastError: snap.lastError, everOnline: cur.everOnline || snap.status === 'online',
       },
     });
   });
   net.on('clock', (c) => store.set({ clock: { offset: c.offset, rtt: c.rtt, synced: c.synced } }));
   net.on('welcome', onWelcome);
+  net.on('presence.state', (msg) => store.set({ presence: payload(msg) }));
+  // Admin-published site notices (server/announcements.js); display components live in ui/announcement.js.
+  net.on('site.announcement', (msg) => store.set({
+    announcement: announcementFromMessage(msg), popupAnnouncement: announcementFromMessage(msg, 'popup') }));
+  net.on('queue.state', (msg) => store.set({ queue: payload(msg) }));
   net.on('helloError', (err) => {
-    if (err.code === 'SESSION_IN_USE') identity.rejectToken();
+    if (err.code === 'SESSION_IN_USE') {
+      // A shared seat's holder may be a socket the server has not seen drop yet: ask again for a while before giving
+      // the seat up for a new identity (identity.retryClaim); the deep-linked join waits for the welcome meanwhile.
+      if (identity.retryClaim()) {
+        if (!claimRetrying) toast(t('正在恢复上一局…'), 'info', { ttl: CLAIM_RETRY_GAP_MS });
+        claimRetrying = true;
+        clearTimeout(claimRetryTimer);
+        claimRetryTimer = setTimeout(() => { claimRetryTimer = null; net.reconnectNow(net.name); }, CLAIM_RETRY_GAP_MS);
+        return;
+      }
+      claimRetrying = false;
+      identity.rejectToken();
+    }
+    if (err.code === 'NAME_REJECTED') {
+      // ui/nickname.js NameHost asks for another name over the screen; room/token stay: correcting a legacy name must
+      // not abandon its game
+      store.set({ session: { entered: false } });
+    }
+    if (err.code === 'SERVER_FULL') return; // the connection banner shows it and counts down to the automatic retry
     toastError(err);
   });
   net.on('replaced', () => toast(t('该身份已在其他页面登录，本页已断开'), 'warn', { ttl: 6000 }));
@@ -264,13 +367,23 @@ function wireNet() {
     const known = Object.hasOwn(CLOSE_REASON, String(msg.reason)) ? CLOSE_REASON[msg.reason] : null;
     toast(known ? t(known) : typeof msg.reason === 'string' && msg.reason.length < 60 ? t('同盟已关闭：{reason}', { reason: msg.reason }) : t('同盟已关闭'), 'warn');
   });
-  net.on('m.public', (msg) => { matchAt = Date.now(); store.patch('match', { public: payload(msg) }); maybeFinishRestore(); });
+  net.on('m.public', (msg) => {
+    matchAt = Date.now();
+    store.patch('match', { public: payload(msg) });
+    if (store.get().ui.resumed) store.patch('ui', { resumed: false });
+    maybeFinishRestore();
+  });
   net.on('m.private', (msg) => { matchAt = Date.now(); store.patch('match', { private: payload(msg) }); });
   net.on('m.layer', (msg) => {
     const s = store.get();
     if (selectRoute(s) === 'game' && msg.playerId === s.me?.playerId) audio.layerGain(msg.bondId, msg.add);
   });
   net.on('m.field', (msg) => store.patch('match', { field: payload(msg) }));
+  net.on('m.damage', (msg) => {
+    const s = store.get(), view = s.match.public;
+    const damage = acceptDamageSnapshot(s.match.damage, payload(msg), view?.matchId || view?.revival?.matchId);
+    if (damage !== s.match.damage) store.patch('match', { damage });
+  });
   net.on('m.result', (msg) => {
     const res = payload(msg);
     store.patch('match', { result: res });
@@ -280,9 +393,10 @@ function wireNet() {
     // (`content`: the room's content set when it played gameplay plugins — such a match is unofficial: ui/stats.js)
     // (`version`: the official version the match played, DESIGN §35.23 — the room's, or the result's own `version` when
     // it arrives after the room is gone, also to a freshly loaded page; only a non-default one is written)
+    // (`lastRound`: m.result never carries the match's round cap, so the public state supplies it — ui/stats.js)
     const s = store.get();
     const version = s.room ? roomVersion(s.room) : matchFrameVersion({ result: res, public: s.match.public });
-    if (s.room?.test !== true && s.match.public?.test !== true) recordResult(res, { myId: s.me.playerId, roomMode: s.room?.mode ?? null, vs: s.room?.content?.vs ?? null, content: s.room?.content ?? null, version: isDefaultVersion(version) ? null : version, now: Date.now() });
+    if (s.room?.test !== true && s.match.public?.test !== true) recordResult(res, { myId: s.me.playerId, roomMode: s.room?.mode ?? null, vs: s.room?.content?.vs ?? null, content: s.room?.content ?? null, version: isDefaultVersion(version) ? null : version, lastRound: s.match.public?.lastRound ?? null, now: Date.now() });
   });
   net.on('m.toast', (msg) => {
     const kind = ['info', 'success', 'warn', 'error'].includes(msg.kind) ? msg.kind : 'info';
@@ -300,11 +414,30 @@ function wireNet() {
     const priority = Number.isFinite(msg.priority) ? msg.priority : 0;
     store.set((s) => ({ ticker: [...s.ticker.slice(-(TICKER_KEEP - 1)), { id: ++seq, text, at: Date.now(), type, playerId, round: s.match?.public?.round ?? null, priority }] }));
   });
+  // 挂机移出 (server Match afkRemoveRounds): a human with no real action for N rounds in a row leaves the match like a
+  // quitter. The removed player gets m.removed — out of the room too, the run recorded as a quit, back to the lobby —
+  // and everyone else m.notice afkRemoved.
+  net.on('m.removed', async (msg) => {
+    const before = store.get();
+    const rounds = Number.isInteger(msg.rounds) && msg.rounds > 0 ? msg.rounds : 2;
+    try { await net.request('room.leave', {}); } catch { /* already out of the room */ }
+    if (!store.get().match.result) {
+      try { recordQuit(before); } catch (err) { console.warn('[stats] quit record failed', err); }
+    }
+    backToLobby();
+    toast(msg.reason === 'afk' ? t('连续 {n} 回合没有任何操作，你已被移出对局', { n: rounds }) : msg.reason === 'kicked' ? t('你掉线期间被队友投票移出了对局') : t('你已被移出对局'), 'warn', { ttl: 10000 });
+  });
+  net.on('m.notice', (msg) => {
+    if (VOTE_NOTICE[msg.kind]) { const n = VOTE_NOTICE[msg.kind](msg); if (n) toast(n[0], n[1], { ttl: 5000 }); return; }
+    if (msg.kind !== 'afkRemoved') return;
+    const rounds = Number.isInteger(msg.rounds) && msg.rounds > 0 ? msg.rounds : 2;
+    toast(t('{name} 连续 {n} 回合没有任何操作，已被移出对局', { name: typeof msg.name === 'string' && msg.name ? msg.name : t('博士'), n: rounds }), 'info', { ttl: 6000 });
+  });
   net.on('m.emote', (msg) => {
     store.set((s) => ({ emotes: [...s.emotes.slice(-(EMOTE_KEEP - 1)), { seq: ++seq, playerId: msg.playerId, id: msg.id, at: Date.now() }] }));
   });
 
-  // Entering (title → lobby) while already online also needs the deep-link join.
+  // A corrected name (after NAME_REJECTED) while already online also needs the deep-link join.
   store.subscribe((s, prev) => {
     if (s.session.entered && !prev.session.entered) schedulePendingJoin();
     // in a room (co-op or solo, also a resumed one) a match is near: its data starts downloading
@@ -352,6 +485,24 @@ function ScreenCrashed({ error, reset }) {
   </div>`;
 }
 
+/**
+ * The match route's notice line (ui/matchNotice.js): the optional announcement file is loaded and re-read here, outside
+ * the match UI (which waits only for GAME_FILES — ui/gameComponents.js), with the server's maintenance switch.
+ */
+function MatchNoticeHost() {
+  useData('announcements');
+  const maintenance = useStore((s) => s.connection.status === 'online' && s.presence?.maintenance === true);
+  const replay = useStore((s) => replayingRound(s.match?.public));
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const status = data.status('announcements');
+      if (document.visibilityState !== 'hidden' && (status === 'ready' || status === 'missing')) data.invalidate('announcements');
+    }, MATCH_NOTICE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return html`<${MatchNotice} text=${matchNoticeText(maintenance ? { maintenance } : null, data.get('announcements'), { replay })} />`;
+}
+
 function App() {
   const route = useStore(selectRoute);
   const combatActive = useStore((s) => selectRoute(s) === 'game' && s.room?.inMatch === true
@@ -366,12 +517,16 @@ function App() {
     <div class="app-bg" aria-hidden="true"></div>
     ${error ? html`<${ScreenCrashed} error=${error} reset=${resetError} />` : html`<${Screen} key=${route} />`}
     <${TrustedNotice} />
+    <${AnnouncementBanner} />
     <${ConnectionBanner} />
+    ${route === 'game' ? html`<${MatchNoticeHost} />` : null}
     <${ToastHost} />
+    <${AnnouncementHost} />
     <${UiHosts} />
     <${GuideHost} />
     <${LoadoutHost} />
     <${StatsHost} />
+    <${NameHost} />
     <${VoteOverOverlays} />
   </div>`;
 }
@@ -421,8 +576,11 @@ async function boot() {
   installTrafficMeter();
   // touch / hover / fullscreen classes, zoom-gesture blocking, rotation re-layout (ui/device.js, css/devices.css)
   installDeviceSupport();
-  // Hashed art a player imported. HTTPS or localhost only; a failure here must not stop boot.
-  void registerImportedAssetWorker();
+  // Hashed art a player imported, and — with the release's material profile (/code-source.json) — the art this page
+  // fetches, kept by path across the provider's rotating signed redirects. HTTPS or localhost only; never stops boot.
+  void codeSource.get().then((source) => registerImportedAssetWorker(undefined, undefined, source?.material ?? null));
+  // a slow material load suggests 设置 → 素材下载 once per session (fork: ui/assetSection.js)
+  installAssetHints();
   // A page restored from the back/forward cache has a dead socket and a stale token choice: start over.
   window.addEventListener('pageshow', (ev) => { if (ev.persisted) location.reload(); });
   // Pick this tab's reconnect token (asks other live tabs; ≤150 ms) while fonts load.
@@ -430,10 +588,9 @@ async function boot() {
 
   const pendingJoin = parseRoomParam(location.search);
   const savedName = sanitizeName(identity.loadName());
-  const entered = identity.wasEntered() && !!savedName;
   store.set((s) => ({
     me: { ...s.me, name: savedName },
-    session: { entered },
+    session: { entered: true },
     ui: { ...s.ui, pendingJoin },
   }));
 
@@ -444,8 +601,6 @@ async function boot() {
   installLoadoutSync({ net });
   installOwnershipSync({ net });
   installDiySync({ net });
-  // 干员皮肤 (docs/SKINS.md): keeps the server's copy of this browser's chosen appearances current (room.skins), from
-  // ui/skins.js' own store — its 皮肤 section is rendered by screens/loadout.js.
   installSkinsSync({ net });
   // 名片干员 (PR #643 split 6): the operator on this browser's seat card (room.card, ui/seatArt.js cardStore) — after every
   // welcome, pick and content change, with the engine's retries (the room screen only reads and sets the pick)
@@ -464,6 +619,8 @@ async function boot() {
   // a cosmetic plugin's sound that will not load falls back like its art (content.js, DESIGN §32 P1a)
   installAudio({ getManifest: () => data.get('assets'), subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get(),
     onFailed: (url) => cosmetics.fail(url) });
+  matchMusic.load(); // the player's 休整期 / 作战 自选曲 files (IndexedDB)
+  installLobbyMusic(); // the lobby player: restores the saved track and binds the BGM overrides before the first render
   // …and the music follows the art: the screen's track again when the cosmetic layers change its URLs
   cosmetics.subscribe(() => audio.refreshBgm());
   // 自定义大厅背景与音乐 (ui/lobbyMedia.js): the player's own files of this browser, the music from the title on
@@ -474,13 +631,23 @@ async function boot() {
   // Optional local-client art manifest (emotes, tutorial pages, official UI sprites; DESIGN §13).
   data.load('local').catch(() => {});
 
-  const connectWhenReady = identityReady.then(() => {
-    if (entered) net.setName(savedName);
-    else net.connect();
-  });
   // the language (and its UI translations) before the first render: no Chinese flash for an English player
   const langReady = initLang().catch((err) => console.warn('[app] language setup failed', err));
-  await Promise.all([waitForFonts(1200), connectWhenReady, langReady]);
+  // This installation's own site link (feedback group / 反馈板), delegated to /data/site.json (ui/siteConfig.js).
+  // Applied before the first render so the lobby shows the configured values; a missing file keeps the shipped defaults.
+  const siteReady = loadSiteConfig();
+  // the download-channel switch (SP_ASSET_ORIGIN=""), applied before the first settings render (ui/assetSection.js)
+  void loadAssetSource();
+  const connectWhenReady = Promise.all([identityReady, langReady]).then(() => {
+    // a first visit (no gate callsign, nothing remembered): 博士 + four digits in the chosen language; ✎ renames
+    const name = savedName || defaultName();
+    if (!savedName) {
+      identity.saveName(name);
+      store.set((s) => ({ me: { ...s.me, name } }));
+    }
+    net.setName(name);
+  });
+  await Promise.all([waitForFonts(1200), connectWhenReady, langReady, Promise.race([siteReady, new Promise((resolve) => setTimeout(resolve, 1200))])]);
   const root = document.getElementById('app');
   render(html`<${App} />`, root);
 
@@ -491,16 +658,18 @@ async function boot() {
   }
   globalThis.__SP__ = { store, net, data, version: 1 };
   // A page keeps the modules it imported at load time for its whole lifetime, so a deploy cannot reach an open tab
-  // (ui/buildGuard.js): watch `/healthz.build`. Outside a match the page reloads itself; during a match the guard says
+  // (ui/buildGuard.js): watch `/client-build` (not private health). Outside a match the page reloads itself; during a match the guard says
   // so instead (the connection banner offers 刷新页面) and reloads once the match — settlement screen included — is over,
   // so a running game is never thrown away.
   try {
     startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
       onStale: ({ waiting }) => { if (waiting) store.patch('ui', { buildStale: true }); },
-      // the same /healthz names how many plugins the server has: the title screen shows it before any hello
+      // a body that names the server's plugins (`content`, as /healthz does) updates their count and whether any has a
+      // notice; /client-build carries only { build }, which says nothing about plugins: what welcome gave stays
       onHealth: (h) => {
-        const n = pluginCount(h.content), notices = h.content?.notices === true;
+        if (!h?.content || typeof h.content !== 'object') return;
+        const n = pluginCount(h.content), notices = h.content.notices === true;
         if (n !== store.get().installedPlugins || notices !== store.get().installedNotices) store.set({ installedPlugins: n, installedNotices: notices });
       },
     });

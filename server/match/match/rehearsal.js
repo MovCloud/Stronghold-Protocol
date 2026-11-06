@@ -37,8 +37,11 @@ export class MatchRehearsal {
   /**
    * Offer one bot prep's layout rehearsal to the current host.
    * @param {{ ps: import('../PlayerState.js').PlayerState, chosen: any[], plans: Array<Map<number, string>>,
-   *   inputs: object[], limits?: { stage: number, tickBudget: number } }} o the candidate plans and, per candidate, the preview battle options the server would build
-   *   its own `Battle` from (server/match/bot.js candidateOpts)
+   *   inputs: object[], cap?: number | null, limits?: { stage: number, tickBudget: number } | null }} o the candidate
+   *   plans and, per candidate, the preview battle options the server would build its own `Battle` from
+   *   (server/match/bot.js candidateOpts); `limits`: the run's optional stage / tick budget
+   *   (server/sim/rehearsal.js rehearsalLimits), sent with the task so the host's run stops exactly where the server's
+   *   would
    * @returns {null | ReturnType<typeof createDelegatedRehearsalJob>} the job to drive, or null when the server should
    *   rehearse the candidates itself (delegation off, no host to ask, or the frame could not be sent)
    */
@@ -69,7 +72,11 @@ export class MatchRehearsal {
     // that comes back with the frame itself cannot race the timeout being armed
     this._rehearsalTasks.set(task.id, task);
     task.timer = this.later(this.scaled(this.botRehearsalDelegateMs), () => this._rehearsalTimeout(task));
-    if (!this.sendTo(task.executor, { t: 'b.rehearsal', taskId: task.id, playerId: ps.playerId, cap: job.cap, specs, ...(limits ? { limits } : {}) })) {
+    // the limits travel only when set: a frame without them is the unlimited run of every earlier version.
+    // job.limits and not the caller's, so the adaptive budget bot.js gave the job reaches the host too.
+    const runLimits = job.limits || null;
+    if (!this.sendTo(task.executor, { t: 'b.rehearsal', taskId: task.id, playerId: ps.playerId, cap: job.cap, specs,
+      ...(runLimits && (runLimits.stage || runLimits.tickBudget) ? { limits: runLimits } : {}) })) {
       this._dropRehearsalTask(task);
       return null;
     }
@@ -110,7 +117,9 @@ export class MatchRehearsal {
     let handle;
     try {
       const specs = inputs.map((o) => buildBattleSpec({ ...o, content: this.battleContent, ...morphBattleOpt(this.rules) }));
-      handle = pool.submit('rehearsal', { specs, playerId: ps.playerId, cap: job.cap, ...(limits ? { limits } : {}) });
+      // the key is what keeps this room's tasks on its own lane (server/workers/roomPool.js); a pool without lanes
+      // behaves as the single shared queue
+      handle = pool.submit('rehearsal', { specs, playerId: ps.playerId, cap: job.cap, ...(limits ? { limits } : {}) }, { key: this.roomCode });
     } catch {
       return null; // a pool that cannot even accept the task: local run, as if it did not exist
     }

@@ -16,6 +16,7 @@
 import { standInRecord } from '../../../../shared/standIn.js';
 import { resolveLoadout } from '../../../../shared/protocol.js';
 import { chessLoadout } from './loadout.js';
+import { ownDiyRecord } from './diy.js';
 import { isObj } from './shared.js';
 import { t } from '../../../../shared/i18n.js';
 
@@ -121,6 +122,10 @@ export function standInLoadout(rec, getChess, backups) {
  */
 export function deployedRecord(chess, priv, getChess, backups) {
   if (!isObj(chess)) return chess;
+  if (chess.isDiy) {
+    const diy = ownDiyRecord(chess, priv, { rawChess: getChess, chess: getChess, backups });
+    if (diy) return diy;
+  }
   if (fieldsStandIn(priv, chess)) {
     const si = standInOf(chess, backups);
     if (si) return standInLoadout(si, getChess, backups)?.record || si;
@@ -135,6 +140,10 @@ export function deployedRecord(chess, priv, getChess, backups) {
 export function deployedModuleId(chess, priv, getChess, backups) {
   if (!isObj(chess)) return null;
   try {
+    if (chess.isDiy) {
+      const diy = ownDiyRecord(chess, priv, { rawChess: getChess, chess: getChess, backups });
+      if (diy) return diy.module?.id || diy.module?.uniEquipId || null;
+    }
     if (fieldsStandIn(priv, chess)) {
       const si = standInOf(chess, backups);
       if (si) return resolveLoadout(null, si, standInGetter(getChess, backups))?.moduleId ?? null;
@@ -150,10 +159,10 @@ export function standInLabel(rec) {
 
 /** The replaced operator's line of a stand-in's detail card: 「银灰的替补」 (`chessName` = the chess's own name). */
 export function standInForText(chessName) {
-  return t('{name}的替补', { name: chessName || '' });
+  return t('{0}的替补', { 0: (chessName || '') ?? '' });
 }
 
 /** The 「替补」 mark's title: which chess the stand-in fields for, and what stays the chess's ('' without a stand-in). */
 export function standInTip(rec, chessName) {
-  return isObj(rec) && rec.standInFor ? t('未持有{name}：由替补干员 {standIn} 上场（盟约、特质、阶级与价格不变）', { name: chessName || '', standIn: rec.name || '' }) : '';
+  return isObj(rec) && rec.standInFor ? t('未持有{0}：由替补干员 {1} 上场（盟约、特质、阶级与价格不变）', { 0: (chessName || '') ?? '', 1: (rec.name || '') ?? '' }) : '';
 }

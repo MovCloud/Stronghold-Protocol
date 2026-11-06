@@ -55,7 +55,11 @@ test('a spectator seat watches a whole match (各自行动, 联防, 最终攻势
   assert.equal(end.victory, true);
 
   const got = frames(h, S);
-  for (const x of got) assert.ok(['m.public', 'm.field', 'b.start', 'b.end', 'm.result'].includes(x.t), `${x.t} sent to a spectator`);
+  for (const x of got) assert.ok(['m.public', 'm.field', 'm.damage', 'b.start', 'b.end', 'm.result'].includes(x.t), `${x.t} sent to a spectator`);
+  for (const x of got.filter(x => x.t === 'm.damage')) {
+    assert.equal(x.available, false, 'client-authoritative operator scores cannot be trusted');
+    assert.deepEqual(x.owners, []);
+  }
   assert.equal(h.allTo(S, 'm.private').length, 0, 'no private player view');
   const starts = h.allTo(S, 'b.start');
   assert.ok(starts.length > 0);
@@ -101,12 +105,14 @@ test('during a battle a spectator may watch any field at once; one added mid-bat
   assert.deepEqual(m.handle(S, { t: 'g.watch', fieldId: 'n:p_1' }), { ok: true });
   const st = h.lastTo(S, 'b.start');
   assert.deepEqual([st.fieldId, st.watch, st.authoritative], ['n:p_1', true, false]);
-  // the field's spec as every watcher gets it — minus the player's funds at the battle start (no battle effect reads it)
+  // Spectator replicas omit funds; the rest of the battle inputs are unchanged.
   const spec = m.fields.find((f) => f.fieldId === 'n:p_1').spec;
   assert.ok(Object.hasOwn(spec.players[0].contentInfo, 'funds'), 'a player / teammate replica gets contentInfo.funds');
   const { funds, ...counters } = spec.players[0].contentInfo;
   assert.ok(Number.isFinite(funds));
-  assert.deepEqual(st.spec, { ...spec, players: [{ ...spec.players[0], contentInfo: counters }] }, 'the same spec without funds');
+  assert.deepEqual(st.spec, { ...spec, players: [{ ...spec.players[0], contentInfo: counters }] }, 'the same battle inputs without private counters');
+  assert.equal(st.dataProfile, m.dataProfile);
+  assert.equal(st.spec.dataProfile, m.dataProfile, 'sanitization preserves the selected per-match data profile');
   assert.deepEqual(privateKeys(st), []);
   assert.equal(m.watchers.get(S), 'n:p_1');
   for (const f of m.fields) assert.notEqual(f.authority, S);

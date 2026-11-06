@@ -122,6 +122,19 @@ test('validation: leaks marked counted:false are only accepted for enemies that 
   assert.deepEqual(forged, { ok: false, reason: 'uncounted leak' }, 'hiding leaks from the LP count');
   const tagged = buildBattleSpec({ ...spec, spawns: [{ enemyKey: plainKey, count: 1, time: 1, countInTotal: false }] });
   assert.ok(validateClientResult(tagged, raw([{ enemyKey: plainKey, counted: false }], true), { gd }).ok, 'a schedule entry that does not count');
+  // 同盟狩猎: the same key can be both a normal wave unit and a display-only prey. The exemption is per scheduled
+  // unit, so the normal unit cannot be hidden behind the prey's `counted:false`.
+  const mixed = buildBattleSpec({ ...spec, spawns: [
+    { enemyKey: plainKey, count: 1, time: 1 },
+    { enemyKey: plainKey, count: 1, time: 2, countInTotal: false },
+  ] });
+  const mixedRaw = (leaked) => ({ reason: 'timeout', time: 30, killed: 0, total: 2, perPlayer: { p: perPlayer({ total: 2, leaked, perfect: true }) }, errors: 0 });
+  assert.ok(validateClientResult(mixed, mixedRaw([{ enemyKey: plainKey, counted: false }]), { gd }).ok, 'the prey may leak uncounted');
+  assert.deepEqual(
+    validateClientResult(mixed, mixedRaw([{ enemyKey: plainKey, counted: false }, { enemyKey: plainKey, counted: false }]), { gd }),
+    { ok: false, reason: 'uncounted leak' },
+    'the normal wave unit cannot hide behind the prey key',
+  );
 });
 
 test('validation: IN_BATTLE layer gains only on bonds the lineup / band / effects / items name', () => {
@@ -510,7 +523,7 @@ test('fitResult: an oversized b.result is trimmed under the frame budget without
   const big = {
     reason: 'timeout', time: 60, killed: 10, total: 400, errors: 0,
     perPlayer: { p: perPlayer({ killed: 10, total: 400, perfect: false, coins: 3, layerGains: { yanShip: 4 },
-      leaked: Array.from({ length: 150 }, () => ({ enemyKey: plainKey, mods, lpr: 1, sourcePlayerId: 'p', tag: null, counted: true, spawned: true })),
+      leaked: Array.from({ length: 60 }, () => ({ enemyKey: plainKey, mods, lpr: 1, sourcePlayerId: 'p', tag: null, counted: true, spawned: true })),
       unitStats: Array.from({ length: 160 }, (_, i) => ({ uid: i + 1, defId: 'char_x', kind: 'op', dmg: 123456, kills: 3, heal: 0, taken: 999, attacks: 77 })) }) },
   };
   const size = (r) => JSON.stringify({ t: 'b.result', battleId: 'b', result: r, rid: 2147483647 }).length;
@@ -519,14 +532,24 @@ test('fitResult: an oversized b.result is trimmed under the frame budget without
   assert.ok(size(fit) <= RESULT_FRAME_BUDGET, `trimmed (${size(fit)})`);
   assert.ok(isBattleResult(fit));
   const p = fit.perPlayer.p;
-  assert.equal(p.leaked.length, 150, 'every leak kept (LP)');
+  assert.equal(p.leaked.length, 60, 'every leak kept (LP)');
+  assert.deepEqual(p.leaked[0].mods, mods, 'a repeated enemy keeps the exact mods needed by the next wave');
   assert.deepEqual([p.coins, p.layerGains, p.perfect, p.killed, p.total], [3, { yanShip: 4 }, false, 10, 400]);
   assert.equal(big.perPlayer.p.unitStats.length, 160, 'the input is not mutated');
+  const tooManyMods = { ...big, perPlayer: { p: { ...big.perPlayer.p,
+    leaked: Array.from({ length: 150 }, () => big.perPlayer.p.leaked[0]) } } };
+  assert.equal(fitResult(tooManyMods, { battleId: 'b' }), null,
+    'normal combat yields rather than dropping mods and changing duplicate enemy identity');
   const small = { ...big, perPlayer: { p: perPlayer() } };
   assert.equal(fitResult(small), small, 'a normal-size result passes unchanged');
   const longLeak = { ...big.perPlayer.p.leaked[0], sourcePlayerId: 'q'.repeat(60), tag: 'x'.repeat(16) };
   const boss = fitResult({ ...big, perPlayer: { p: { ...big.perPlayer.p, leaked: Array.from({ length: 400 }, () => longLeak) } } }, { bossLike: true });
   assert.ok(size(boss) <= RESULT_FRAME_BUDGET && boss.perPlayer.p.leaked.length === 0, 'boss leaks go (they cost LP through b.progress)');
+  const massiveUnite = { ...big, perPlayer: {
+    p: { ...big.perPlayer.p, leaked: Array.from({ length: 400 }, () => longLeak) },
+    q: { ...big.perPlayer.p, leaked: Array.from({ length: 400 }, () => longLeak) },
+  }, unspawned: Array.from({ length: 400 }, () => ({ enemyKey: plainKey, sourcePlayerId: 'q', tag: 'escaped_multi', time: 60 })) };
+  assert.equal(fitResult(massiveUnite, { battleId: 'u' }), null, 'a huge 联防 result yields to the server instead of truncating survivors or closing the socket');
 });
 
 // ---- browser loader (runs last: it injects the data into this process' sim like a page does) ------------------------
@@ -553,6 +576,29 @@ test('loadBrowserSim: a data file that cannot be fetched fails the loader (no ba
   const b = sim.spec.createBattleFromSpec(spec, sim.ds, { quiet: true, recordEvents: false });
   b.runToEnd(100);
   assert.ok(b.finished);
+});
+
+test('loadBrowserSim requests every data file directly from the CDN and preserves explicit dataBase', async () => {
+  const { loadBrowserSim, SIM_DATA_FILES } = await import('../../public/js/battle/runner.js');
+  const base = new URL('../../server/sim/', import.meta.url).href;
+  for (const options of [
+    { dataCdn: 'https://cdn.example.com/game/', expected: 'https://cdn.example.com/game/data/' },
+    { dataCdn: '/cdn/', expected: '/cdn/data/' },
+    { dataCdn: '', expected: '/data/' },
+    { dataCdn: 'https://cdn.example.com', dataBase: '/custom/', expected: '/custom/' },
+  ]) {
+    const calls = [];
+    const { expected, ...config } = options;
+    const sim = await loadBrowserSim({ base, ...config, fetchFn: async (url, init) => {
+      calls.push(url);
+      assert.equal(init.cache, 'no-cache');
+      const name = url.slice(expected.length).replace(/\.json$/, '');
+      assert.ok(SIM_DATA_FILES.includes(name));
+      return { ok: true, json: async () => JSON.parse(JSON.stringify(DATA[name])) };
+    } });
+    assert.ok(sim.spec && sim.ds);
+    assert.deepEqual(calls, SIM_DATA_FILES.map((name) => `${expected}${name}.json`));
+  }
 });
 
 // ---- 中途退出 around the 联防 plan ----------------------------------------------------------------------------------

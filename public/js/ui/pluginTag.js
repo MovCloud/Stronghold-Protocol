@@ -43,7 +43,7 @@ export function roomPluginFacts(room, myId) {
     warnings: Array.isArray(c?.warnings) ? c.warnings.filter((w) => w && typeof w.code === 'string') : [],
     vs: typeof c?.vs === 'string' ? c.vs : null,
     // gameplay plugins (DESIGN §32.6): the room plays a content set of its own — unofficial
-    modded: !!c && c.vanilla === false,
+    modded: isModdedRoom(room),
     cs: typeof c?.cs === 'string' ? c.cs : null,
     modes: Array.isArray(c?.modes) ? c.modes.filter((m) => m && typeof m.id === 'string') : [],
     modeId: typeof c?.modeId === 'string' ? c.modeId : null,
@@ -63,7 +63,8 @@ export function ruleLine(rules) {
 }
 
 /** Does the room play gameplay plugins (a content set of its own: unofficial — DESIGN §32.6)? @param {any} room */
-export const isModdedRoom = (room) => !!room?.content && room.content.vanilla === false;
+export const isModdedRoom = (room) => room?.content?.vanilla === false
+  && Array.isArray(room.content.plugins) && room.content.plugins.some((p) => ['content', 'script', 'trusted'].includes(p?.class));
 
 /**
  * The small unofficial mark of a match with gameplay plugins (see the header): 「非官方」 (or the HUD's MOD), nothing for
@@ -72,7 +73,7 @@ export const isModdedRoom = (room) => !!room?.content && room.content.vanilla ==
 export function UnofficialMark({ room, compact = false, class: cls = '' }) {
   if (!isModdedRoom(room)) return null;
   // the gameplay plugins only (a cosmetic one beside them changes no battle)
-  const n = roomPluginFacts(room, null).plugins.filter((p) => p.class === 'content').length;
+  const n = roomPluginFacts(room, null).plugins.filter((p) => ['content', 'script', 'trusted'].includes(p.class)).length;
   const tip = t('非官方：本局使用了改变玩法的插件（{n} 个），不计入统计总览', { n });
   return html`<span class=${cx('modmark', compact && 'modmark--compact', cls)} title=${tip} aria-label=${tip} data-testid="unofficial-mark">
     ${compact ? 'MOD' : t('非官方')}

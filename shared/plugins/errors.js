@@ -248,7 +248,7 @@ export const PLUGIN_ERRORS = Object.freeze({
   PLUGIN_PART_CLASS: {
     level: 'problem', doc: D.manifest,
     zh: '「{where}」不是 {class} 插件能带的东西', en: '“{where}” is not something a {class} plugin carries',
-    fix: { zh: '外观插件只带 "assets"（素材）和 "theme"（主题）；界面插件带 "entry.client" 和 "slots"；改数值、加干员之类的要做成 content 插件。', en: 'A cosmetic plugin carries "assets" and "theme" only, a ui plugin "entry.client" and "slots"; numbers and new operators belong to a content plugin.' },
+    fix: { zh: '外观插件带 "assets"（素材）、"theme"（主题）和 "emotes"（表情轮的一页）；界面插件带 "entry.client" 和 "slots"；改数值、加干员之类的要做成 content 插件。', en: 'A cosmetic plugin carries "assets", "theme" and "emotes" (one page of the emote wheel), a ui plugin "entry.client" and "slots"; numbers and new operators belong to a content plugin.' },
   },
   PLUGIN_PART_SHAPE: {
     level: 'problem', doc: D.manifest,

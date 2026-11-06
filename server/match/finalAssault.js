@@ -5,7 +5,7 @@
 //     continues with what is left.
 //   * Pairing: shuffled once per match before Final Assault prep; Hidden Core keeps those pairs. If players leave,
 //     intact pairs stay together and the remaining single players pair up. An odd player uses the `_s` template
-//     (solo modes always use `_s`). Field ids 'b1', 'b2'. In a pair the first player is the LEFT side, the second the
+//     (solo modes always use `_s`). Field ids 'b1', 'b2', 'b3'. In a pair the first player is the LEFT side, the second the
 //     RIGHT side (the sim mirrors the right side: board col c → field col 20 − c with the piece direction RIGHT ↔
 //     LEFT, UP / DOWN unchanged (DESIGN §3, research 09 §1.2 ConvertChessPositionInfoToBossMap); board rows 9–12 →
 //     boss rows 2–5, sim/constants BOSS_ROW_OFFSET). `bossFieldPlacement` gives that mapping for UIs / tools.
@@ -14,8 +14,9 @@
 //     a pair field sharing it) = bloodPoint[difficulty] × the players alive when the fight starts (bots and AI 托管 seats
 //     count, eliminated and departed seats do not; solo × 1) — the owner's decision of 2026-10-06, adopting PR #209 by
 //     @qingjingshenghuo, which replaces the fixed pool of 「保持固定血量」 (config bossHpScale perPlayer false / solo 0.25
-//     restores it); × the tuning bossHpMul when data/tuning.json still has one (docs/BALANCE.md); bosses are never scaled
+//     restores it); × the tuning bossHpMul when data/tuning.json still has one (docs/development/BALANCE.md); bosses are never scaled
 //     by enemyScale and their parts / escorts keep their own HP.
+//     Six-seat starts use twice the equivalent four-seat pool (GameData.bossPoolShare).
 //   * Overtime: bossTurnHpReduceTime counts REAL seconds like the level's 120 s maxPlayTime (which runs out first; the
 //     battle goes on): from 150 real s (300 game s on the 2× field clock) the team loses bossOvertimeDrainPerSec (1) LP
 //     per real second (gamedata.js bossOvertimeDue); m.public.deadline = the 120 s countdown, m.public.overtimeAt = the
@@ -38,6 +39,7 @@
 import { BOSS_ROW_OFFSET, COLS, BOSS_POOL_MIN_HP } from '../sim/constants.js';
 import { mirrorDir, normDir } from '../sim/dir.js';
 import { bossPoolShareOf } from './gamedata.js';
+import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 
 /**
  * BOSS_HIT ticker thresholds (activity_table autoChessData.broadcastList comment_boss_hit_1..3, paramList 0.2 / 0.5 /
@@ -79,21 +81,25 @@ export function pairPlayers(alive, rng, previous = null) {
       if (group.length === 2) groups.push(group); else singles.push(...group);
     }
     singles.push(...remaining.values());
-  } else singles = sorted.length > 1 ? rng.shuffle(sorted) : sorted;
+  } else singles = sorted.length > 1 && rng ? rng.shuffle(sorted) : sorted;
   for (let i = 0; i < singles.length; i += 2) groups.push(singles.slice(i, i + 2));
   return groups;
 }
 
 /** Shared boss HP for a boss id with `aliveCount` alive players (GameData.bossPoolShare / bossPoolShareOf; omitted ⇒ a full team). */
-export function bossPoolHp(gd, bossId, aliveCount) {
+export function bossPoolHp(gd, bossId, aliveCount, { experimental = false } = {}) {
   const boss = gd.boss(bossId);
   const diff = gd.difficulty;
   let base = boss && boss.bloodPoint && Number.isFinite(boss.bloodPoint[diff]) ? boss.bloodPoint[diff] : null;
   if (base == null && boss && boss.bloodPoint) base = Object.values(boss.bloodPoint).find((v) => Number.isFinite(v)) ?? null;
   if (base == null) base = 500000;
   const tune = typeof gd.bossHpMul === 'function' ? gd.bossHpMul(bossId) : 1;
-  const share = typeof gd.bossPoolShare === 'function' ? gd.bossPoolShare(aliveCount)
-    : bossPoolShareOf(gd.mode && gd.mode.bossHpScale, gd.config && gd.config.bossHpScale, !!gd.isSolo, aliveCount);
+  const enlarged = experimental && !gd.isSolo && Number.isInteger(aliveCount) && aliveCount > 4 && aliveCount <= MAX_PLAYER_CAPACITY;
+  const shareOf = (n) => (typeof gd.bossPoolShare === 'function' ? gd.bossPoolShare(n)
+    : bossPoolShareOf(gd.mode && gd.mode.bossHpScale, gd.config && gd.config.bossHpScale, !!gd.isSolo, n));
+  // Only the opt-in >4-seat fight goes past the configured four: the full team's share grows by alive / 4 (one
+  // bloodPoint per player under the per-player rule); normal config and solo scaling are untouched.
+  const share = enlarged ? shareOf(4) * aliveCount / 4 : shareOf(aliveCount);
   return Math.max(1, Math.round(base * share * tune));
 }
 
@@ -121,6 +127,14 @@ export class SharedBossPool {
     }
     return dealt;
   }
+
+  /** Preserve the remaining HP percentage when a player leaves the leader fight (platform.js _quit). */
+  rescale(maxHp) {
+    const next = Math.max(1, Math.round(maxHp));
+    if (next === this.maxHp) return;
+    this.hp = this.hp > 0 ? Math.max(1, Math.min(next, Math.round(this.hp * next / this.maxHp))) : 0;
+    this.maxHp = next;
+  }
 }
 
 /**
@@ -128,10 +142,11 @@ export class SharedBossPool {
  * @param {import('./gamedata.js').GameData} gd
  * @param {{ layerSum: number, teamLp: number }} s
  */
-export function hiddenEligible(gd, { layerSum, teamLp }) {
+export function hiddenEligible(gd, { layerSum, teamLp, aliveCount = 4, experimental = false }) {
   const hc = gd.hiddenCore;
   if (!gd.hiddenRound || !hc.difficulties.includes(gd.difficulty)) return false;
-  const threshold = gd.isSolo ? hc.single : hc.multi;
+  const scale = experimental && !gd.isSolo && Number.isInteger(aliveCount) && aliveCount > 4 && aliveCount <= MAX_PLAYER_CAPACITY ? aliveCount / 4 : 1;
+  const threshold = gd.isSolo ? hc.single : hc.multi * scale;
   return layerSum > threshold && teamLp > hc.minTeamLpExclusive;
 }
 

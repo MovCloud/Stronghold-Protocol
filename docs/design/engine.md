@@ -1,6 +1,6 @@
 # DESIGN §5, §7 — The battle engine (server/sim) and content modules
 
-Part of [DESIGN.md](../DESIGN.md) (the index; section numbers are global).
+Part of [DESIGN.md](../development/DESIGN.md) (the index; section numbers are global).
 
 ## 5. Simulation (server/sim) — engine contract
 
@@ -64,7 +64,7 @@ b.on(event, fn, { priority=0, owner } ) / b.off(...)   // hook bus (§5.4)
   lpForBoss?: number }
 ```
 
-`SpawnSpec`: `{ time, enemyKey, routeIndex, count=1, interval=0, mods: { hpMul, atkMul, defMul, speedMul }, sourcePlayerId?, bounty?: { coins, ownerPlayerId } , tag?: 'escort'|'boss'|'bounty' }`
+`SpawnSpec`: `{ time, enemyKey, routeIndex, count=1, interval=0, mods: { hpMul, atkMul, defMul, speedMul }, sourcePlayerId?, bounty?: { coins, ownerPlayerId, bank? } , tag?: 'escort'|'boss'|'bounty' }` (`bank: true` = a monster the OPPONENT PLACED in the 2V2 狩猎期: its bounty is banked at 坎诺特, never gold)
 
 `BattleResult`:
 ```js
@@ -75,7 +75,9 @@ b.on(event, fn, { priority=0, owner } ) / b.off(...)   // hook bus (§5.4)
      perfect: bool,                       // no leaks
      layerGains: { [bondId]: n },         // IN_BATTLE gains (0 if flags.layerGainsEnabled false); what was added — capped at
                                           // the bond's room under BOND_LAYER_CAP 999 (§6.3, §20.12)
-     coins: n,                            // bounty coins earned
+     coins: n,                            // bounty coins earned (gold — the official 悬赏 cards)
+     bank: n,                             // 2V2 狩猎期: the bounties of the monsters the OPPONENT PLACED — banked at
+                                          // 坎诺特, NEVER gold; only a prep withdrawal turns them into funds
      damageDealt: n, bossDamage: n, healingDone: n, deaths: n,
      unitsEnd: [ { uid, hpPct, sp, alive } ] } },   // operators + board summon pieces; sp = 技力 incl. stored charges
   bossHpLeft? }
@@ -175,7 +177,7 @@ rear-only effect classification. Other weights and unrecorded rear angles use th
 - **枯朽之种 self-destruct** (`enemy_1269_nhfly`): within its data range of 2 tiles it locks an operator and becomes an enemy projectile moving at 10 tiles/s (PRTS 枯朽之种). Its model follows the projectile and is not selectable, blockable or damageable during that flight. The hit deals its cached physical ATK and removes the seed. 逻各斯 S3 slows the projectile to 5% while it is in his attack range and clears it when the skill ends (PRTS 逻各斯 S3). [ASSUMED] If the locked operator leaves before impact, the seed bursts harmlessly at the last position.
 - **Damage** (the ordered settlement, 0.3.2: §35.30–§35.32; SIM §4): phys `max(A − (1 − defIgnorePct)·max(0, D − defIgnoreFlat), 0.05·A)`; arts `max(A × (1 − R′/100), 0.05·A)` with `R′ = min(100, (1 − resIgnorePct)·max(0, R − resIgnoreFlat))` — fixed penetration before the percentage (PRTS 游戏数据基础 伤害公式); true = A; 元素伤害 ('elemental') `max(A × (1 − 元素抗性/100), 0.05·A)`; `A` already carries the caller's attack scale and, for arts, the target's 法术攻击加算 (`artsAttackAddition`, target calculation). The stages: `hit` → the source's calculation (`damageCalculate`; not for `calculation: 'precomputed'` / `'resolved'` requests) → the target's (`damageCalculateTarget`) → the formula × `dmg.mul` × the source's `dmgDealtMul` (× phys / artsDealtMul) → `damageOutput` → `damageBeforeApply` (source) → `damageApplying` (target) → **限伤** → the target's injury effects in priority, then acquisition order (PRTS 伤判效果: 脆弱 / 庇护 and the other damage-taken multipliers — 元素伤害 takes 元素脆弱 (`elementalTakenMul`) alone, not `dmgTakenMul`, 脆弱 = "受到的物理、法术、真实伤害提升" —, fixed reductions — the strongest per name and HP type; differently named ones stack (name = `reductionGroup`, else the buff key) —, barriers and count shields (a typed one only its types), held dodge / block effects; a cancellation stops the later defences, observers still run) → `hpDamage` and transfer reservations → the HP step (special HP maps only the HP delta). **限伤**: on a leader (`isBoss` — the 10 bossInfoDict enemyIds and their mirrored copies; never parts, drones or escorts) in a `'boss'` / `'hidden'` battle a hit whose estimate (after the source multipliers and the target's damage-taken multipliers) has `ceil(estimate) ≥ 300000` is cancelled — no HP or pool loss, no credit, no damage number, no `damaged` / kill (`shared/constants.js BOSS_HIT_LIMIT`, `attack/health.js leaderHitCancelled`, before the injury effects, its exact position [ASSUMED]; `dealHPLose` too — a part's 传递, but not 胄's drone link, a share of the pool that is no hit (`noHitLimit`, §25.13.4); the client's `MAX_BATTLE_DAMAGE`, §20.12). Typed HP loss applies its mitigation once and skips the injury effects. The red number compares that final damage, after barriers and `hpDamage`, with the expected damage (PRTS 作战机制 「伤害红字」). Element damage fills a gauge (1000; enemy leaders 2000) × `elemTakenMul` × max(0.05, 1 − 损伤抵抗/100), 损伤抵抗 = data `epResistance` (PRTS 元素; the 5 % floor of DMG_e, PRTS 游戏数据基础). An element fill on a target with no HP left is refused (attack.js `hasHp`: no burst on a corpse). A full gauge bursts with the official effects of the unit's entity class — enemy-class allies keep the enemy burst and the leader capacity, independent of the current side (§35.32) —, as **无来源** damage (no damage-dealt multiplier or penetration of the unit that filled the gauge, which keeps the kill and the stats; §19.5) of the ordinary kind — on an operator a phys / arts dodge or an injury dodge cancels the burst's HP damage while the burst status and cooldown stay (native `ep_break_*` NoSourceDamage without a cancellation mask; v0.3.1 made it undodgeable, §35.32) (sim/constants.js `ELEMENT`; operators: 灼燃 1200 arts + RES −20, 神经 stun 10 s then 1000 true, 凋亡 15 s of 阻回 (`noSp`: no SP gain of any kind) + 静默 with −1 SP/s and 100 arts/s, 侵蚀 DEF −100 then 800 phys; enemies: the "·我方" terms). Every burst starts a **爆发冷却** = its duration (灼燃 / 神经 / 侵蚀 10 s — enemies' 侵蚀 8 s — 凋亡 15 s) during which NO element of the unit fills or can be recovered; when it ends every gauge of the unit resets (§18.3).
 - **Leak**: an enemy reaching its goal is removed, counted as leaked for its field owner (`sourcePlayerId` for unite). LP accounting is done by the match, not the battle.
-- **Results**: `damageDealt` / a unit's `dmg` count only HP removed from the other side — a unit's own drain or 流失 and friendly damage are the target's `taken` only (§21.12).
+- **Results**: `damageDealt` / a unit's `dmg` count only HP removed from the other side — a unit's own drain or 流失 and friendly damage are the target's `taken` only (§21.12). `healingDone` (and a provider unit's `unitStats[].heal`, §5.1) attributes each natural-regeneration tick by its providers: base `hpRecoveryPerSec` and self-sourced buffs stay with the unit, while an ally's `hpRegen` / `hpRegenRatio` buff credits its sharer's owner (proportional to its rate; `sim/battle/status.js attributeRegen`, DESIGN §32.6). The verification digest (`sim/spec.js resultDigest`) sums `killed / total / perfect / coins / bank / layerGains / leaked / damageDealt / bossDamage / unitsEnd` and **not** `healingDone` (a display stat).
 - **End**: all spawns done and no enemies alive ⇒ `cleared`; `time ≥ timeLimit` ⇒ `timeout` (remaining enemies = leaked). Boss battles end when the shared boss pool reaches 0 (victory) or the match forces an end (team LP 0). A pool holding less than 1 HP is empty (`constants.js BOSS_POOL_MIN_HP`: the hit, or the per-player credit, that would leave less takes the rest; §20.5).
 
 ### 5.6 Skills (skills.js + kits)
@@ -260,7 +262,7 @@ does not pause the released drone.
 
 ## 7. Content modules (server/sim/content + match/effectsMeta handlers)
 
-Each domain file `server/sim/content/{tokens,bonds,garrisons,items,bands,enemies,bosses,devices,choices}.js` exports `install(battle)` (battle side; called once per Battle by `content/index.js → installContent`) and `registerMeta(registry)` (prep side; called once at server boot by `match/effectsMeta.js`, API documented in `docs/META.md`). Kits live one per file in `content/kits/ops/` (`export default { [baseChessId]: (bb, chess, def) => Kit }`), listed in `content/kits/index.js` (guide: `content/kits/README.md`). Content must be **data-driven from blackboards** (numbers never hard-coded when a blackboard key exists). Every effect gets at least one unit test in `test/content/*.test.js` using the `test/helpers/battleHarness.js` harness (provided by sim-core).
+Each domain file `server/sim/content/{tokens,bonds,garrisons,items,bands,enemies,bosses,devices,choices}.js` exports `install(battle)` (battle side; called once per Battle by `content/index.js → installContent`) and `registerMeta(registry)` (prep side; called once at server boot by `match/effectsMeta.js`, API documented in `docs/development/META.md`). Kits live one per file in `content/kits/ops/` (`export default { [baseChessId]: (bb, chess, def) => Kit }`), listed in `content/kits/index.js` (guide: `content/kits/README.md`). Content must be **data-driven from blackboards** (numbers never hard-coded when a blackboard key exists). Every effect gets at least one unit test in `test/content/*.test.js` using the `test/helpers/battleHarness.js` harness (provided by sim-core).
 
 - kits: all 112 visible chess + hidden ones used by effects (盟约·辅助干员), default skill + talents + trait specifics; tokens. The 72 non-collaboration 6★ DIY operators include 克莱门莎 (§28.1); her launch-day provisional mechanics are local to her kit. 黍 GUA-Y and 乌尔比安 CRU-Y follow the generated module blackboards and existing module-level rules (§28.2).
   忍冬's 追凶 adds arts damage on the first qualifying instance too; the per-enemy window starts on that instance,
@@ -348,6 +350,10 @@ the hook-depth guard on scaled hit-count HP; the guard remains unchanged for oth
 - 隐秘核心 铳 takes 20% physical/arts damage while another gun or spring remains. The condition is checked on each hit
   as well as by its aura tick, including the first hit and immediately after the last companion leaves.
 
+The 法术护盾 “碎铳之簧” retaliates when physical damage reaches its shield, including an operator's counter. Its returned
+physical damage and erosion keep the `springCounter` marker and carry the shared `counter` marker, so 泡泡 and other
+counter-on-damage operators do not answer that retaliation again ([0.3.0 integration](../history/0.3.0.md#321445-spring-shield-counter-against-泡泡-after-the-local-ai-merge)).
+
 Sources and the feedback items requiring no simulation change are recorded in [§28.25](../history/0.2.3.md#2825-community-feedback-of-2026-10-10).
 
 Community corrections in §29 are normative: Raid's one reselect after a revive uses taunt then route distance and jumps while unblocked, after refreshing contact on the current tile; ordinary polls stay on route distance and the empty-range rule. Healing cast conditions include curable elemental injury; Pinecone S2 growth restarts per deployment; crest consumption is checked on damage. Mixed Skadi/Stead redirects preserve ancestry and reserve shares from one post-barrier amount; Skadi receives HP loss; Stead recipients receive resolved true damage without repeating calculation. The combined parallel-sharing policy is [ASSUMED], including Stead/barrier order; see §35.32. Clementia S2 secondary splash is 100% ATK within a 1.1 collision radius (four additional ground targets), while its main hit and 1.5-radius vortex keep their own coefficients. Final-mode leaders retain their erosion immunity, explicitly stated in the PRTS mode tips. 整备 does not upgrade a purchase when the golden's second copy would exceed shared item stock, and it does not spend its charge in that case.
@@ -365,6 +371,45 @@ Hidden Core's 管 from being jumped to at all (community report of 2026-10-13). 
 preference and their tie-breaks stay relative to the position's tile.
 
 香槟炸弹 also rejects ordinary allied auras and inspiration as a device, through its shared internal selection barrier (§29.11). This does not isolate other unhealable summons or alter its detonation.
+
+### 反应伤害的来源标记（2026-10-10）
+
+“余音”受伤脉冲和“碎铳之簧”法术护盾的反击若由 `counter`／`reflect` 伤害引出，保留这两个标记（余音的法术伤害和凋亡损伤均保留），供现有干员反击过滤使用。普通命中、管／弦敲击和独立合奏仍允许首轮合法反击；反击引出的脉冲仍造成伤害、累计形态切换次数，但不会再次激活反击。[ASSUMED] 这是将本项目既有“反击不再引发反击”约定应用到中间衍生伤害；不声称新确认了官方底层实现。来源／归属、数值、减伤、附带治疗、技力和死亡事件保持原路径，32 层保护不变。
+
+最小复现包括玛恩纳／余音、刺玫保护异客／余音，以及泡泡／法术护盾碎铳之簧。异客只提供普通命中与雷暴连锁，单独不产生递归。新增专项保留多目标连锁、刺玫特性治疗、后续独立触发、致死结算与重复回放，并在 Node／Chromium 的普通、联防、领袖和隐藏核心场景对比。
+
+
+### 莱茵科研调整（2026-10-10维护者授权）
+
+梅尔每次有效工作仍产普通1／精锐2层；每场普通主战同玩家全部梅尔共用24／48层预算，混合品质取48，换装置或重新部署不重置。非普通主战不产科研。多萝西陷阱不再产科研，改为已激活科研每层固定攻击普通+1／精锐+2，与六莱茵共享攻击以固定值相加，原生技能与梦想家保持。九莱茵钻机20秒预热和法伤段不变，成熟后的每秒真伤比例为`0.0005 + 0.000005 × 科研层数`；300／350／400层分别为目标最大生命的0.20%／0.225%／0.25%，领袖使用完整共享生命上限，首次真伤仍在有效输出21秒。
+
+
+### 魂灵原生技能与天赋（2026-10-10维护者授权）
+
+魂灵完整继承本体所选技能、原生天赋及对应模组行为；新建独立技能、技力、天赋计数与召唤物归属，不复制本体已消耗的次数、临时技能状态或钩子。初始技力、自然／攻击／受击回复、费用、自动操作策略、持续时间、弹药和次数均走原技能运行时。战斗开始一次性效果不重播；新魂灵按新部署触发部署天赋，原生首次部署撤退等也照常发生。
+
+生命／攻击基础公式仍为H0×60%+10S、A0×80%+3S；原生天赋与技能在此魂灵基础值之上正常生效，层数刷新不重复叠乘。原生自我恢复和防止致命伤／一次复活可生效；只有真正离场才清除魂灵，原生退场效果正常执行。本体重新部署与战斗结束仍强制清理魂灵，不触发人口或盟约人数增加，不产死亡层数／炮击充能，不继承装备触发器或阿斯卡纶等额外活体产层特质。魂灵及其治疗召唤物处于魂灵治疗组，活体医疗与装置限制及锡人二技能例外保留。召唤物选用本体的实际技能／品质／模组数据，其运行归属为新魂灵，按原技能规则离场或保留。
+
+炮击所生魂灵是独立战斗单位，新安装的原生技能／天赋定时回调不携带致死炮击标记；原炮击与真正衍生反击的归属链不变。原生技能目标选择可识别魂灵的干员身份，但经济、阵容人数、战斗开始阵容统计和额外卫戍特质仍按活体棋子处理。
+
+
+0.2.4 莱茵适配：余音FIFO条目同时保存攻击值与counter/reflect来源，保留本扩展既有反击边界；不会因套用上游队列而恢复递归反击。莱茵已整分支移出，登记见[FUSION-CREDITS.md](../FUSION-CREDITS.md)。
+
+### 莱茵扩展：雷姆援军、九档产魂与科研修订（2026-10-16 更新）
+
+本轮雷姆机制以 [雷姆必拓](../REM.md) 的完整规格为准。所属玩家独立持有开战档位、补员时钟、援军来源、种类限额及待落地队列；服务端与浏览器使用同一确定性模拟。集合点 UI、指令、玩家状态与战斗输入已移除。普通容量 6／12／16，开场 2／2／3，后续每 10／8／6 秒补 1／2／3，高档替换低档。满额的普通补员不积欠；合法召唤因空间不足等待落地不算丢弃、人数截断或新增上限。嘉辛塔免检查且免占数，珊比／校车免检查但计入普通在场数；所有来源共享当前档厨师上限 1／2／3，老板独立 2。每个常驻名额先判一次 2% 组合矿工，排除满额厨师后的普通池重抽不重复判组合分支。
+
+入场从己方蓝门开始，校车沿既有运输路线在固定终点附近卸客。普通援军只索敌同战场友方（包含合作队友）存活且已部署攻击干员火力覆盖内的合法可达敌人，连续移动接近并攻击；目标死亡、离开覆盖或不可达时重评。无合格敌人则在覆盖内四向持续徘徊，无覆盖时安全清让蓝门后待机。援军之间在出生、移动与停留时均可重叠，含车和老板，不占用干员部署格；保留友方穿行，地形及非援军占位仍按原规则检查，不拖拽已阻挡敌人，也不删除全游戏通用寻路。厨师与车辆不阻挡，老板飞行且不阻挡。
+
+六／九档以整数 `survivalTicks` 累计己方实际存活且已部署援军的时间：每名每 tick 贡献1，30为一援军·秒；每援军·秒为己方雷姆干员增加攻击／生命1%／2%，封顶200%／300%。待生成不计，死亡、撤退和移除后停止贡献，已获加成保留；车、老板和额外召唤均贡献，但加成只给干员本体。普通主战至同回合联防以 `remSurvivalTicks` 进入输入、结果摘要与强制复核，下一回合重置。它替换按生成次数增长，不改变温米／暴行对盟约层数的独立贡献。
+
+老板攻击 `1000+2S`，每秒缓存当前位置与攻击值，1 秒后半径0.45内造成200%攻击力的对地物理轰炸；定时投弹不随攻速变化，不使用原作面板5秒间隔，无额外回合倍率，也不获得仅干员享有的存活攻血。最多2名及原有飞行路线保持。
+
+援军不加入人口或盟约人数，不产亡魂、死亡资源及递归召唤。数量、光环、经过事件、标记引导和莱伊额外目标均按 owner 隔离。经过事件对同一援军去重；温米按本玩家实际成功生成的每个援军计数，同种重复生成也计数，同一援军重复事件不计数；共享每回合预算（普通16层／精英32层，每次1／2层，下回合重置）；嘉辛塔只响应成功技能开启，珊比首次等待完整间隔。莱伊额外伤害不再次调用攻击事务，不额外消费弹药或重复触发入神／回弹，S1 保持原生，S3 可强化。战末清理援军与等待队列，不按亡魂协防状态跨场携带；下一战场重新建立临时召唤状态。
+
+九名雷姆扩展精锐默认使用各自已支持的002常规模组，莱伊三级、其他一级；原断崖与莱恩哈特默认保持，普通形态仍无模组。新玩家、机器人和重置直接读数据默认，已保存明确“不装备”、莱伊003或技能选择继续有效，不推测稀疏配置未保存的旧选择。石棉普通／精锐新增独行，不恢复坚守；两个品质同身份，独行启用与禁用遵既有通用规则。
+
+科研修订：梅尔共享预算 12／24 且重新部署不重置；白面鸮按在场莱茵干员不同阶位休整产层，每种 +2／4、最多 12／24、仅已激活盟约。固定四阶麦哲伦接原生无人机并替换多萝西；本体与无人机各等效一次科研每层 +1／2 ATK，科研装置另每层 +0.5／1，均按本玩家且同名取最强。装置 `300 + 4S`、主机 `S／2S` 保留加算，无人机继承和六档共享不能造成重复放大；激光百分比真伤不乘攻击增益。本段记录机制约束，不声明整体验证或发行完成。
 
 §30.3 corrections: fortress targeting is blocked → ordinary range → own tile (selectable ground targets only).
 Automatic skill checks include that extra tile. Melee attacks are single-target unless the skill explicitly gives
@@ -428,3 +473,16 @@ until the cast clip ends too. `attackTurnSkill` returns the selected ability or 
 瑕光 S3 先贤化身 is a sourced guardian exception (§35.91, #789): DEFAULT activates with an attackable enemy in her
 attack range, even at full HP. The official TAKE_DAMAGE row remains rawRule for provenance. The maintainer accepted
 the author video BV1UdAHzNEVj and their recall on 2026-10-24; other guardian skills keep their class rule.
+
+### Rhine v0.3.0 Rem balance (2026-10-16 revision)
+
+Rem 6/9 accumulates living deployed reinforcement time, including vehicles and bosses: each completed
+reinforcement-second gives own Rem operators ATK/HP +1%/+2%, capped at +200%/+300%. Death and withdrawal stop
+contribution but retain earned growth. The integer `remSurvivalTicks` carries normal combat into the same round's
+unite field and resets next round. Savage retains deduplicated real-kill 2/4 layers within eight tiles, shared 24/48
+per player per round; Warmy's generation layers remain separate. Rally is removed. Ordinary troops seek reachable
+legal enemies inside living deployed allied attacking operators' shared-field fire coverage, including co-op teammates, patrol four-neighbour coverage when idle, and
+clear the blue gate then wait without coverage. Rem units can overlap one another without occupying operator
+deployment tiles. Vehicle/boss routes remain; boss ATK is `1000+2S` and pizza deals 200% ATK physical ground damage.
+Asbestos gains Solo without Steadfast. Nine added elite cards gain supported 002 module defaults while saved choices
+remain valid. See [REM](../REM.md) for ownership, timing, modules and lifecycle rules.

@@ -15,10 +15,15 @@ import { h, Fragment } from '../../vendor/preact.module.js';
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from '../../vendor/hooks.module.js';
 import htm from '../../vendor/htm.module.js';
 import { DIFFICULTY_NAMES, DIFFICULTY_COLORS } from '../../../shared/constants.js';
+import { normalizeLoadDetails } from '../../../shared/protocol.js';
+import { loadSummary, scopedClusterLoad } from '../serviceTelemetry.js';
 import { t } from '../../../shared/i18n.js';
-import { serverNow } from '../store.js';
+import { matchClockNow, emergencyClockAt, useStore } from '../store.js';
 import { data, useData, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
+import { PixBot } from './pixbots.js';
+import { managementLength } from './managementScale.js';
+import { MaterialImage } from './materialImage.js';
 
 /**
  * h() for htm with its static-subtree cache switched off. htm keeps the vnode it built for a fully static subtree in
@@ -48,6 +53,9 @@ export const ICONS = {
   crown: { d: 'M3 7l4.6 4.2L12 4l4.4 7.2L21 7l-1.8 10H4.8zM5 19h14v2H5z' },
   robot: { d: 'M11 2h2v3h4a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3h4zM8.5 9.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zm7 0a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zM9 15v1.6h6V15zM1 10h2v5H1zm20 0h2v5h-2z', eo: true },
   copy: { d: 'M8 3h11v13h-2V5H8zM5 7h10v14H5zm2 2v10h6V9z', eo: true },
+  chat: { d: 'M3 3h18v14H8l-5 4zm2 2v11.8L7.3 15H19V5zm3 3h8v2H8zm0 4h6v2H8z', eo: true },
+  download: { d: 'M11 3h2v9.2l3.6-3.6L18 10l-6 6-6-6 1.4-1.4 3.6 3.6zM4 17h2v3h12v-3h2v5H4z' },
+  folder: { d: 'M2 5h8l2 2h10v14H2zm2 4v10h16V9h-9l-2-2H4z', eo: true },
   link: { d: 'M9 7H6.5a5 5 0 0 0 0 10H9v-2H6.5a3 3 0 0 1 0-6H9zm6 0h2.5a5 5 0 0 1 0 10H15v-2h2.5a3 3 0 0 0 0-6H15zM8 11h8v2H8z' },
   plus: { d: 'M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z' },
   minus: { d: 'M4 11h16v2H4z' },
@@ -55,6 +63,7 @@ export const ICONS = {
   users: { d: 'M9 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM2 20a7 6.5 0 0 1 14 0zM16.5 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6zm.9 8.1A6.5 6 0 0 1 22.5 20H18a8.6 8 0 0 0-2.4-6.1 6 6 0 0 1 1.8-.8z' },
   rook: { d: 'M5 3h3v2h2V3h4v2h2V3h3v5l-2 2v7l2 2v2H5v-2l2-2v-7L5 8z' },
   signal: { d: 'M2 17h3v4H2zm6-4h3v8H8zm6-4h3v12h-3zm6-4h3v16h-3z' },
+  server: { d: 'M3 3h18v8H3zm2 2v4h14V5zM3 13h18v8H3zm2 2v4h14v-4zM7 6h2v2H7zm0 10h2v2H7z', eo: true },
   // 统计 (the stats page's entry): three columns on a baseline — apart from `signal`, the ping bars
   chart: { d: 'M4 12h4v7H4zm6-6h4v13h-4zm6 3h4v10h-4zM3 20h18v2H3z' },
   refresh: { d: 'M12 4a8 8 0 0 1 7.4 5H17v2h6V5h-2v2.3A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8zm0 16a8 8 0 0 1-7.4-5H7v-2H1v6h2v-2.3A10 10 0 0 0 22 12h-2a8 8 0 0 1-8 8z' },
@@ -69,9 +78,14 @@ export const ICONS = {
   info: { d: 'M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 8v7h2v-7zm0-3v2h2V7z', eo: true },
   warn: { d: 'M12 2 1 21h22zm-1 7v6h2V9zm0 7.5v2h2v-2z', eo: true },
   play: { d: 'M7 4v16l13-8z' },
+  pause: { d: 'M6 4h4v16H6zm8 0h4v16h-4z' },
+  // 播放速度 (ui/hud.js playback buttons): the media fast-forward (two triangles) and skip (triangle + bar)
+  fastForward: { d: 'M3 5l7 7-7 7zm11 0l7 7-7 7z' },
+  skipForward: { d: 'M3 4l8 8-8 8zm10 0h3v16h-3z' },
   mic: { d: 'M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21H8v2h8v-2h-3v-3.1A7 7 0 0 0 19 11z' },
   edit: { d: 'M3 17.2V21h3.8l11-11-3.8-3.8zM20.7 7.1a1 1 0 0 0 0-1.4l-2.4-2.4a1 1 0 0 0-1.4 0l-1.8 1.8 3.8 3.8z' },
   sword: { d: 'M20 3h1v4L10.4 17.6l1.4 1.4-1.4 1.4-2.1-2.1-3.5 3.5-1.4-1.4 3.5-3.5L4.8 14.8l1.4-1.4 1.4 1.4L18 4z' },
+  box: { d: 'M12 2 3 6.5v11L12 22l9-4.5v-11zm0 2.2 6.1 3-6.1 3-6.1-3zM5 8.9l6 2.9v7.2l-6-3zm14 0v7.1l-6 3v-7.2z' },
   shield: { d: 'M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z' },
   wifiOff: { d: 'M2 17h3v4H2zm6-4h3v8H8zm6-4h3v12h-3zm6-4h3v16h-3zM2.4 1 23 21.6 21.6 23 1 2.4z' },
   expand: { d: 'M3 3h7v2H5v5H3zm11 0h7v7h-2V5h-5zM3 14h2v5h5v2H3zm16 0h2v7h-7v-2h5z' },
@@ -85,6 +99,10 @@ export const ICONS = {
   // 大厅背景与音乐 (ui/lobbyMedia.js): a framed picture (ridges and a sun) and a beamed pair of notes
   image: { d: 'M3 4h18v16H3zM5 6v9.6l4-4.6 3.5 4 2.5-3 4 4.4V6zM16 7.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z', eo: true },
   music: { d: 'M18 3h2v13h-2zM8 5.4h2V18H8zM8 5.4 20 3v3L8 8.4zM14 16a3 3 0 1 1 6 0 3 3 0 1 1-6 0zM4 18a3 3 0 1 1 6 0 3 3 0 1 1-6 0z' },
+  // 随机模式 (娱乐模式): a die — the mode cards' glyph
+  dice: { d: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v14h14V5zm3 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm8 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-4 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-4 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm8 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z', eo: true },
+  // the room's ⚙ (screens/room.js GearGlyph) — the lobby's 单人默认设置 button beside the version chip
+  gear: { d: 'M10.3 2h3.4l.5 2.6 1.9.8 2.2-1.5 2.4 2.4-1.5 2.2.8 1.9 2.6.5v3.4l-2.6.5-.8 1.9 1.5 2.2-2.4 2.4-2.2-1.5-1.9.8-.5 2.6h-3.4l-.5-2.6-1.9-.8-2.2 1.5-2.4-2.4 1.5-2.2-.8-1.9L2 13.7v-3.4l2.6-.5.8-1.9-1.5-2.2 2.4-2.4 2.2 1.5 1.9-.8zM12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z', eo: true },
 };
 
 /**
@@ -206,7 +224,7 @@ export function TierChip({ tier, golden = false, size = 'md', class: cls }) {
   const [bad, setBad] = useState(null);
   const img = !!src && bad !== src;
   return html`<span class=${cx('tier', `tier--${n}`, `tier--${size}`, golden && 'tier--golden', img && 'tier--img', cls)} aria-label=${t('{tier}阶', { tier: n })}>
-    ${img ? html`<img src=${src} alt="" draggable=${false} onError=${() => setBad(src)} />` : roman(n)}
+    ${img ? html`<${MaterialImage} src=${src} alt="" draggable=${false} onError=${() => setBad(src)} />` : roman(n)}
   </span>`;
 }
 
@@ -243,7 +261,7 @@ export function BondDisc({
       </svg>
       <span class="bond__core">
         ${imgOk
-          ? html`<img class="bond__icon" src=${icon} alt="" draggable=${false} onError=${() => setBadSrc(icon)} />`
+          ? html`<${MaterialImage} class="bond__icon" src=${icon} alt="" draggable=${false} onError=${() => setBadSrc(icon)} />`
           : html`<span class="bond__glyph">${glyph}</span>`}
       </span>
       ${stack != null ? html`<span class="bond__count">${stack}</span>` : null}
@@ -348,7 +366,7 @@ export const hasDeadline = (deadline) => Number.isFinite(deadline) && deadline >
  */
 export function secondsLeft(deadline) {
   if (!hasDeadline(deadline)) return null;
-  return Math.max(0, Math.ceil((deadline - serverNow()) / 1000));
+  return Math.max(0, Math.ceil((deadline - matchClockNow()) / 1000));
 }
 
 /**
@@ -361,8 +379,9 @@ export function secondsLeft(deadline) {
  *   deadline: server epoch ms (live); seconds: static value (overrides deadline); total: seconds for the gauge.
  */
 export function Countdown({ deadline, seconds, total, warnAt = 10, label = 'COUNTDOWN', size = 'md', gauge = true, onExpire, class: cls }) {
+  const emergencyAt = useStore(emergencyClockAt);
   const live = seconds == null && hasDeadline(deadline);
-  useTicker(live ? 200 : 0);
+  useTicker(live && emergencyAt == null ? 200 : 0);
   const remain = seconds != null && Number.isFinite(Number(seconds)) ? Math.max(0, Math.floor(Number(seconds))) : live ? secondsLeft(deadline) : null;
   const warn = remain != null && remain <= warnAt;
   const text = remain == null ? '--' : String(Math.min(999, remain)).padStart(2, '0');
@@ -371,7 +390,7 @@ export function Countdown({ deadline, seconds, total, warnAt = 10, label = 'COUN
 
   const expiredFor = useRef(null);
   useEffect(() => {
-    if (!onExpire || !live) return;
+    if (!onExpire || !live || emergencyAt != null) return;
     if (remain === 0 && expiredFor.current !== deadline) {
       expiredFor.current = deadline;
       onExpire();
@@ -398,13 +417,18 @@ const modalStack = []; // open modals, topmost last: only the topmost handles ke
 /**
  * Modal dialog (declarative). Esc / backdrop click call onClose.
  * @param {{ open: boolean, title?: any, micro?: string, tone?: string, onClose?: Function, actions?: any,
- *   width?: string, closeOnBackdrop?: boolean, class?: string, veilClass?: string, children?: any }} props
+ *   width?: string, utility?: boolean, closeOnBackdrop?: boolean, ariaLabel?: string, trapFocus?: boolean,
+ *   class?: string, veilClass?: string, children?: any }} props
  * `veilClass` styles the backdrop itself (e.g. a dialog that dims the field without blurring it).
+ * `utility` opts into the compact management density layer (css/utility-mobile.css): the dialog gets
+ * `modal--utility` + `utility-modal`, its `width` moves into `--utility-width` in the local design unit
+ * (managementLength, so an inline width never beats the media query) and, with `onClose`, a header close button.
  */
-export function Modal({ open, title, micro, tone = 'mint', onClose, actions, width, closeOnBackdrop = true, class: cls, veilClass, children }) {
+export function Modal({ open, title, micro, tone = 'mint', onClose, actions, width, utility = false, closeOnBackdrop = true, ariaLabel, trapFocus = false, class: cls, veilClass, children }) {
   const boxRef = useRef(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  if (utility && width) width = managementLength(width);
   useLayoutEffect(() => {
     if (!open) return undefined;
     const token = {};
@@ -449,16 +473,17 @@ export function Modal({ open, title, micro, tone = 'mint', onClose, actions, wid
       if (i >= 0) modalStack.splice(i, 1);
       prevFocus?.focus?.();
     };
-  }, [open]);
+  }, [open, trapFocus]);
   if (!open) return null;
-  return html`<div class=${cx('modal', veilClass)} role="presentation"
+  return html`<div class=${cx('modal', utility && 'modal--utility', veilClass)} role="presentation"
       onMouseDown=${(e) => { if (closeOnBackdrop && e.target === e.currentTarget && onClose) onClose(); }}>
-    <div ref=${boxRef} class=${cx('modal__box', 'brackets', `modal__box--${tone}`, cls)} role="dialog" aria-modal="true" tabindex="-1"
-         style=${width ? `width:${width}` : undefined}>
+    <div ref=${boxRef} class=${cx('modal__box', 'brackets', `modal__box--${tone}`, utility && 'utility-modal', cls)} role="dialog" aria-modal="true"
+         aria-label=${ariaLabel} tabindex="-1" style=${width ? (utility ? `--utility-width:${width}` : `width:${width}`) : undefined}>
       <div class="modal__stripe" aria-hidden="true"></div>
-      ${title || micro ? html`<header class="modal__head">
+      ${title || micro || (utility && onClose) ? html`<header class="modal__head">
         ${micro ? html`<${MicroLabel}>${micro}<//>` : null}
         ${title ? html`<h2 class="modal__title">${title}</h2>` : null}
+        ${utility && onClose ? html`<button type="button" class="utility-modal__close" onClick=${onClose} aria-label=${t('关闭')}><${Icon} name="close" /></button>` : null}
       </header>` : null}
       <div class="modal__body">${children}</div>
       ${actions ? html`<footer class="modal__actions">${actions}</footer>` : null}
@@ -519,14 +544,14 @@ export function DialogHost() {
   }, []);
   const d = dialogs[0];
   if (!d) return null;
-  const { title = t('确认'), text, okText = t('确认'), cancelText = t('取消'), tone, danger, micro = 'CONFIRMATION' } = d.opts;
+  const { title = t('确认'), text, okText = t('确认'), cancelText = t('取消'), tone, danger, micro = 'CONFIRMATION', utility = false } = d.opts;
   const isConfirm = d.kind === 'confirm';
   // Enter confirms unless a specific button has focus (then the native click decides).
   const onKey = (e) => {
     if (e.key === 'Enter' && e.target?.tagName !== 'BUTTON') { e.preventDefault(); closeDialog(d.id, true); }
   };
   return html`<div onKeyDown=${onKey}>
-    <${Modal} key=${d.id} open=${true} title=${title} micro=${micro} tone=${tone || (danger ? 'red' : 'mint')}
+    <${Modal} key=${d.id} open=${true} title=${title} micro=${micro} tone=${tone || (danger ? 'red' : 'mint')} utility=${utility}
       onClose=${() => closeDialog(d.id, isConfirm ? false : true)}
       actions=${html`
         ${isConfirm ? html`<${Button} variant="secondary" onClick=${() => closeDialog(d.id, false)}>${cancelText}<//>` : null}
@@ -712,6 +737,7 @@ export function Tooltip({ text, aside = null, placement = 'top', delay = 120, bl
 export function TooltipLayer() {
   const [, force] = useReducer((c) => c + 1, 0);
   const boxRef = useRef(null);
+  const asideRef = useRef(null);
   const [pos, setPos] = useState(null);
   useEffect(() => {
     tipListeners.add(force);
@@ -815,7 +841,12 @@ export function Spinner({ size = 'md', label, tone = 'mint', class: cls }) {
 
 // ---- Avatar frame ------------------------------------------------------------------------------
 
-const SEAT_HUES = [162, 196, 38, 280];
+const SEAT_HUES = [162, 196, 38, 280, 12, 82];
+/** Stable seat colour shared by the room and match avatars, including all six seats. */
+export function seatHue(seat = 0) {
+  const n = SEAT_HUES.length;
+  return SEAT_HUES[((seat | 0) % n + n) % n];
+}
 /**
  * Square avatar frame with bracket corners. Falls back to a glyph (first letter / robot).
  * @param {{ name?: string, src?: string, size?: 'sm'|'md'|'lg'|'xl', seat?: number, host?: boolean, bot?: boolean,
@@ -824,13 +855,13 @@ const SEAT_HUES = [162, 196, 38, 280];
 export function AvatarFrame({ name = '', src, size = 'md', seat = 0, host, bot, self, ready, offline, dead, empty, class: cls }) {
   const [badSrc, setBadSrc] = useState(null);
   const imgOk = !!src && badSrc !== src;
-  const hue = SEAT_HUES[((seat | 0) % 4 + 4) % 4];
+  const hue = seatHue(seat);
   const glyph = [...(name || '').trim()][0] || '?';
   return html`<div class=${cx('avatar', `avatar--${size}`, 'brackets', host && 'is-host', bot && 'is-bot', self && 'is-self',
       ready && 'is-ready', offline && 'is-offline', dead && 'is-dead', empty && 'is-empty', cls)} style=${`--seat-hue:${hue}`}>
     <div class="avatar__img">
       ${empty ? html`<${Icon} name="plus" class="avatar__empty" />`
-        : imgOk ? html`<img src=${src} alt="" draggable=${false} onError=${() => setBadSrc(src)} />`
+        : imgOk ? html`<${MaterialImage} src=${src} alt="" draggable=${false} onError=${() => setBadSrc(src)} />`
         : bot ? html`<${Icon} name="robot" class="avatar__bot" />`
         : html`<span class="avatar__glyph">${glyph}</span>`}
     </div>
@@ -873,9 +904,11 @@ export function PhaseBanner({ title, sub, micro, tone = 'mint', mode = 'inline',
 
 /**
  * The round's result box (the official round result dialog, shown at settlement; GitHub #235, PR #112 by @Convey123):
- * a centred framed plate — tone-coloured frame and corner ticks, chevrons either side of the title — that opens, holds
- * `duration` ms and closes by itself. Purely presentational: ui/gameLogic/phases.js (roundResultBox / uniteResultBox /
- * battleResultBox) picks the words, screens/game.js the moment (SETTLE). `pointer-events: none`: it never takes a click.
+ * a centred plate in the look of the event's in-match popups (2026-10-13, video 8:44): a glowing tone-coloured frame,
+ * the robot in brackets with corner crosses on the left (ui/pixbots.js; worried when LP was lost), the title large with
+ * the line under it, chevrons as trim — it opens, holds `duration` ms and closes by itself. Purely presentational:
+ * ui/gameLogic/phases.js (roundResultBox / uniteResultBox / battleResultBox) picks the words, screens/game.js the moment
+ * (SETTLE). `pointer-events: none`: it never takes a click.
  * @param {{ title: any, sub?: any, micro?: string, tone?: 'mint'|'orange'|'red', duration?: number, onDone?: Function }} props
  *   duration (ms) > 0 auto-hides then calls onDone. Re-key to replay.
  */
@@ -891,15 +924,21 @@ export function ResultDialog({ title, sub, micro, tone = 'mint', duration = 2800
   if (gone) return null;
   return html`<div class=${cx('rdialog', `rdialog--${tone}`, leaving && 'is-leaving')} role="status" aria-live="polite">
     <div class="rdialog__box">
-      <span class="rdialog__tick rdialog__tick--tl"></span><span class="rdialog__tick rdialog__tick--tr"></span>
-      <span class="rdialog__tick rdialog__tick--bl"></span><span class="rdialog__tick rdialog__tick--br"></span>
-      ${micro ? html`<span class="rdialog__micro">${micro}</span>` : null}
-      <div class="rdialog__row">
-        <${Chevrons} count=${3} tone=${tone} class="rdialog__chev" />
-        <span class="rdialog__title">${title}</span>
-        <${Chevrons} count=${3} tone=${tone} dir="left" class="rdialog__chev" />
+      <div class="rdialog__art" aria-hidden="true">
+        <span class="rdialog__tick rdialog__tick--tl"></span><span class="rdialog__tick rdialog__tick--tr"></span>
+        <span class="rdialog__tick rdialog__tick--bl"></span><span class="rdialog__tick rdialog__tick--br"></span>
+        <i class="rdialog__brk rdialog__brk--l"></i><i class="rdialog__brk rdialog__brk--r"></i>
+        <${PixBot} kind=${tone === 'mint' ? 'cheer' : 'blade'} class="rdialog__bot" />
       </div>
-      ${sub ? html`<span class="rdialog__sub">${sub}</span>` : null}
+      <div class="rdialog__text">
+        ${micro ? html`<span class="rdialog__micro">${micro}</span>` : null}
+        <div class="rdialog__row">
+          <span class="rdialog__title">${title}</span>
+          <${Chevrons} count=${3} tone=${tone} class="rdialog__chev" />
+        </div>
+        ${sub ? html`<span class="rdialog__sub">${sub}</span>` : null}
+      </div>
+      <${Chevrons} count=${3} tone=${tone} dir="left" class="rdialog__chev rdialog__chev--trim" />
     </div>
   </div>`;
 }
@@ -922,14 +961,49 @@ export function doctorNo(id) {
 
 /**
  * Latency pill ("58ms"), coloured by research 06 §3.4 tiers (<60 mint, <200 amber, else red).
- * @param {{ ms?: number|null, online?: boolean, class?: string }} props
+ * @param {{ ms?: number|null, online?: boolean, loadState?: string, class?: string }} props
  */
-export function PingPill({ ms, online = true, class: cls }) {
+export function ConnectionStatus({ status = 'idle' }) {
+  const labels = { idle: t('未连接'), connecting: t('连接中'), connected: t('已连接'), handshaking: t('验证中'), online: t('已连接'), reconnecting: t('重连中'), closed: t('已断开') };
+  const tone = status === 'online' || status === 'connected' ? 'on' : ['connecting', 'handshaking', 'reconnecting'].includes(status) ? 'waiting' : 'off';
+  return html`<span class=${`connection-status connection-status--${tone}`} role="status"><i aria-hidden="true" />${labels[status] || t('未连接')}</span>`;
+}
+
+export function PingPill({ ms, online = true, status, loadState, loadDetails, clusterLoad, scope = 'cluster', onLoadClick, loadOpen = false, class: cls }) {
   const ok = online && Number.isFinite(ms);
   const tier = !ok ? 'off' : ms < 60 ? 'low' : ms < 200 ? 'medium' : 'high';
-  return html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${ok ? t('当前延迟 {ms}ms', { ms }) : t('未连接')}>
-    <${Icon} name=${ok ? 'signal' : 'wifiOff'} class="ping__icon" />
+  const ping = html`<span class=${cx('ping', `ping--${tier}`, cls)} title=${ok ? t('WebSocket 往返响应 {ms}ms', { ms }) : online ? t('等待新测量') : t('未连接')}>
+    <${Icon} name=${online ? 'signal' : 'wifiOff'} class="ping__icon" />
     <span class="ping__value">${ok ? Math.min(9999, Math.round(ms)) : '--'}</span><span class="ping__unit">ms</span>
+  </span>`;
+  if (loadState === undefined && status === undefined) return ping;
+  const labels = { unknown: t('未知'), normal: t('正常'), busy: t('繁忙'), overloaded: t('拥堵') };
+  const load = online ? scopedClusterLoad(clusterLoad, scope) : null;
+  const summary = loadSummary(load);
+  const state = online && !(clusterLoad != null && !load) ? summary?.state ?? (typeof loadState === 'string' && Object.hasOwn(labels, loadState) ? loadState : 'unknown') : 'unknown';
+  const details = online ? normalizeLoadDetails(load?.scope === 'game' ? load.nodes[0]?.loadDetails : loadDetails) : null;
+  const preview = summary ? `${summary.caption} · ${labels[state]}` : details
+    ? `CPU ${details.cpuPercent ?? '--'}% · ${details.rssMiB ?? '--'} MiB` : t('等待采样');
+  return html`<span class="latency-status">
+    ${status !== undefined ? html`<${ConnectionStatus} status=${status} />` : null}${ping}
+    ${loadState !== undefined ? html`<${Tooltip} text=${preview} placement="bottom">
+      <button type="button" class=${`server-load-button server-load--${state}`} aria-label=${t('查看游戏服务开销')} aria-haspopup="dialog"
+          aria-expanded=${loadOpen ? 'true' : 'false'} onClick=${onLoadClick} disabled=${!onLoadClick}>
+        <${Icon} name="server" class="server-load__icon" />
+        <span class=${`server-load server-load--${state}`} role="status" aria-label=${t('服务器负载{0}', { 0: labels[state] })} title=${t('主线程响应压力')}>
+          <span class="server-load__caption">${summary?.caption ?? t('服务')}</span><b>${labels[state]}</b>
+        </span>
+      </button>
+    <//>` : null}
+  </span>`;
+}
+
+/** Live authenticated-player count delivered by the WebSocket presence stream (xinhai chain, test/announcements.test.js). */
+export function OnlineCount({ online, class: cls }) {
+  const value = Number.isInteger(online) && online >= 0 ? online : '--';
+  return html`<span class=${cx('ping', 'online-count', cls)} title=${t('当前在线人数')}>
+    <${Icon} name="users" class="ping__icon" />
+    <span class="ping__value num">${value}</span><span class="ping__unit">${t('在线')}</span>
   </span>`;
 }
 
@@ -945,7 +1019,7 @@ export function DifficultyIcon({ difficulty, class: cls }) {
   const ui = DIFFICULTY_NAMES[difficulty] ? data.get('assets')?.ui : null;
   const src = ui && typeof ui === 'object' ? ui[`modeIcon/mode_${String(difficulty).toLowerCase()}_icon`] : null;
   if (typeof src === 'string' && src && badSrc !== src) {
-    return html`<img class=${cx('icon', 'dicon', cls)} src=${src} alt="" draggable=${false} onError=${() => setBadSrc(src)} />`;
+    return html`<${MaterialImage} class=${cx('icon', 'dicon', cls)} src=${src} alt="" draggable=${false} onError=${() => setBadSrc(src)} />`;
   }
   return html`<${Icon} name="rook" class=${cls} />`;
 }

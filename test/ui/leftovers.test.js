@@ -16,11 +16,12 @@ import { underframeActions, itemDestroyable } from '../../public/js/ui/facing.js
 import { replaceRequest, replaceIntent } from '../../public/js/ui/equipReplace.js';
 import {
   overtimeState, bossLevelSeconds, overtimeDrainPerSec, pauseAvailable, pauseIntent, isPaused, frozenNow, remainAt, OVERTIME_WARN_BEFORE,
+  fastActive, skipAvailable, matchControlIntent,
 } from '../../public/js/ui/matchStatus.js';
 import { sessionResetNotice, emptyMatch } from '../../public/js/store.js';
 import { confirmDialog, alertDialog, closeAllDialogs } from '../../public/js/ui/components.js';
 import { validateC2S } from '../../shared/protocol.js';
-import { PHASE, GEO } from '../../shared/constants.js';
+import { PHASE, GEO, PLAYBACK } from '../../shared/constants.js';
 
 const getChess = (id) => DATA.chess[id] || null;
 const getItem = (id) => DATA.items[id] || null;
@@ -248,12 +249,14 @@ describe('3. server session reset', () => {
   });
 });
 
-describe('4. solo pause', () => {
+describe('4. match control (the pause, the fast-forward, the 跳过)', () => {
   const pub = (phase, extra = {}) => ({ phase, ...extra });
-  test('offered in solo battles only (hidden in co-op, in prep and for an eliminated player)', () => {
+  test('offered in the battle phases while the own battle runs (in prep and for an eliminated player it is not), co-op included', () => {
     for (const ph of [PHASE.COMBAT, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]) assert.equal(pauseAvailable(pub(ph), { solo: true }), true, ph);
     for (const ph of [PHASE.PREP, PHASE.SP_DRAFT, PHASE.SETTLE, PHASE.RESULT, PHASE.INFO_CHECK]) assert.equal(pauseAvailable(pub(ph), { solo: true }), false, ph);
-    assert.equal(pauseAvailable(pub(PHASE.COMBAT), { solo: false }), false, 'co-op');
+    // a control is a request the connected humans must all agree to, so a co-op room is not excluded the way the old
+    // solo-only pause was — the gate is the same for all three controls
+    assert.equal(pauseAvailable(pub(PHASE.COMBAT), { solo: false }), true, 'co-op');
     assert.equal(pauseAvailable(pub(PHASE.UNITE), { solo: false }), false);
     assert.equal(pauseAvailable(pub(PHASE.COMBAT), { solo: true, alive: false }), false);
     assert.equal(pauseAvailable(null, { solo: true }), false);
@@ -265,6 +268,17 @@ describe('4. solo pause', () => {
     assert.deepEqual(pauseIntent(false), { t: 'g.pause', fields: { on: false } });
     assert.equal(isPaused(pub(PHASE.COMBAT, { paused: true })), true);
     assert.equal(isPaused(pub(PHASE.COMBAT)), false);
+  });
+  test('the 快进 toggle and the one-shot 跳过', () => {
+    assert.equal(fastActive(pub(PHASE.COMBAT, { speed: PLAYBACK.FAST })), true, 'the default playback reads as fast-forward');
+    assert.equal(fastActive(pub(PHASE.COMBAT, { speed: PLAYBACK.NORMAL })), false);
+    assert.equal(fastActive(pub(PHASE.COMBAT, { speed: PLAYBACK.SKIP })), true);
+    assert.equal(fastActive(pub(PHASE.COMBAT)), false, 'no speed: not active');
+    assert.equal(skipAvailable(pub(PHASE.COMBAT, { speed: PLAYBACK.NORMAL })), true);
+    assert.equal(skipAvailable(pub(PHASE.COMBAT, { speed: PLAYBACK.SKIP })), false, 'already at 60×: the server refuses a second request');
+    assert.equal(skipAvailable(pub(PHASE.PREP, { speed: PLAYBACK.NORMAL })), false, 'the same gate as the pause');
+    assert.equal(skipAvailable(pub(PHASE.COMBAT, { speed: PLAYBACK.NORMAL }), { done: true }), false, 'the own battle is over');
+    assert.deepEqual(matchControlIntent('skip'), { t: 'g.matchControl', fields: { action: 'skip' } });
   });
   test('while paused the HUD clocks stop at the pause moment', () => {
     const p = pub(PHASE.COMBAT, { paused: true, deadline: 50_000 });

@@ -36,13 +36,13 @@ export const roundDigits = (n) => String(Math.max(0, Math.trunc(Number(n) || 0))
 
 /**
  * Rounds left before the final assault, for the red strip: 1–3, else null (no strip). `pub.bossRound` is the final
- * assault's round (server/match/match/views.js); the hidden core gets no strip.
+ * assault's round; the hidden core and random mode's last round get no strip.
  * @param {any} pub m.public
  */
 export function roundsToBoss(pub) {
   const r = Math.trunc(Number(pub?.round));
   const b = Math.trunc(Number(pub?.bossRound));
-  if (!Number.isFinite(r) || !Number.isFinite(b) || r <= 0) return null;
+  if (!Number.isFinite(r) || !Number.isFinite(b) || r <= 0 || pub?.randomMode) return null;
   const left = b - r;
   return left >= 1 && left <= 3 ? left : null;
 }

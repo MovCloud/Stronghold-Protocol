@@ -5,14 +5,17 @@
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { PHASE, GEO } from '../../../shared/constants.js';
+import { REVIVAL_COST, REVIVAL_MIN_DONOR_LP } from './common.js';
 import { TEST_PUBLIC_LOG } from '../../../shared/testMode.js';
 import { boardOrder, pieceDir } from '../board.js';
 import { bondList, offBondCounts } from '../bondsMeta.js';
+import { bondCallView } from '../bondCall.js';
 import { cardView } from '../choices.js';
 import { bountySpawns, previewOf } from '../waves.js';
 import { timelineAt } from '../fields.js';
 import { bossFieldPlacement } from '../finalAssault.js';
 import { battleProgress } from '../../sim/spec.js';
+import { uniteRelayHelpers } from '../unite.js';
 
 /** Milliseconds since the match started. A stamp before the start, or a bad stamp, is 0. The stored log keeps the epoch. */
 function auditClock(at, startedAt) {
@@ -49,10 +52,10 @@ export class MatchViews {
       case PHASE.INFO_CHECK: return ps.infoReady ? 'ready' : 'deciding';
       case PHASE.BAND_DRAFT:
         if (this.draft && this.draft.picks[ps.playerId]) return 'ready';
-        return this.draft && this.draftTurn() === ps.playerId ? 'deciding' : 'acting';
+        return this.draft && (this.draft.concurrent || this.draftTurn(ps.playerId) === ps.playerId) ? 'deciding' : 'acting';
       case PHASE.SP_DRAFT:
         if (this.sp && this.sp.picks[ps.playerId] != null) return 'ready';
-        return this.sp && this.spTurn() === ps.playerId ? 'deciding' : 'acting';
+        return this.sp && (this.sp.concurrent ? this.spPending(ps) : this.spTurn(ps.playerId) === ps.playerId) ? 'deciding' : 'acting';
       case PHASE.PREP: return ps.ready ? 'ready' : 'acting';
       case PHASE.COMBAT: case PHASE.FINAL_ASSAULT: case PHASE.HIDDEN_CORE: {
         const f = this.fields.find((x) => x.players.includes(ps.playerId));
@@ -70,8 +73,11 @@ export class MatchViews {
   }
 
   publicView() {
+    const revivalOpen = this.revivalWindowOpen();
     const v = {
       t: 'm.public',
+      ...(this.capacityExperiment ? { playerCapacity: this.playerCapacity,
+        poolGroups: this.poolGroups.map(({ id, playerIds, scale }) => ({ id, playerIds: playerIds.slice(), scale })) } : {}),
       phase: this.phase,
       round: this.round,
       lastRound: this.gd.lastRound,
@@ -79,6 +85,7 @@ export class MatchViews {
       serverNow: this.sched.now(),
       modeId: this.modeId,
       difficulty: this.difficulty,
+      experimental: { ...this.experimental },
       stageId: this.stageId,
       // a non-default official version's match (DESIGN §35.23): its registry id, so a page that never saw the room (a
       // reload after it closed: the lobby's result replay) reads the frames with that version's data; absent for the
@@ -90,7 +97,15 @@ export class MatchViews {
         proposerId: this.setupVote.proposerId,
         voters: this.setupVote.voters.slice(),
         agreed: [...this.setupVote.agreed],
+        // 0.3.0 (setupVote.js): the yes votes it needs, the no votes, its end (server clock ms)
+        rejected: [...this.setupVote.rejected],
+        need: this.setupVote.need,
+        deadline: this.setupVote.deadline,
       } : null,
+      // 投票移出 an offline AI-托管 teammate (kickVote.js): null or { id, proposerId, targetId, voters, agreed, rejected, need, deadline }
+      kickVote: this.kickVoteView(),
+      // 比赛控制 (matchControl.js): null or { id, action, proposerId, voters, agreed, rejected, need, deadline }
+      matchControl: this.matchControlView(),
       factions: this.factions.slice(),
       disabledBonds: [...new Set([...this.disabledBonds, ...this.staticInactiveBonds])].sort(),
       drawnDisabledBonds: this.disabledBonds.slice(),
@@ -103,45 +118,88 @@ export class MatchViews {
       spRound: this.gd.spRounds().includes(this.round),
       // DESIGN §14: 'client' = battles are simulated by the browsers (b.start specs), 'server' = legacy streaming
       combatMode: this.clientCombat ? 'client' : 'server',
-      // solo pause (g.pause, DESIGN §14): the battle, its field clock and every deadline are frozen while true
+      // server-run combat: a browser may run its own normal / 联防 fields as local display replicas (g.sim, localReplica.js)
+      localReplica: !this.clientCombat && !!this.localReplica,
+      // pause (a passed match control, matchControl.js + pause.js): the battle, its field clock and every deadline
+      // are frozen while true
       paused: !!this.paused,
+      // the playback speed the battle runs at (matchControl.js): 1× the base, 2× the fast-forward, 60× the 跳过.
+      // A passed speed change recomputes every end time from the game seconds still left (setGameSpeed)
+      speed: this.gameSpeed,
+      // restored from the checkpoint of this round's prep end (server/match/snapshot.js): its battle is fought again
+      ...(this.replayRound && this.phase === PHASE.PREP && this.round === this.replayRound ? { replayRound: this.replayRound } : {}),
+      revival: {
+        enabled: this.revivalEnabled,
+        cost: REVIVAL_COST,
+        minDonorLp: REVIVAL_MIN_DONOR_LP,
+        windowOpen: revivalOpen,
+        deadline: revivalOpen ? this._revival.deadline : 0,
+        matchId: this.battlePrefix,
+        round: this.round,
+        eligible: revivalOpen ? this.order.filter((ps) => this.revivalDonorEligible(ps)).map((ps) => ps.playerId) : [],
+      },
       players: this.order.map((ps) => ({
         playerId: ps.playerId,
         seat: ps.seat,
         name: ps.name,
+        avatar: ps.avatar,
         isBot: ps.isBot,
         ...(Number.isInteger(ps.aiTakeoverRound) ? { aiTakeoverRound: ps.aiTakeoverRound } : {}),
         connected: ps.isBot || (ps.connected && !ps.left),
         alive: ps.alive,
+        left: ps.left,
+        revived: ps.revived,
+        pendingDeath: ps.pendingDeath,
+        revivalUnavailableReason: ps.revivalUnavailableReason,
         lp: Math.max(0, ps.lp),
+        // 干员皮肤 (docs/SKINS.md): PUBLIC on purpose — this is how a teammate sees your skin, and the reason the
+        // renderer reads the skin off the unit rather than off the local player. Omitted when empty, which is the normal
+        // case: the appearance comes from a cosmetic plugin each player switches on for themself, so most have none.
+        ...(Object.keys(ps.skins).length ? { skins: ps.skins } : {}),
         bandId: ps.bandId,
+        // the core bond the player announced it means to build (g.bondPlan; display only, kept the whole match), else null
+        bondPlan: ps.bondPlan ?? null,
         shopLevel: ps.shop.level,
         boardCount: ps.deployCount,
         ready: this.phase === PHASE.INFO_CHECK ? ps.infoReady : ps.ready,
         // the strip of a teammate watching this player (DESIGN §20.15): every bond with members, layers or an active tier
         // (= the player's own m.private list without thresholds / countsHand — the client reads those from bonds.json),
-        // this round's in-battle gains included once the COMBAT phase ended (PlayerState.bondsView); [] once eliminated —
+        // normal-battle gains included as the authority retains them live (PlayerState.bondsView); [] once eliminated —
         // nobody can watch an eliminated player (g.watch refuses them, they have no field) and the result screen reads
         // m.result's own bonds, so their layers would only cost every m.public bytes for the rest of the match
         // (the mode-off bonds with members included, `off: true`, as in m.private — bondsMeta.offBondCounts)
-        bonds: ps.alive ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
+        bonds: ps.alive || ps.pendingDeath ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
+        // 盟约展开栏 (ui/teamPanel.js BondsFlyout, owner request 2026-10-25): the operators this seat has on its field,
+        // drawn beside its bond discs. Lean on purpose — the chess id the thumbnail needs, plus its elite bit when the
+        // seat's field record says so (a 补位 / 自选 piece shows the operator it fights as, like _prepBoardUnits does);
+        // names / tiers / art come from data/chess.json on the client. Tokens (devices, summons) are not 干员.
+        boardOps: this._boardOps(ps),
         fieldId: this.fieldOf(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
-        // 干员皮肤 (docs/SKINS.md): PUBLIC on purpose — this is how a teammate sees your skin, and the reason the
-        // renderer reads the skin off the unit rather than off the local player. Omitted when empty, which is the normal
-        // case: the appearance comes from a cosmetic plugin each player switches on for themself, so most have none.
-        ...(Object.keys(ps.skins).length ? { skins: ps.skins } : {}),
+        // the AI plays the seat because it stayed offline (MatchPlatform._checkOffline): a 投票移出 target (kickVote.js)
+        ...(ps.offlineAutoplay && ps.autoplay && !ps.connected ? { offlineTakeover: true } : {}),
         // the LP this round's own battle will cost at settlement so far (COMBAT / 联防 only, omitted when 0)
         ...this._pendingLpView(ps),
+        // the briefing's 核心盟约 call (INFO_CHECK and BAND_DRAFT — the draft order shows it —, omitted while none;
+        // server/match/bondCall.js)
+        ...(this.phase === PHASE.INFO_CHECK || this.phase === PHASE.BAND_DRAFT ? bondCallView(ps) : {}),
       })),
       fields: this.fields.map((f) => {
         const v = { fieldId: f.fieldId, kind: f.kind, players: f.players.slice(), live: !!f.live };
+        if (this.phase === PHASE.UNITE && this._uniteRelay) v.battleId = f.battleId || f.spec?.battleId || f.battle?.opts?.battleId;
         const pr = this._fieldProgress(f);
         if (pr) v.progress = pr;
         return v;
       }),
     };
+    // Full public snapshots replace the previous state. Omit inactive protection fields from the normal hot path;
+    // their absence in the recovery snapshot also clears the client's frozen state.
+    if (this.emergencyFrozen) {
+      v.emergencyFrozen = true;
+      v.emergencyFrozenAt = this.emergencyFrozenAt;
+      v.emergencyReason = this.emergencyReason;
+    }
     if (this.offers.length) v.offers = this.offerViews();
     if (this.teamLp != null) v.teamLp = Math.max(0, Math.round(this.teamLp));
     // 最终攻势 / 隐秘核心: when the overtime drain starts (ms epoch; `deadline` is the level's 120 s countdown)
@@ -149,27 +207,79 @@ export class MatchViews {
     if (this.bossPool) v.bossHp = { hp: Math.max(0, Math.round(this.bossPool.hp)), max: Math.round(this.bossPool.maxHp) };
     if (this.phase === PHASE.BAND_DRAFT && this.draft) {
       const d = this.draft;
-      // turnSeconds: the length of a turn (the countdown gauge's total; 0 when untimed) — deadline = turnDeadline
+      // the fixed pool groups (MatchPhases.makeDraftGroups): one page and one countdown per group; `order` / `turn` /
+      // `skipsLeft` / `turnDeadline` keep reading the first group (installDraftFacade) for single-pool clients
       v.draft = {
+        ...(d.groups ? {
+          id: d.id,
+          groups: d.groups.map((g) => ({
+            id: g.id, playerIds: g.playerIds.slice(), order: g.order.slice(),
+            turn: g.done ? null : g.order[g.idx] ?? null, picks: { ...g.picks }, skipsLeft: { ...g.skipsLeft },
+            turnDeadline: g.turnDeadline || 0, turnSeconds: g.turnSeconds || 0, untimed: !!g.untimed, done: !!g.done,
+          })),
+        } : {}),
+        // turnSeconds: the length of a turn (the countdown gauge's total; 0 when untimed) — deadline = turnDeadline
         order: d.order.slice(), turn: this.draftTurn(), picks: { ...d.picks }, skipsLeft: { ...d.skipsLeft }, turnDeadline: d.turnDeadline || 0,
-        turnSeconds: d.untimed ? 0 : this.bandTurnMs() / 1000, untimed: !!d.untimed,
+        turnSeconds: d.untimed ? 0 : (d.groups ? (d.groups[0]?.turnSeconds || this.bandTurnMs() / 1000) : this.bandTurnMs() / 1000), untimed: !!d.untimed,
+        ...(this.capacityExperiment ? { allowRepeat: true } : {}),
+        // every seat picks at once (MatchPhases.concurrentDraft): `turn` is null, the countdown is the step's
+        ...(d.concurrent ? { concurrent: true } : {}),
+        // room.setBotBand: the designated strategies still held for their AI seats (bandId → playerId; present only
+        // when the match has a designation and repeats are not allowed)
+        ...(this.botBands?.size && !this.capacityExperiment ? { reserved: this.reservedBands() } : {}),
       };
     }
     if (this.phase === PHASE.SP_DRAFT && this.sp) {
       const s = this.sp;
       v.sp = {
+        ...(s.groups?.length ? {
+          id: s.id,
+          groups: s.groups.map((g) => ({
+            id: g.id, playerIds: g.playerIds.slice(), order: g.order.slice(),
+            family: g.family, name: g.name, desc: g.desc, eventId: g.eventId,
+            // the group's own stock decides soldOut (SiderLock 分组卡池): each fixed group has its own equipment page
+            cards: g.cards.map((c) => ({ ...cardView(c),
+              soldOut: c.kind === 'item' && !this.itemPoolFor(g.playerIds[0]).canGain(c.id) })),
+            turn: g.done ? null : g.order[g.idx] ?? null,
+            picks: { ...g.picks }, taken: { ...g.taken }, turnDeadline: g.turnDeadline || 0, turnSeconds: g.turnSeconds || 0,
+            untimed: !!g.untimed, done: !!g.done,
+          })),
+        } : {}),
         family: s.family, name: s.name, desc: s.desc, eventId: s.eventId,
-        cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.itemPool.canGain(c.id) })), order: s.order.slice(),
+        // an item card's stock is the picking seat's (its chess-pool group's: Match itemPoolFor); a concurrent draft has
+        // no picking seat: soldOut = no alive seat's stock holds it (each seat's own: m.private spBlocked)
+        cards: s.cards.map(c => ({ ...cardView(c), soldOut: c.kind === 'item' && !this.spItemAvailable(c.id, this.spTurn()) })), order: s.order.slice(),
         turn: this.spTurn(), picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed,
+        turnDeadline: s.turnDeadline || 0, turnSeconds: s.turnSeconds || 0,
+        ...(this.capacityExperiment ? { allowRepeat: true } : {}),
+        ...(s.concurrent ? { concurrent: true } : {}),
       };
     }
-    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId) };
+    if (this.phase === PHASE.UNITE && this.unitePlan) {
+      v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId),
+        ...(this.capacityExperiment ? { timeLimit: this.unitePlan.timeLimit, totalBudget: this.unitePlan.totalBudget,
+          remainingBudget: this.unitePlan.remainingBudget, gameSpeed: this.unitePlan.gameSpeed } : {}) };
+      if (this.unitePlan.roundsMax != null && !this.unitePlan.uniteRound) {
+        // Optional multi-wave 联防 (uniteWaves.js, SiderLock port): the running wave and the fixed wave count.
+        v.unite.round = this.unitePlan.round;
+        v.unite.roundsMax = this.unitePlan.roundsMax;
+        v.unite.skipVote = this.uniteSkipVoteView();
+      }
+      if (this._uniteRelay) {
+        v.uniteRound = this.unitePlan.uniteRound;
+        v.uniteRounds = this.unitePlan.uniteRound === 2
+          || this._uniteBudget?.allocations.length === 2 && uniteRelayHelpers(this, this.unitePlan).length ? 2 : 1;
+        v.unite.battleId = v.fields[0]?.battleId;
+        v.unite.rounds = this._uniteRelay.rounds.map((r) => ({ ...r.view, helpers: r.view.helpers.slice() }));
+      }
+    }
     // SETTLE after a 联防: its outcome as data (settle.js uniteResultView; GitHub #235, PR #112) — { through, helpers,
     // leakers, losses: { playerId: the LP settlement charged this round } } — the client's result box reads the viewer's
     // own charge from it; absent when no 联防 resolved (the client then shows the round's own battle result)
     if (this.phase === PHASE.SETTLE && this.uniteResultView) {
       const ur = this.uniteResultView;
       v.uniteResult = { through: ur.through, helpers: ur.helpers.slice(), leakers: ur.leakers.slice(), losses: { ...ur.losses } };
+      if (ur.rounds) v.uniteResult.rounds = ur.rounds.map((r) => ({ ...r, helpers: r.helpers.slice() }));
     }
     // Test match (DESIGN §34.8). Omitted entirely when the flag is off, so a normal m.public stays identical.
     if (this.test === true) {
@@ -254,6 +364,7 @@ export class MatchViews {
     else if (this.phase === PHASE.COMBAT) {
       const f = this.fields.find((x) => x && x.kind === 'normal' && Array.isArray(x.players) && x.players.includes(ps.playerId));
       if (f && f.cc) n = f.done && f.result ? counted(f.result.perPlayer && f.result.perPlayer[ps.playerId]) : Number(f.progress && f.progress.leaks) || 0;
+      else if (f?.remote) n = f.battle.progress?.leaks || 0;
       else if (f && f.battle) { try { n = battleProgress(f.battle).leaks; } catch { n = 0; } }
     }
     const loss = Math.min(this.gd.lpCapPerRound, Math.max(0, Math.trunc(Number(n) || 0)));
@@ -296,6 +407,25 @@ export class MatchViews {
       spine: rec.assets?.spine || id, avatar: rec.assets?.avatar || id,
       x: slot.pos[1], y: slot.pos[0], dir, facing: dir === 'LEFT' ? -1 : 1, maxHp: rec.stats?.maxHp || 1,
     }];
+  }
+
+  /** 盟约展开栏 (ui/teamPanel.js BondsFlyout, owner request 2026-10-25): the chess pieces on a player's board, lean —
+   *  only the chess id a thumbnail draws (the seat's field record, so a 补位 / 自选 slot shows the operator it fights
+   *  as) and its elite bit. No loadout / skin / spine work: this rides in every m.public for every seat. Tokens are not
+   *  operators and stay out. */
+  _boardOps(ps) {
+    const ops = [];
+    if (!ps || ps.alive === false) return ops;
+    const gd = ps.gd || this.gd;
+    for (const { piece } of boardOrder(ps.board)) {
+      if (piece.kind !== 'chess') continue;
+      const rec = ps.fieldRecord(gd.chess(piece.id));
+      ops.push({
+        id: (rec && rec.charId) || piece.id,
+        ...(rec && rec.isGolden ? { golden: 1 } : {}),
+      });
+    }
+    return ops;
   }
 
   /** UnitInfo of a player's board pieces on their (board) tiles — a prep scout's board, the boss partner's (bossMateView).

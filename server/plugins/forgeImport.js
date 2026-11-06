@@ -376,6 +376,20 @@ function commitProducts(stage, parent, products, primaryId, markdown, repack = n
 function openValidationView({ root, dataDir, pluginsDir, stage }) {
   const view = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-view-'));
   try {
+    // Windows without Developer Mode / SeCreateSymbolicLinkPrivilege refuses a plain symlink (EPERM); a
+    // directory junction is the unprivileged equivalent and is enough for this validation view. Some hosts
+    // take the call but never resolve the reparse point, so a link only counts once stat follows it; the
+    // probe runs before anything is written, and without a working link the folders are copied — the
+    // registry reads the same bytes either way.
+    let link = null;
+    try {
+      const probe = path.join(view, '.probe');
+      fs.symlinkSync(stage, probe, process.platform === 'win32' ? 'junction' : 'dir');
+      if (fs.statSync(probe).isDirectory()) {
+        link = (abs, dest) => fs.symlinkSync(abs, dest, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      try { fs.unlinkSync(probe); } catch { try { fs.rmdirSync(probe); } catch { /* a name starting with '.' is never read */ } }
+    } catch { /* the OS refuses links here */ }
     const take = (name, abs) => {
       if (!name || name.startsWith('.') || name.startsWith('_')) return;
       const dest = path.join(view, name);
@@ -384,7 +398,8 @@ function openValidationView({ root, dataDir, pluginsDir, stage }) {
       try { st = fs.statSync(abs); } catch { return; }
       if (!st.isDirectory()) return;
       if (!fs.existsSync(path.join(abs, PLUGIN_MANIFEST))) return;
-      fs.symlinkSync(abs, dest);
+      if (link) { link(abs, dest); return; }
+      fs.cpSync(abs, dest, { recursive: true });
     };
     if (pluginsDir && fs.existsSync(pluginsDir)) {
       for (const name of fs.readdirSync(pluginsDir)) take(name, path.join(pluginsDir, name));

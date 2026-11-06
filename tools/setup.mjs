@@ -3,10 +3,11 @@
 //
 //   node tools/setup.mjs [options]
 //
-// Steps (each one is skipped when already done, so re-running is cheap — the start scripts run it on every start):
+// Steps (the start scripts run this on every start; downloads/installations skip files already present):
 //   1. Node.js ≥ 22 check (clear message + download link otherwise).
 //   2. Dependencies: `npm ci` (falls back to `npm install`) when node_modules is missing or incomplete.
 //   3. Client libraries in public/vendor (tools/vendor.mjs) when any is missing.
+//      With Vite installed, rebuild the production client in public/build (release bundles carry it already).
 //   4. Game data (data/*.json, committed) present and parseable.
 //   5. Art/audio (tools/fetch-assets.mjs, ~720 MB into public/assets, resumable, mirror fallback) when public/assets
 //      is missing or data/assets.json lists files that are not on disk. A failure is a warning: the game still runs
@@ -76,7 +77,7 @@ export function pluginFxExtractionAllowed(opts, missing, answer = false) {
 }
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const MIN_NODE = 22;
+export const MIN_NODE = 24;
 export const IS_WIN = process.platform === 'win32';
 export const IS_MAC = process.platform === 'darwin';
 const NODE_URL = 'https://nodejs.org/zh-cn/download';
@@ -85,9 +86,9 @@ const NODE_URL = 'https://nodejs.org/zh-cn/download';
 export const DATA_FILES = ['config', 'chess', 'bonds', 'garrisons', 'items', 'bands', 'effects', 'choices',
   'enemies', 'factions', 'waves', 'stages', 'bosses', 'tokens', 'assets', 'backups', 'emotes'];
 /** Runtime packages that must be installed (package.json dependencies). */
-export const RUNTIME_PACKAGES = ['ws', 'pixi.js', 'pixi-spine', 'preact', 'htm'];
+export const RUNTIME_PACKAGES = ['ws', 'pixi.js', 'pixi-spine', 'preact', 'htm', '@zip.js/zip.js', 'marked'];
 /** Vendor files the client cannot run without (tools/vendor.mjs; three.js is optional there). */
-export const VENDOR_REQUIRED = ['pixi.min.js', 'pixi-spine.js', 'preact.module.js', 'hooks.module.js', 'htm.module.js'];
+export const VENDOR_REQUIRED = ['pixi.min.js', 'pixi-spine.js', 'preact.module.js', 'hooks.module.js', 'htm.module.js', 'zip.module.js', 'marked.module.js'];
 export const VENDOR_OPTIONAL = ['three.core.js', 'three.module.js'];
 
 const STATE_FILE = path.join(ROOT, '.cache', 'setup-state.json');
@@ -178,7 +179,7 @@ async function ask(question, def, timeoutMs = 60000) {
 /** Node.js version check. */
 export function checkNode() {
   const major = nodeMajor();
-  return { ok: major >= MIN_NODE, version: process.versions.node, major, recommended: major >= MIN_NODE };
+  return { ok: major >= MIN_NODE, version: process.versions.node, major, recommended: major === MIN_NODE };
 }
 
 /** Runtime dependencies installed? */
@@ -235,13 +236,13 @@ export function checkAssets() {
 }
 
 /**
- * What the game draws instead when the local-client art is absent (DESIGN §13, docs/DEPLOY.md §6). The battle emotes and
- * the 玩法说明 pages are not in the list: step 5 downloads them from the public mirror with the other assets (GitHub
- * issue #42). Shown by setup and doctor.
+ * What the game draws instead when the local-client art is absent (DESIGN §13, docs/development/ASSETS.md「Local client art」).
+ * The battle emotes and the 玩法说明 pages are not in the list: step 5 downloads them from the public mirror with the other
+ * assets (GitHub issue #42). Shown by setup and doctor.
  */
 export const LOCAL_ART_FALLBACK = '3D 棋盘改用 2D，部分官方界面图标、灼热/炽焰源石虫模型和多数自选召唤物模型用替代样式';
-/** Where a machine without the client gets the local art (docs/DEPLOY.md §6「本地客户端素材」); shown by doctor (setup's row,
- * printed on every start by scripts/launch.mjs, only points to that section). */
+/** Where a machine without the client gets the local art (docs/development/ASSETS.md「Local client art」); shown by doctor
+ * (setup's row, printed on every start by scripts/launch.mjs, only points to that section). */
 export const LOCAL_ART_COPY_HINT = '没有客户端的服务器可以从同一版本的整合包（完整包）复制 public/assets/local 和 data/local-assets.json';
 
 const LOCAL_FX = path.join(ROOT, 'data', 'local-fx.json');
@@ -665,6 +666,8 @@ export function clientCandidates() {
   const add = (p, kind) => out.push({ path: p, kind });
   const ab = spec.abTail;
   if (IS_WIN) {
+    // The fork's hardcoded drives/bases are now encoded in client-candidates.json (windowsDrives / windowsBases /
+    // gameFolders), so the data-driven loop produces the same candidate set.
     for (const d of spec.windowsDrives) {
       for (const base of spec.windowsBases) {
         for (const game of spec.gameFolders) add(path.win32.join(`${d}:\\`, ...base, game, ...ab), 'Windows');
@@ -904,16 +907,16 @@ async function main() {
   const add = (state, label, detail = '') => summary.push({ state, label, detail });
   let fatal = false;
 
-  say(c.bold('\n卫戍协议：盟约 · setup') + c.dim(`  (${ROOT})`));
+  say(c.bold('\n卫戍协议：狩猎模拟 · setup') + c.dim(`  (${ROOT})`));
 
   // 1. Node
   const node = checkNode();
   if (!node.ok) {
-    log(`${mark.err} Node.js ${node.version} 太旧：需要 ${MIN_NODE} 或更高（22 / 24 LTS）。`);
-    log(`  下载：${NODE_URL}` + (IS_WIN ? '   或在终端运行：winget install OpenJS.NodeJS.LTS' : IS_MAC ? '   或：brew install node@22' : ''));
+    log(`${mark.err} Node.js ${node.version} 太旧：只支持 Node.js 24（LTS）。`);
+    log(`  下载：${NODE_URL}` + (IS_WIN ? '   或在终端运行：winget install OpenJS.NodeJS.LTS' : IS_MAC ? '   或：brew install node@24' : ''));
     return 1;
   }
-  add('ok', 'Node.js', `v${node.version}${node.recommended ? '' : '（可用；推荐 22 / 24 LTS）'}`);
+  add('ok', 'Node.js', `v${node.version}${node.recommended ? '' : '（可以运行，但只支持 Node.js 24 LTS）'}`);
 
   // 2. npm dependencies
   let deps = checkDeps();
@@ -939,6 +942,15 @@ async function main() {
   }
   if (vendor.ok) add('ok', '前端库 public/vendor', vendor.optionalMissing.length ? '（three.js 缺失：3D 棋盘回退为 2D）' : '');
   else { add('err', '前端库 public/vendor', `缺少 ${vendor.missing.join(', ')} → 运行 node tools/vendor.mjs`); fatal = true; }
+
+  // Source installs build after setup; release bundles already carry the client and need no Vite at runtime.
+  const viteCli = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
+  if (!opts.check && vendor.ok && fs.existsSync(viteCli)) {
+    log(`\n${c.cyan('▶')} 构建前端 JS / CSS …`);
+    const built = run(process.execPath, [viteCli, 'build']);
+    if (!built.ok) { add('err', 'Vite 前端构建', '运行 npm run build 查看错误'); fatal = true; }
+    else add('ok', 'Vite 前端构建 public/build');
+  }
 
   // 4. data
   const data = checkData();
@@ -999,7 +1011,7 @@ async function main() {
     if (!client) {
       if (already && local.board3d && !local.tiles && !opts.check) cropBoardTiles(log);
       if (already) pushArt(local, local.board3d ? '，3D 棋盘可用' : '', '已提取', false);
-      else add('skip', '本地客户端美术（可选）', `${opts.game ? `找不到 ${opts.game}` : '未检测到本机明日方舟客户端'}：${LOCAL_ART_FALLBACK}（见 docs/DEPLOY.md 第 6 节）`);
+      else add('skip', '本地客户端美术（可选）', `${opts.game ? `找不到 ${opts.game}` : '未检测到本机明日方舟客户端'}：${LOCAL_ART_FALLBACK}（见 docs/development/ASSETS.md「Local client art」）`);
     } else if (!client.autochess) {
       add(already ? localArtState(local) : 'warn', '本地客户端美术（可选）', `${client.kind} 客户端缺少卫戍协议资源（请在游戏内下载全部资源）：${client.path}${already ? localGaps(local, { client: false }) : ''}`);
     } else if (already && opts.local !== 'force') {

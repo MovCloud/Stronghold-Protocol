@@ -11,9 +11,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { makeBattle } from '../helpers/battleHarness.js';
 import { makeMatch } from '../match/harness.js';
 import { hasGeneratedData } from '../../server/sim/simdata.js';
+import { DATA_DIR, getDataProfile } from '../../server/data.js';
 
 const REAL = { skip: !hasGeneratedData() };
 
@@ -52,7 +54,9 @@ test('50: two 空弦 made 阿戈尔 (变形同构体 + 阿戈尔重刃) in a row
 test('45: 寻呼模块 / 简易通讯机 on 缪尔赛思 below shop level 6 — nothing qualifies (调和, tier ≤ shop level), the item is used up with a toast saying why', () => {
   for (const itemId of ['chess_item_4_01_e_a', 'chess_item_2_06_e_a']) {
     for (const level of [5, 6]) {
-      const h = makeMatch({ mode: 'solo', difficulty: 'NORMAL', humans: 1, seed: 7, fake: true }).start();
+      // This official-only case relies on Muelsyse having just 调和 (the official data profile).
+      const h = makeMatch({ mode: 'solo', difficulty: 'NORMAL', humans: 1, seed: 7, fake: true,
+        data: getDataProfile({ dir: path.join(DATA_DIR, 'vanilla'), log: { warn() {}, error() {}, info() {} } }) }).start();
       h.toPrep(1);
       const ps = h.ps('p_0');
       ps.shop.level = level;

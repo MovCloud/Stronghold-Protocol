@@ -74,6 +74,10 @@ const NOT_SCALED = [
   /\.field--code/, /\.minfo-dlg/, /\.set-diag__text/,
   // the keyboard hints of the 快捷键 list (a shared rule with the HUD's .toolbtn kbd)
   /\.set-hint kbd/,
+  // fork additions that compose their own type inside a card layout (a later pass, as the sheets below):
+  // the 结算 page (result.css: scrit / smode / sself / splate / sop / sbond / slv / settle / steam / sbtn / tcard / tchip),
+  // the 大厅成就页 (ach-*, hub-ach*) and the online-count pill
+  /\.s(op|logo|mode|self|plate|bonds?|lv|ettle|team|btn)/, /\.t(card|chip)/, /\.(hub-)?ach[-_]/, /\.online-pill/,
 ];
 
 const notScaled = (selector) => NOT_SCALED.some((re) => re.test(selector));
@@ -168,7 +172,8 @@ describe('文字大小: the setting', () => {
     const css = read('public/css/screens/game.css');
     assert.match(css, /\.set-voice \{[^}]*display: flex; flex-wrap: nowrap;/);
     assert.match(css, /\.set-voice \.set-seg \{[^}]*display: flex; flex-wrap: wrap; gap: 1px;/);
-    assert.match(css, /\.set-voice \.set-seg button \{[^}]*min-width: 0;[^}]*flex: 1 1 clamp\(calc\(25% - 1px\), \(2\.4rem - 100%\) \* 999, calc\(50% - 1px\)\)/);
+    // this repo: the 1 px seams scale with 界面大小 (--sp-ui), so a 0.9 interface keeps them sub-pixel
+    assert.match(css, /\.set-voice \.set-seg button \{[^}]*min-width: 0;[^}]*flex: 1 1 clamp\(calc\(25% - calc\(1px \* var\(--sp-ui, 1\)\)\), \(2\.4rem - 100%\) \* 999, calc\(50% - calc\(1px \* var\(--sp-ui, 1\)\)\)\)/);
     assert.match(css, /\.set-native \{[^}]*display: inline-flex/);
     assert.doesNotMatch(css, /@container|container-type/);
     assert.match(css, /\.set-seg\.set-textsize button \{ min-width: \.62rem; \}/, '文字大小 keeps its own button width');
@@ -180,9 +185,10 @@ describe('文字大小: the CSS text root', () => {
   const theme = sheets.find((s) => s.rel === `${CSS}/theme.css`).src;
 
   test('theme.css defines --t for 小 and every step, and nothing else defines it', () => {
-    // 小 = the design's own sizes; the 64 / 76 / 88 px floors never shrink with 界面大小 (DESIGN §35.43, ui-size.test.js)
+    // 小 = the design's own sizes; the 64 / 76 / 88 px floors scale with 界面大小 (DESIGN §35.43, ui-size.test.js)
     assert.match(theme, /:root \{ --t: 1rem; \}/, '小 = the design\'s own sizes');
-    for (const [attr, value] of [['md', /--t: max\(1rem, 64px\)/], ['lg', /--t: max\(calc\(1rem \* 1\.15\), 76px\)/], ['xl', /--t: max\(calc\(1rem \* 1\.3\), 88px\)/]]) {
+    // this repo: the px floors carry 界面大小 (--sp-ui), so a 0.8 interface gets a 0.8 step
+    for (const [attr, value] of [['md', /--t: max\(1rem, calc\(64px \* var\(--sp-ui, 1\)\)\)/], ['lg', /--t: max\(calc\(1rem \* 1\.15\), calc\(76px \* var\(--sp-ui, 1\)\)\)/], ['xl', /--t: max\(calc\(1rem \* 1\.3\), calc\(88px \* var\(--sp-ui, 1\)\)\)/]]) {
       assert.match(theme, new RegExp(`:root\\[data-text="${attr}"\\] \\{ ${value.source}; \\}`), `the ${attr} step`);
     }
     for (const { rel, src } of sheets) {
@@ -217,8 +223,9 @@ describe('文字大小: the CSS text root', () => {
       ['components.css', /\.btn \{[^}]*font-size: calc\(\.18 \* var\(--t\)\)/s],
       ['screens/game.css', /\.set-row__label \{[^}]*font-size: calc\(\.18 \* var\(--t\)\)/s],
       ['screens/game-panels.css', /\.dtext \{ font-size: calc\(\.15 \* var\(--t\)\); line-height: 1\.65;/],
-      ['screens/guide.css', /\.guide__tips li \{ font-size: calc\(\.18 \* var\(--t\)\)/],
-      ['screens/lobby.css', /\.pcard__desc \{[^}]*font-size: calc\(\.16 \* var\(--t\)\)/],
+      ['screens/guide.css', /\.guide__tips li \{ font-size: calc\(\.18 \* var\(--utility-text, var\(--t\)\)\)/],
+      // this repo's .pcard__desc keeps its own 11 px floor (the upstream .16 * --t rule is not in this stylesheet)
+      ['screens/lobby.css', /\.pcard__desc \{[^}]*font-size: max\(calc\(\.17 \* var\(--t\)\), 11px\)/],
     ];
     for (const [file, re] of samples) assert.match(byRel.get(`${CSS}/${file}`), re, file);
   });
@@ -245,13 +252,13 @@ describe('文字大小: the CSS text root', () => {
   test('the in-match HUD, the board-pinned text and the iOS zoom guards stay as they were', () => {
     const byRel = new Map(sheets.map((s) => [s.rel, s.src]));
     const plain = [
-      ['screens/game-panels.css', /\.sitag \{[^}]*font-size: max\(\.12rem, 9px\)/, '.sitag'],
+      ['screens/game-panels.css', /\.sitag \{[^}]*font-size: max\(\.12rem, calc\(9px \* var\(--sp-ui, 1\)\)\)/, '.sitag'],
       ['screens/game-panels.css', /\.tempnote__title \{[^}]*font-size: \.15rem/, '.tempnote__title'],
       ['screens/game-panels.css', /\.uframe__label \{[^}]*font-size: \.14rem/, '.uframe__label'],
       ['screens/game-panels.css', /\.spcard__desc \{ flex: none; font-size: \.2rem/, '.spcard__desc (7 clamped lines)'],
       ['screens/game-panels.css', /\.dhp span \{[^}]*font-size: \.12rem/, '.dhp span (a fixed-height HP bar)'],
       ['screens/game-shop.css', /\.scard__name \{[^}]*font-size: \.19rem/, 'the shop card'],
-      ['screens/game.css', /\.bslot \.bond__name \{[^}]*font-size: \.14rem/, 'the bond strip'],
+      ['screens/game.css', /\.bslot \.bond__name \{[^}]*font-size: calc\(var\(--disc\) \* \.27\)/, 'the bond strip'],
       ['screens/game.css', /\.bossbar__txt \{[^}]*font-size: \.14rem/, 'the boss bar'],
       ['screens/game.css', /\.lp--md \{ font-size: \.24rem; \}/, 'the top bar LP'],
       ['screens/game.css', /\.sp-coarse \.set-diag__text \{ font-size: 16px; \}/, 'the 16 px iOS-zoom guard'],

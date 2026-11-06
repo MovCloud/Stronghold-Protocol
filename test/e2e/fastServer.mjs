@@ -107,7 +107,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
         const rec = this.data.chess?.[id];
         const slot = ps.hand.findIndex((x) => x == null);
         if (!rec || slot < 0) continue;
-        try { ps.hand[slot] = ps.newPiece('chess', id, { poolCopies: this.pool.take(this.gd.baseIdOf(id), rec.isGolden ? this.gd.goldenCopies : 1) }); } catch { /* best effort */ }
+        try { ps.hand[slot] = ps.newPiece('chess', id, { poolCopies: ps.poolOf(this.gd.baseIdOf(id)).take(this.gd.baseIdOf(id), rec.isGolden ? this.gd.goldenCopies : 1) }); } catch { /* best effort */ }
       }
     }
 
@@ -187,7 +187,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
         const slot = ps.hand.findIndex((x) => x == null);
         if (slot < 0) break;
         try {
-          const taken = this.pool.take(this.gd.baseIdOf(rec.chessId), rec.isGolden ? this.gd.goldenCopies : 1);
+          const taken = ps.poolOf(this.gd.baseIdOf(rec.chessId)).take(this.gd.baseIdOf(rec.chessId), rec.isGolden ? this.gd.goldenCopies : 1);
           if (!taken && !ids.length) continue; // an explicit SP_START_CHESS piece is handed out even when this match bans it
           ps.hand[slot] = ps.newPiece('chess', rec.chessId, { poolCopies: taken });
         } catch { /* keep going: the kit is best effort */ }
@@ -210,7 +210,8 @@ if (!process.env.NODE_TEST_CONTEXT) {
     }
   }
 
-  const srv = await startServer({ port: Number(process.env.PORT) || 0, host: process.env.HOST || '127.0.0.1', quiet: true, MatchClass: FastMatch,
+  // SP_FAST_VERBOSE=1: the server's info lines too (a test reading them, e.g. coop.e2e.mjs's server takeover)
+  const srv = await startServer({ port: Number(process.env.PORT) || 0, host: process.env.HOST || '127.0.0.1', quiet: process.env.SP_FAST_VERBOSE !== '1', MatchClass: FastMatch,
     ...(process.env.SP_PLUGINS_DIR ? { pluginsDir: process.env.SP_PLUGINS_DIR } : {}) });
   console.log(`fast server on ${srv.url} (timers ×${timerScale}, combat ${combatSpeed}×${startAt ? `, first round ${startAt}` : ''})`);
   const stop = () => { srv.close().finally(() => process.exit(0)); };

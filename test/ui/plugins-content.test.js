@@ -310,7 +310,7 @@ describe('the runner\'s cs check (public/js/battle/runner.js)', () => {
     });
     return {
       runner, net, sent, loads,
-      async run(ms) { for (let i = 0; i < 50; i++) { await new Promise((r) => setImmediate(r)); for (const fn of frames.splice(0)) fn(t); } const end = t + ms; while (t < end) { t += 1000 / 60; for (const fn of frames.splice(0)) fn(t); } await new Promise((r) => setImmediate(r)); },
+      async run(ms) { for (let i = 0; i < 50; i++) { await new Promise((r) => setImmediate(r)); for (const fn of frames.splice(0)) fn(t); } const end = t + ms; while (t < end) { t += 1000 / 60; for (const fn of frames.splice(0)) fn(t); await new Promise((r) => setImmediate(r)); } await new Promise((r) => setImmediate(r)); },
     };
   }
 
@@ -378,6 +378,8 @@ describe('the runner\'s cs check (public/js/battle/runner.js)', () => {
     // never became the authority before the clock ran out
     const r = rig({ state, contentFor: async (cs) => { await new Promise((ok) => setImmediate(ok)); state.held = { cs, data: DATA }; state.loading = null; return state.held; } });
     r.net.emit('b.start', s);
+    // the set arrives on a timer: run() steps its frames without yielding to timers, so it starts once the set is there
+    await until(() => state.held, 'the content set arrived');
     await r.run(60_000);
     const e = r.runner._entries.get(s.battleId);
     assert.equal(e.authoritative, true, 'kept while the page loaded the set, confirmed once it was there');

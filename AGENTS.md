@@ -39,7 +39,8 @@ rooms) and a deterministic battle sim shared by the server and the browser. It a
 - **Interface strings** go through `t('…')`, with entries in every pack under `public/i18n/`
   (`node tools/i18n.mjs check --all --strict`).
 - **Docs follow the code.** A rule change updates `docs/design/`, the current `docs/history/` file and the reference
-  docs; run `node --test test/docs-consistency.test.js test/docs-paths.test.js`.
+  docs. The upstream `test/docs-consistency.test.js` and `test/docs-paths.test.js` are not part of this snapshot, so
+  instead run `git grep -n "<rule id>"` and update every table that mentions it.
 - **Commits and PRs**: one topic per PR; a one-line message of what changed (Chinese or English) with the issue number;
   no attribution trailers (`Co-Authored-By:`, `Generated with …`). The PR description states what, why, the sources,
   the `[ASSUMED]` points, the tests you ran (paste the summary lines) and the golden moves. No ads, payments or other

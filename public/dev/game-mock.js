@@ -14,7 +14,7 @@ import { GameScreen } from '/js/screens/game.js';
 import { store, emptyMatch, selectRoute } from '/js/store.js';
 import { net, NetError } from '/js/net.js';
 import { data } from '/js/data.js';
-import { installAudio } from '/js/audio.js';
+import { installAudio, audio } from '/js/audio.js';
 import { settingsStore } from '/js/ui/settings.js';
 import { awayStore } from '/js/ui/matchChrome.js';
 import { GAME_FILES } from '/js/ui/gameComponents.js';
@@ -41,6 +41,9 @@ const PLAYERS = [
   { playerId: 'p3', seat: 2, name: 'Doctor·B', isBot: false, bandId: 'band_amiya' },
   { playerId: 'p4', seat: 3, name: '灰烬', isBot: false, bandId: 'band_amedic' },
 ];
+
+/** Teammates' room.card (room.state seats[].card): a 头像 for Doctor·B, a namecard and trophies for 灰烬 (who keeps no 头像). */
+const MOCK_CARDS = { p3: { avatar: 'char_306_leizi', trophies: 260 }, p4: { bg: 'loading:core', trophies: 1200 } };
 
 let uidSeq = 100;
 const nextUid = () => ++uidSeq;
@@ -101,10 +104,68 @@ function computeBonds(priv) {
   return out.sort((a, b) => (b.active - a.active) || (b.layers - a.layers));
 }
 
+const EXTRA_NAMES = ['能天使', '德克萨斯', '拉普兰德', '陈', '星熊', '银灰', '史尔特尔', '塞雷娅', '一位名字特别特别长的博士·Rhodes Island',
+  '艾雅法拉', '推进之王', '斯卡蒂', '赫拉格', '麦哲伦', '莫斯提马', '煌'];
+const EXTRA_BANDS = ['band_bldsk', 'band_sarkazb', 'band_amiya', 'band_amedic', null];
+/** m.public players[].boardOps (server/match/match/views.js): the chess ids a seat has on its field, for the 盟约
+ *  flyout's thumbnail column. Deterministic per seat so screenshots stay stable. */
+function mockBoardOps(n, salt = 0) {
+  const all = visibleChess();
+  const out = [];
+  for (let j = 0; j < n && all.length; j++) {
+    const c = all[(salt * 7 + j * 13) % all.length];
+    out.push({ id: c.chessId, ...(j === 0 && salt % 3 === 0 ? { golden: 1 } : {}) });
+  }
+  return out;
+}
+/** Seats `from`..`to - 1` of a big room (players20). */
+function extraPlayers(from, to) {
+  const out = [];
+  for (let i = from; i < to; i++) {
+    const k = i - from;
+    const bot = k % 5 === 1;
+    const p = {
+      playerId: `p${i + 1}`, seat: i, name: bot ? `AI·${EXTRA_NAMES[k % EXTRA_NAMES.length]}` : EXTRA_NAMES[k % EXTRA_NAMES.length], isBot: bot,
+      bandId: EXTRA_BANDS[k % EXTRA_BANDS.length], connected: k !== 6, alive: k !== 9, lp: k === 9 ? 0 : 6 + ((k * 7) % 30), shopLevel: 1 + (k % 6),
+      boardCount: 3 + (k % 6), boardOps: mockBoardOps(3 + (k % 6), k + 1), ready: k % 3 === 0, bonds: [], fieldId: `n:p${i + 1}`,
+      status: k === 9 ? 'dead' : k % 3 === 0 ? 'ready' : 'acting',
+    };
+    if (k === 12) p.pendingDeath = true;
+    out.push(p);
+  }
+  return out;
+}
+
+// ?variant=emotestorm — every seat keeps sending (a burst of the same emote from several seats, then a steady stream), like a
+// 20-player room in the last seconds of a prep
+let stormTimer = 0;
+function startEmoteStorm() {
+  clearInterval(stormTimer);
+  const ids = ['autochess_battle_happy', 'slug_autochess_battle_thanks', 'autochess_battle_call', 'autochess_battle_nice_cooperate',
+    'autochess_battle_fooldoctor_05', 'autochess_battle_foolamiya_03', 'autochess_battle_foolwisdel_01'];
+  const send = (playerId, id) => { const now = Date.now(); store.set((s) => ({ emotes: [...s.emotes.slice(-39), { seq: now + Math.random(), playerId, id, at: now }] })); };
+  const seats = () => (S?.pub?.players || []).filter((p) => p.playerId !== ME && p.alive !== false).map((p) => p.playerId);
+  seats().slice(0, 5).forEach((pid) => send(pid, ids[0]));
+  let n = 0;
+  stormTimer = setInterval(() => {
+    const all = seats();
+    if (!all.length || ++n > 80) { clearInterval(stormTimer); return; }
+    send(all[Math.floor(rnd() * all.length)], ids[Math.floor(rnd() * ids.length)]);
+  }, 220);
+}
+
 function refreshPrivate() {
   const p = S.priv;
   p.deployCount = p.board.filter((x) => x.kind === 'chess').length;
   p.bonds = computeBonds(p);
+  // ?variant=forecast — 预计叠层 (feedback #25, server/match/layerForecast.js): +2 on every active bond from 助力, +1 more
+  // on the first from an operator's 特质, a random source not counted
+  if (VARIANTS.has('forecast')) {
+    const act = p.bonds.filter((b) => b.active);
+    p.layerForecast = { random: true, randomSources: [{ kind: 'band', id: 'band_bldsk' }], partial: false,
+      bonds: Object.fromEntries(act.map((b, i) => [b.bondId, { n: i ? 2 : 3, sources: [{ kind: 'bond', id: 'deputShip', n: 2 },
+        ...(i ? [] : [{ kind: 'garrison', id: p.board.find((x) => x && x.kind === 'chess')?.id || 'x', n: 1 }])] }])) };
+  }
   p.canReady = !p.personalChoice && !p.temp.some(Boolean);
   const upg = [5, 8, 11, 12, 13];
   p.shop.maxLevel = 6;
@@ -112,7 +173,14 @@ function refreshPrivate() {
   p.shop.refreshPrice = p.shop.freeRefreshes > 0 ? 0 : 1;
   store.patch('match', { private: JSON.parse(JSON.stringify(p)) });
   const me = S.pub.players.find((x) => x.playerId === ME);
-  if (me) { me.bonds = p.bonds; me.boardCount = p.deployCount; me.lp = p.lp; me.ready = p.ready; if (S.pub.phase === PHASE.PREP) me.status = p.ready ? 'ready' : 'acting'; }
+  if (me) {
+    me.bonds = p.bonds;
+    me.boardCount = p.deployCount;
+    me.boardOps = p.alive === false ? [] : p.board.filter((x) => x && x.kind === 'chess').map((x) => ({ id: x.id, ...(x.golden ? { golden: 1 } : {}) }));
+    me.lp = p.lp;
+    me.ready = p.ready;
+    if (S.pub.phase === PHASE.PREP) me.status = p.ready ? 'ready' : 'acting';
+  }
   pushPublic();
 }
 function pushPublic() {
@@ -200,9 +268,16 @@ function buildState() {
 
   const players = PLAYERS.map((p, i) => ({
     ...p, connected: i !== 3 || true, alive: true, lp: [24, 31, 18, 5][i], shopLevel: [4, 5, 3, 4][i], boardCount: [7, 8, 6, 7][i],
+    boardOps: mockBoardOps([7, 8, 6, 7][i], i + 1),
     ready: [false, true, false, false][i], bonds: [], fieldId: `n:${p.playerId}`, status: ['acting', 'ready', 'acting', 'acting'][i],
   }));
   players[3].connected = false;
+  // ?variant=kick — the offline seat is under the offline AI takeover (投票移出 button, ui/kickVote.js); kickvote — a vote
+  // against it is open, proposed by Doctor·B
+  if (VARIANTS.has('kick') || VARIANTS.has('kickvote')) Object.assign(players[3], { autoplay: true, offlineTakeover: true });
+  // ?variant=players20 — an experimental 20-seat room (pub.playerCapacity 20): AI seats, a long name, an offline, a dead and
+  // a rescue-pending teammate, a few without a band yet
+  if (VARIANTS.has('players20')) players.push(...extraPlayers(players.length, 20));
   // boss-round prep (最终攻势 prep on the own half of the boss field): `boss` = the left half; `bossR` = seats swapped so
   // I am the second of the first pair → the mirrored right half (server pairPlayers: alive players by seat, in pairs)
   if (VARIANTS.has('bossR')) { players[0].seat = 1; players[1].seat = 0; }
@@ -212,8 +287,14 @@ function buildState() {
     phase: PHASE.PREP, round: 6, lastRound: 14, bossRound: 14, hiddenRound: 15, deadline: Date.now() + 74000, serverNow: Date.now(), modeId: 'mode_multi_hard', difficulty: 'HARD',
     stageId: STAGE_ID, factions: ['FLY', 'TIMES', 'SPECIAL'], disabledBonds: [...disabled], bannedChess: banned, bossId: 'boss_5',
     hiddenBossId: 'boss_8', teamLp: null, bossHp: null, draft: null, sp: null, players, fields: [],
+    // the twenty-seat rule's fixed seat-ordered pool groups (server/match/pool.js createPoolGroups; shared/
+    // playerCapacity.js poolGroupSizes: 20 seats = five groups of four, each at the ordinary copy scale)
+    ...(VARIANTS.has('players20') ? { playerCapacity: 20, poolGroups: [0, 1, 2, 3, 4].map((g) => ({ id: g + 1, scale: 1,
+      playerIds: players.filter((p) => Math.floor(p.seat / 4) === g).map((p) => p.playerId) })) } : null),
   };
   if (VARIANTS.has('boss') || VARIANTS.has('bossR')) pub.round = pub.bossRound;
+  if (VARIANTS.has('kickvote')) pub.kickVote = { id: 1, proposerId: 'p3', targetId: 'p4',
+    voters: ['p1', 'p3'], agreed: ['p3'], rejected: [], need: 2, deadline: Date.now() + 24000 };
   S = { stage, pub, priv, layers: {}, battle: null, pool, requests: [] };
 }
 
@@ -282,6 +363,7 @@ function mockLoadout(board, slots) {
 // ---- phases ---------------------------------------------------------------------------------------------------------
 function setPhase(phase, variant) {
   stopBattle();
+  clearInterval(stormTimer);
   buildState();
   for (const v of (variant || '').split(',').filter(Boolean)) VARIANTS.add(v);
   if (VARIANTS.has('reward') && !S.priv.shop.rewardOffer) S.priv.shop.rewardOffer = { tier: 5, slots: shuffle(visibleChess(5)).slice(0, 3).map((c) => ({ kind: 'chess', id: c.chessId, price: 0, sold: false })) };
@@ -488,7 +570,7 @@ function startCombat(phase) {
   // every field — 联防 too — is fought on the round's battlefield (server unite.js; 0.2.0's escaped-level map withdrawn)
   const field = { fieldId, kind, rect, stageId: pub.stageId, units: units.map((u) => ({ ...u })) };
   store.patch('match', { field });
-  const allyState = units.map((u) => ({ ...u, hp: u.maxHp * (0.55 + rnd() * 0.45), sp: rnd() * 20, spMax: 20 }));
+  const allyState = units.map((u) => u.kind === 'token' ? ({ ...u, hp: 1 }) : ({ ...u, hp: u.maxHp * (0.55 + rnd() * 0.45), sp: rnd() * 20, spMax: 20 }));
   const t0 = performance.now();
   const total = enemies.length;
   let killed = phase === PHASE.SETTLE ? total : 0;
@@ -511,6 +593,7 @@ function startCombat(phase) {
     // attacks
     const liveEnemies = enemies.filter((e) => !e.dead && t >= e.spawnAt);
     for (const a of allyState) {
+      if (a.kind === 'token') continue;
       if (!liveEnemies.length || rnd() > 0.2) continue;
       const tgt = liveEnemies[Math.floor(rnd() * liveEnemies.length)];
       const dmg = Math.round(200 + rnd() * 700);
@@ -783,6 +866,9 @@ function applyUiVariants() {
       store.set({ emotes: [{ seq: now, playerId: 'p3', id: 'autochess_battle_nice_cooperate', at: now }, { seq: now + 1, playerId: 'ai_2', id: 'slug_autochess_battle_thanks', at: now }] });
     }, 300);
   }
+  if (VARIANTS.has('emotestorm')) setTimeout(startEmoteStorm, 600);
+  // ?variant=roster — open a roster that starts folded (phones, rosters of more than four)
+  if (VARIANTS.has('roster')) clickSel('.team.is-folded .team__toggle', 400);
   if (VARIANTS.has('settings')) clickSel('.gm__gear', 400);
   if (VARIANTS.has('collapsed')) clickSel('.funds__collapse', 400);
   // the first tap on a shop card selects it and opens its detail (there is no ⓘ corner)
@@ -806,6 +892,8 @@ const SWITCH = [
   ['FINAL_ASSAULT', PHASE.FINAL_ASSAULT, ''], ['FA overtime soon', PHASE.FINAL_ASSAULT, 'overtime'], ['FA draining', PHASE.FINAL_ASSAULT, 'drain'],
   ['HIDDEN_CORE', PHASE.HIDDEN_CORE, ''], ['COMBAT solo (pause)', PHASE.COMBAT, 'solo'], ['FA solo paused', PHASE.FINAL_ASSAULT, 'solo,paused'],
   ['RESULT win', PHASE.RESULT, ''], ['RESULT lose', PHASE.RESULT, 'defeat'],
+  ['PREP 20 players', PHASE.PREP, 'players20'], ['PREP 20 + roster + emote storm', PHASE.PREP, 'players20,roster,emotestorm'],
+  ['COMBAT 20 players', PHASE.COMBAT, 'players20'],
 ];
 function Switcher() {
   const cur = store.get().match.public?.phase;
@@ -832,7 +920,8 @@ async function boot() {
     clock: { offset: 0, rtt: 20, synced: true },
     room: {
       code: 'MOCK', hostId: VARIANTS.has('notHost') ? 'ai_2' : ME, mode: 'coop', difficulty: 'HARD', inMatch: true,
-      seats: PLAYERS.map((p) => ({ seat: p.seat, playerId: p.playerId, name: p.name, isBot: p.isBot, ready: true, connected: true })),
+      seats: PLAYERS.map((p) => ({ seat: p.seat, playerId: p.playerId, name: p.name, isBot: p.isBot, ready: true, connected: true,
+        ...(MOCK_CARDS[p.playerId] ? { card: MOCK_CARDS[p.playerId] } : {}) })),
       ...(VARIANTS.has('spectators') ? { spectators: [{ playerId: 'sp_1', name: '观战者甲', connected: true }, { playerId: 'sp_2', name: '观战者乙', connected: false }] } : {}),
     },
   });
@@ -846,5 +935,6 @@ async function boot() {
   store.subscribe(() => renderBar());
   globalThis.__MOCK__ = { store, S: () => S, setPhase, mutate: (fn) => { fn(S); refreshPrivate(); }, pushPublic: () => pushPublic(),
     hurtDevice: (i, dmg) => S?.battle?.hurtDevice?.(i, dmg) ?? false };
+  globalThis.__SP__ = { store, net, data, audio, version: 1 };
 }
 boot().catch((err) => console.error('[mock] boot failed', err));

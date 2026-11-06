@@ -4,15 +4,14 @@
 // their own tool, tools/plugin.mjs (docs/PLUGINS.md), and a static host could not serve a lang plugin's files at
 // /packs/<id>/ (only the live server lists lang plugins in its /packs/index.json):
 //
-//   node tools/packs.mjs list [--json]          the packs by type (folder packs in packs/, the language packs of
-//                                                public/i18n/), what was skipped and why, the warnings
+//   node tools/packs.mjs list [--json]          the packs by type (folder packs in packs/, and the single-file
+//                                                language packs of public/i18n/ when that folder is present), what
+//                                                was skipped and why, the warnings
 //   node tools/packs.mjs index [--out <file>]   write the pack index — what GET /packs/index.json answers — to
 //                                                packs/index.json (git-ignored), for a static host that cannot run the
 //                                                server's live list; tools/package.mjs writes it into the release zips
 //   node tools/packs.mjs check [--strict]       list, and exit 1 with --strict when a pack is skipped or warned about
 //   --root <dir>   another checkout or an unpacked release (default: this checkout)
-//
-// The strings of a language pack are checked by node tools/i18n.mjs check <code> (docs/I18N.md).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,7 +39,7 @@ export function writePackIndex(root, out = path.join(root, 'packs', PACK_INDEX_F
 }
 
 /**
- * The CLI (exported for tools/i18n.mjs index).
+ * The CLI.
  * @param {string[]} argv
  * @returns {Promise<number>} the exit code
  */

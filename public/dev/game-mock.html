@@ -6,21 +6,26 @@
   URL params: ?phase=PREP|INFO_CHECK|BAND_DRAFT|BATTLE_CHECK|SP_DRAFT|COMBAT|UNITE|SETTLE|FINAL_ASSAULT|HIDDEN_CORE|RESULT
               &variant=reward|bounty|supply|shop|tactic|temp|frozen|dead|defeat|late|solo|popup|detail|drawer|info|pen|emote|settings|collapsed|bond|drag
                       |leaker (联防: you let enemies through — the ×N counter)
-                      |unite[,through][,helper|,dead] (SETTLE: the result box after a 联防 — your charge from m.public.uniteResult)
                       |overtime|drain (boss rounds: level time over / overtime drain) |paused (solo battles)
                       |funny (标准: 本局禁用 bonds) |morph (变形同构体 in the hand / shop, a wearer on the board) |harmony (缪尔赛思 on the board)
+                      |players20 (a 20-seat room) |roster (open a folded roster) |emotestorm (every seat keeps sending emotes)
               &shot=1 (hide the switcher)  &render=engine|fallback (default: the Pixi engine, DOM fallback if it fails)
+              &lang=en|ja|… (the interface language; without it the Chinese source)
+  RESULT also fills the damage log, so the result screen's match damage chart shows.
+  RESULT&variant=alt-art (fork): the alternate result background (server/match/results.js altArtResult).
   Keyboard: ` toggles the switcher.
 -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <title>Game Mock · 卫戍协议：盟约</title>
+  <title>Game Mock · 卫戍协议：狩猎模拟</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/fonts/fonts.css" />
   <link rel="stylesheet" href="/css/theme.css" />
   <link rel="stylesheet" href="/css/components.css" />
+  <!-- the trophy badges and 名片底图 of the draft rows and the settlement (index.html loads it too) -->
+  <link rel="stylesheet" href="/css/screens/lobby.css" />
   <link rel="stylesheet" href="/css/screens/game.css" />
   <link rel="stylesheet" href="/css/screens/match-popups.css" />
   <link rel="stylesheet" href="/css/screens/protocol-boot.css" />
@@ -33,7 +38,11 @@
   <link rel="stylesheet" href="/css/screens/settle.css" />
   <link rel="stylesheet" href="/css/screens/guide.css" />
   <link rel="stylesheet" href="/css/emotes.css" />
+  <link rel="stylesheet" href="/css/screens/alliance.css" />
+  <link rel="stylesheet" href="/css/screens/team.css" />
+  <link rel="stylesheet" href="/css/screens/damage-board.css" />
   <link rel="stylesheet" href="/css/devices.css" />
+  <link rel="stylesheet" href="/css/utility-mobile.css" />
   <script type="importmap">
     { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js" } }
   </script>

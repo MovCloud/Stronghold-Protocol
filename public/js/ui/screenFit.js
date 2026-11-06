@@ -1,24 +1,32 @@
-// 异形屏适配 (设置): on some phones the browser's fullscreen puts the interface under the camera cutout or the curved
-// edge, or leaves it off-centre, and reports no safe-area inset for it. This section moves each edge of the interface
-// by a number of CSS pixels the player picks while watching it move. Each slider reads 0–100 and starts at 50 =
-// unchanged: right of 50 pulls that edge in, left of 50 pushes it out past the reported viewport — 2 CSS px per step,
-// ±100 px. Kept on this device only (`sp.pref.screenFit`): another device has another screen.
+// 异形屏适配 (the owner, 2026-10-14: on some phones Chrome's fullscreen puts the interface under the camera cutout or the
+// curved edge, or leaves it off-centre): 设置 → 异形屏适配 moves each edge of the interface by a number of CSS pixels the
+// player picks while watching it move. Each slider reads 0–100 and starts at 50 = unchanged (the owner, same day):
+// right of 50 pulls that edge in, left of 50 pushes it out past the reported viewport — 2 CSS px per step, ±100 px.
+// Kept per device (`sp.pref.screenFit`, not one of ui/accountPrefs.js's synced keys: another phone has another cutout);
+// the stored values are the pixel offsets (inward positive), so a profile saved by the first version (0–160 px inward)
+// keeps its meaning, clamped to 100.
 // Applied on <html>: `data-fit` plus --fit-l / --fit-r / --fit-t / --fit-b; css/devices.css then sets .app-root (the
 // screens' fixed box, theme.css) and the full-page panels to that box (every .screen is absolute inset 0 inside it, the
 // board is sized from its host element) and computes the layout root 1rem from it instead of the whole viewport. Fixed
 // overlays (dialogs, toasts) keep the full screen.
+// Feedback #16 (10-16: 「调回 80% 之后手机横屏三分之一是黑屏」): the 底部 track sat 8 px above 界面大小's buttons, a tap on a
+// range track jumps the value there, and the result outlived reloads while 界面大小 still read 80%. So the section is
+// folded by default (its head says 已调整 and offers 重置 whenever an edge is moved or the size is not 100 %), the edge
+// readings are the pixel offsets (±N px, not a 0–100 that reads like a percentage), and on touch a tap on the track away
+// from the thumb does nothing — the thumb is dragged, or −/+ steps.
 //
 // 界面大小 (0.3.2, DESIGN §35.43; reworked from PR #838 by @zasx77771): the same section's last row, a manual size of the
-// whole interface, 75–100 % in 5 % steps, default 100 % — never automatic, and nothing reads visualViewport (the soft
+// whole interface, 70–120 % in 10 % steps, default 100 % — never automatic, and nothing reads visualViewport (the soft
 // keyboard would shrink the UI). Stored with the edges (`ui`, a percentage). Applied as --sp-ui on <html> (only while it is
 // not 100 %): theme.css / devices.css multiply the layout root by it, and every max(rem, px) floor in public/css carries
-// it — a size floor never below min(its px, 32 px), so touch targets ≥ 32 px stay ≥ 32 px; the text floors (font-size px
-// floors, the 文字大小 --t floors of 中 / 大 / 特大) never shrink, while 小's text (1rem, no floor) follows the layout
-// (test/ui/ui-size.test.js). Above 100 % is not offered [ASSUMED]: measured on the §35.18 phones it overlaps the
-// screens (the hub's 成就统计 under the mode cards at 150 %), and larger text is what 文字大小 is for (DESIGN §35.43).
-// Only at 文字大小 小: the kept 64 / 76 / 88 px text floors of 中 and above outgrew their shrinking boxes (clipped labels,
-// the merge review of 2026-10-23), so there the row is disabled and the interface stays at 100 % — the stored size is
-// kept and applies again at 小 (effectiveUi). While the slider is dragged only its reading follows; the size applies on
+// it — a size floor never below min(its px, 32 px), so touch targets ≥ 32 px stay ≥ 32 px; every text floor (font-size px
+// floors, the 文字大小 --t floors of 中 / 大 / 特大) carries it too, while 小's text (1rem, no floor) follows the layout
+// (test/ui/ui-size.test.js). The 110 / 120 % steps are this repo's own (its 界面大小 list went to 120 %); past 120 % the
+// §35.18 phones overlap the screens (the hub's 成就统计 under the mode cards at 150 %), and larger text is what 文字大小 is for.
+// The size applies at every 文字大小 step, as it has in this repo since the factor existed: the text floors shrink with it,
+// so a step already at its floor stays inside the boxes that shrink with the interface (the upstream 小-only restriction
+// came from the floors being unscaled, which they are not here). While the slider is dragged only its reading follows;
+// the size applies on
 // release (`pointerup` or `change`), so the settings modal does not resize the track under the finger. The reading is
 // dropped on pointercancel / blur and by −, + and 重置, and ignored once the stored size changes (Chrome fires no
 // `change` when a drag ends on its start value; a touch drag can turn into a scroll — DESIGN §35.45).
@@ -26,14 +34,13 @@
 import { useState } from '../../vendor/hooks.module.js';
 import { html, Button, MicroLabel } from './components.js';
 import { createStore, useStore, loadPref, savePref } from '../store.js';
-import { settingsStore } from './settingsStore.js';
 import { t, N_ } from '../../../shared/i18n.js';
 
 export const FIT_SIDES = ['l', 'r', 't', 'b'];
 /** Pixel offset range (inward positive) and the slider scale: value = MID + px / PX_PER_STEP. */
 export const FIT_MIN = -100, FIT_MAX = 100, MID = 50, PX_PER_STEP = 2;
 /** 界面大小: percent of the design's size — the slider's range and step ([ASSUMED], DESIGN §35.43). */
-export const UI_MIN = 75, UI_MAX = 100, UI_STEP = 5;
+export const UI_MIN = 70, UI_MAX = 120, UI_STEP = 10;
 const NONE = { l: 0, r: 0, t: 0, b: 0, ui: 100 };
 
 /** A percentage → UI_MIN..UI_MAX snapped to UI_STEP (anything else, or a value stored before 0.3.2: 100). */
@@ -61,16 +68,14 @@ export const pxOf = (v) => (Number(v) - MID) * PX_PER_STEP;
 
 export const fitStore = createStore(sanitizeFit(loadPref('screenFit', null)));
 
-/** 界面大小 applies at 文字大小 小 only (see the header); `textSize` missing = 小. */
-export const uiAllowed = (textSize) => textSize == null || textSize === 'sm';
-/** The size on screen: the stored one at 小, 100 at 中 and above. */
-export const effectiveUi = (ui, textSize) => (uiAllowed(textSize) ? sanitizeUi(ui) : 100);
+/** The size on screen: the stored percentage, at every 文字大小 step (the fork's --ui reached --t's floors too). */
+export const effectiveUi = (ui) => sanitizeUi(ui);
 
 /** Put the offsets and the size on <html> (no attribute while all four are 0, no --sp-ui at 100 %: the page as before). */
-export function applyFit(f, textSize = settingsStore.get().textSize) {
+export function applyFit(f) {
   const el = globalThis.document?.documentElement;
   if (!el) return;
-  const ui = effectiveUi(f.ui, textSize);
+  const ui = effectiveUi(f.ui);
   if (ui !== 100) el.style.setProperty('--sp-ui', String(ui / 100));
   else el.style.removeProperty('--sp-ui');
   const on = FIT_SIDES.some((k) => f[k] !== 0);
@@ -86,9 +91,6 @@ export function applyFit(f, textSize = settingsStore.get().textSize) {
 }
 
 fitStore.subscribe((f) => { savePref('screenFit', f); applyFit(f); });
-// a 文字大小 change turns the stored size on (小) or off (中 and above)
-let appliedText = settingsStore.get().textSize;
-settingsStore.subscribe((s) => { if (s.textSize !== appliedText) { appliedText = s.textSize; applyFit(fitStore.get(), s.textSize); } });
 applyFit(fitStore.get());
 
 /** @param {Partial<{l:number,r:number,t:number,b:number,ui:number}>} patch pixel offsets, the size in percent */
@@ -98,52 +100,82 @@ const SIDE_NAMES = { l: N_('左侧'), r: N_('右侧'), t: N_('顶部'), b: N_('�
 const SIDE_MICRO = { l: 'LEFT', r: 'RIGHT', t: 'TOP', b: 'BOTTOM' };
 const LO = sliderOf(FIT_MIN), HI = sliderOf(FIT_MAX);
 
-/** The settings section: one 0–100 slider per edge (50 = unchanged), −/+ one step for a fine touch, 界面大小, 重置. */
+/**
+ * The settings section, folded by default: the head shows 已调整 (and 重置) while any edge is moved or the size is not
+ * 100 %; open, one slider per edge (centre = unchanged; reading ±N px), −/+ one step for a fine touch, then 界面大小.
+ */
 export function ScreenFitSection() {
   const f = useStore((s) => s, Object.is, fitStore);
-  const textSize = useStore((s) => s.textSize, Object.is, settingsStore);
+  const [open, setOpen] = useState(false);
   // a drag's reading ({ v, from }: the value and the stored size it was taken from). The release applies it; Chrome
   // fires no `change` when a drag ends where it began, and a touch drag can turn into a scroll, so the reading is
   // also dropped on pointercancel / blur and by −, + and 重置, and ignored once the stored size is another one.
   const [preview, setPreview] = useState(null);
   const ui = sanitizeUi(f.ui);
-  const allowed = uiAllowed(textSize);
-  const shown = allowed ? sanitizeUi(preview && preview.from === ui ? preview.v : ui) : 100;
+  const shown = sanitizeUi(preview && preview.from === ui ? preview.v : ui);
   // applies only a new size: a plain click on the thumb, or the `change` after a `pointerup` that already applied it,
-  // stores nothing and re-measures nothing (applyFit sends a window resize). Nothing at all while the row is disabled:
-  // Chrome still sends pointerup to a disabled range, whose value is the shown 100, and the stored size must survive
-  // 中 and above (DESIGN §35.47).
-  const setUi = (v) => { setPreview(null); if (allowed && sanitizeUi(v) !== ui) updateFit({ ui: Number(v) }); };
+  // stores nothing and re-measures nothing (applyFit sends a window resize). A tap on the track away from the thumb is
+  // the guard above, and a drag that ends where it began stores nothing (Chrome fires no `change` there).
+  const setUi = (v) => { setPreview(null); if (sanitizeUi(v) !== ui) updateFit({ ui: Number(v) }); };
   const any = FIT_SIDES.some((k) => f[k] !== 0) || ui !== 100;
-  return html`<section class="set-fit" aria-labelledby="set-fit-title" data-testid="screen-fit">
+  return html`<section class=${`set-fit${open ? ' is-open' : ''}`} aria-labelledby="set-fit-title" data-testid="screen-fit">
     <div class="set-keys__head">
-      <span class="set-row__label" id="set-fit-title">${t('异形屏适配')}<${MicroLabel}>SCREEN FIT<//></span>
-      <${Button} variant="ghost" size="sm" icon="refresh" class="set-fit__reset" disabled=${!any} onClick=${() => { setPreview(null); updateFit(NONE); }}>${t('重置')}<//>
+      <button type="button" class="set-fit__toggle" aria-expanded=${open ? 'true' : 'false'} aria-controls="set-fit-body" data-testid="fit-toggle" onClick=${() => setOpen(!open)}>
+        <span class="set-row__label" id="set-fit-title">${t('异形屏适配')}<${MicroLabel}>SCREEN FIT<//></span>
+        ${any ? html`<span class="set-fit__badge" data-testid="fit-badge">${t('已调整')}</span>` : null}
+        <span class="set-fit__chev" aria-hidden="true"></span>
+      </button>
+      ${any ? html`<${Button} variant="ghost" size="sm" icon="refresh" class="set-fit__reset" data-testid="fit-reset" onClick=${() => { setPreview(null); updateFit(NONE); }}>${t('重置')}<//>` : null}
     </div>
-    <p class="set-hint">${t('全屏后界面被挖孔、刘海或曲面边缘挡住，或比例、位置不对时使用：50 为不调整，往右拉该边往里收，往左拉该边往外扩。界面会立即移动，可边看边调，只保存在这台设备上。')}</p>
-    ${FIT_SIDES.map((k) => {
-      const v = sliderOf(f[k]);
-      return html`<div key=${k} class="set-row set-fit__row">
-        <span class="set-row__label">${t(SIDE_NAMES[k])}<${MicroLabel}>${SIDE_MICRO[k]}<//></span>
-        <button type="button" class="set-fit__step" aria-label=${t('减少')} disabled=${v <= LO} onClick=${() => updateFit({ [k]: pxOf(v - 1) })}>−</button>
-        <input class="set-range" type="range" min=${LO} max=${HI} step="1" value=${v} style=${`--pct:${v}%`}
-          aria-label=${t(SIDE_NAMES[k])} data-testid=${`fit-${k}`} onInput=${(e) => updateFit({ [k]: pxOf(e.currentTarget.value) })} />
-        <button type="button" class="set-fit__step" aria-label=${t('增加')} disabled=${v >= HI} onClick=${() => updateFit({ [k]: pxOf(v + 1) })}>+</button>
-        <span class="set-row__val num">${v}</span>
-      </div>`;
-    })}
-    <div class=${`set-row set-fit__row${allowed ? '' : ' is-disabled'}`} data-testid="ui-size">
-      <span class="set-row__label">${t('界面大小')}<${MicroLabel}>UI SIZE<//></span>
-      <button type="button" class="set-fit__step" aria-label=${t('减少')} disabled=${!allowed || ui <= UI_MIN} onClick=${() => setUi(ui - UI_STEP)}>−</button>
-      <input class="set-range" type="range" min=${UI_MIN} max=${UI_MAX} step=${UI_STEP} value=${shown} disabled=${!allowed}
-        style=${`--pct:${((shown - UI_MIN) / (UI_MAX - UI_MIN)) * 100}%`} aria-label=${t('界面大小')} data-testid="ui-size-range"
-        onInput=${(e) => setPreview({ v: Number(e.currentTarget.value), from: ui })}
-        onPointerUp=${(e) => setUi(e.currentTarget.value)} onChange=${(e) => setUi(e.currentTarget.value)}
-        onPointerCancel=${() => setPreview(null)} onBlur=${() => setPreview(null)} />
-      <button type="button" class="set-fit__step" aria-label=${t('增加')} disabled=${!allowed || ui >= UI_MAX} onClick=${() => setUi(ui + UI_STEP)}>+</button>
-      <span class="set-row__val num" data-testid="ui-size-pct">${shown}%</span>
-    </div>
-    <p class="set-hint">${t('界面大小：缩小按钮、面板、商店条和文字，给棋盘多留空间（100% 为原尺寸）；按钮保持可点的大小。')}</p>
-    ${allowed ? null : html`<p class="set-hint" data-testid="ui-size-locked">${t('文字大小为「中」及以上时不可缩小界面')}</p>`}
+    ${open ? html`<div id="set-fit-body" class="set-fit__body">
+      <p class="set-hint">${t('全屏后界面被挖孔、刘海或曲面边缘挡住，或比例、位置不对时使用：滑块居中（0）为不调整，往右拉该边往里收，往左拉该边往外扩，单位为像素。界面会立即移动，可边看边调，只保存在这台设备上；触屏请拖动滑块或用 −/+。')}</p>
+      ${FIT_SIDES.map((k) => {
+        const v = sliderOf(f[k]);
+        return html`<div key=${k} class="set-row set-fit__row">
+          <span class="set-row__label">${t(SIDE_NAMES[k])}<${MicroLabel}>${SIDE_MICRO[k]}<//></span>
+          <button type="button" class="set-fit__step" aria-label=${t('减少')} disabled=${v <= LO} onClick=${() => updateFit({ [k]: pxOf(v - 1) })}>−</button>
+          <input class="set-range" type="range" min=${LO} max=${HI} step="1" value=${v} style=${`--pct:${v}%`}
+            aria-label=${t(SIDE_NAMES[k])} aria-valuetext=${fitLabel(f[k])} data-testid=${`fit-${k}`} onPointerDown=${guardDown} onPointerUp=${guardUp} onPointerCancel=${guardUp}
+            onInput=${(e) => { if (strayTouch === e.currentTarget) { e.currentTarget.value = String(v); return; } updateFit({ [k]: pxOf(e.currentTarget.value) }); }} />
+          <button type="button" class="set-fit__step" aria-label=${t('增加')} disabled=${v >= HI} onClick=${() => updateFit({ [k]: pxOf(v + 1) })}>+</button>
+          <span class="set-row__val num">${fitLabel(f[k])}</span>
+        </div>`;
+      })}
+      <div class="set-row set-fit__row" data-testid="ui-size">
+        <span class="set-row__label">${t('界面大小')}<${MicroLabel}>UI SIZE<//></span>
+        <button type="button" class="set-fit__step" aria-label=${t('减少')} disabled=${ui <= UI_MIN} onClick=${() => setUi(ui - UI_STEP)}>−</button>
+        <input class="set-range" type="range" min=${UI_MIN} max=${UI_MAX} step=${UI_STEP} value=${shown}
+          style=${`--pct:${((shown - UI_MIN) / (UI_MAX - UI_MIN)) * 100}%`} aria-label=${t('界面大小')} data-testid="ui-size-range"
+          onInput=${(e) => setPreview({ v: Number(e.currentTarget.value), from: ui })}
+          onPointerUp=${(e) => setUi(e.currentTarget.value)} onChange=${(e) => setUi(e.currentTarget.value)}
+          onPointerCancel=${() => setPreview(null)} onBlur=${() => setPreview(null)} />
+        <button type="button" class="set-fit__step" aria-label=${t('增加')} disabled=${ui >= UI_MAX} onClick=${() => setUi(ui + UI_STEP)}>+</button>
+        <span class="set-row__val num" data-testid="ui-size-pct">${shown}%</span>
+      </div>
+      <p class="set-hint">${t('界面大小：缩小按钮、面板、商店条和文字，给棋盘多留空间（100% 为原尺寸）；按钮保持可点的大小。')}</p>
+    </div>` : null}
   </section>`;
 }
+
+/**
+ * Whether a touch at clientX on a range input starts on (or right by) its thumb: a touch elsewhere on the track is
+ * ignored, so a tap meant for a neighbouring control cannot jump the value (the thumb is assumed ~1 track-height wide).
+ * @param {{ left: number, width: number, height: number }} rect @param {number} value @param {number} lo @param {number} hi
+ */
+export function nearThumb(rect, clientX, value, lo, hi, slop = 24) {
+  const thumb = Math.max(16, rect.height);
+  const x = rect.left + thumb / 2 + (rect.width - thumb) * ((value - lo) / ((hi - lo) || 1));
+  return Math.abs(clientX - x) <= thumb / 2 + slop;
+}
+
+// A touch that lands on the track away from the thumb: the browser still moves the thumb there (cancelling the
+// touchstart does not stop a range input), so the inputs of that press are put back instead.
+let strayTouch = null;
+function guardDown(e) {
+  const el = e.currentTarget;
+  strayTouch = e.pointerType !== 'mouse' && el && !nearThumb(el.getBoundingClientRect(), e.clientX, Number(el.value), Number(el.min), Number(el.max)) ? el : null;
+}
+const guardUp = () => { strayTouch = null; };
+
+/** The reading of a pixel offset: 0, or ±N px (inward positive, as stored). */
+export const fitLabel = (px) => (px ? `${px > 0 ? '+' : '−'}${Math.abs(px)} px` : '0');

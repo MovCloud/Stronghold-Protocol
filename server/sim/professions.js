@@ -38,7 +38,7 @@
 //                             store one energy, false when full; the energies leaving with an attack — installMystic)
 //   dollNoAttack bool (傀儡师: its <替身> makes no normal attack and casts no skill — 归溟幽灵鲨, kit trait)
 //   tb — the unit's trait blackboard (data `trait.bb`), used for tunables (module upgrades included on elites)
-// Behaviour per subprofession is documented in docs/SIM.md §Professions. Front / side tests use the unit's direction
+// Behaviour per subprofession is documented in docs/development/SIM.md §Professions. Front / side tests use the unit's direction
 // (`dir`, sim/dir.js): offsets are compared in its facing-RIGHT frame.
 
 import { toLocal, frontOf } from './dir.js';
@@ -561,6 +561,8 @@ export const SUB = Object.freeze({
   summoner: P({}),
   // --- TANK
   protector: P({}),
+  // Arts protectors attack physically at rest; their native skills explicitly switch damage to arts.
+  artsprotector: P({ attack: 'melee', dmgType: 'phys', projectile: 'none', canHitFly: false }),
   guardian: P({}),
   shotprotector: P({ attack: 'ranged', canHitFly: true, projectile: 'arrow' }),
   primprotector: P({}),

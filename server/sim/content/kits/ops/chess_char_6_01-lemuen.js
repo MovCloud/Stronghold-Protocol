@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_6_01-lemuen.js — 蕾缪安 (char_4193_lemuen) kit, tier 6.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-6 kits: ../shared/tier6.js; kit contract and rules: ../README.md.
 
 import { sortEnemyTargets, canTargetEnemy } from '../../../targeting.js';
@@ -42,7 +43,7 @@ function ensureWanted(battle) {
   battle.every(0.25, () => {
     const lems = activeLem();
     for (const u of W.sources.keys()) if (!lems.includes(u)) W.sources.delete(u);
-    const lat = battle.allyUnits.filter((a) => live(a) && a.kind === 'op' && hasBond(a, 'lateranoShip'));
+    const lat = battle.allyUnits.filter((a) => live(a) && nativeOperator(a) && hasBond(a, 'lateranoShip'));
     for (const u of lems) {
       let state = W.sources.get(u);
       if (!state) W.sources.set(u, state = { time: new WeakMap(), marks: new Set() });
@@ -260,7 +261,7 @@ function lemuen(bb, chess, def) {
         battle.on('skillStart', ({ unit: u, skill }) => {
           if (!ready() || !skill || skill.kind !== 'ammo') return;
           if (u === unit) { if (add > 0) skill.addAmmo(add); }
-          else if (exAdd > 0 && u.side === 'ally' && u.kind === 'op' && hasBond(u, 'lateranoShip')) skill.addAmmo(exAdd);
+          else if (exAdd > 0 && u.side === 'ally' && nativeOperator(u) && hasBond(u, 'lateranoShip')) skill.addAmmo(exAdd);
         }, { owner: unit });
       } },
     ],

@@ -53,10 +53,10 @@ async function coopAtBoss(P, base, prefix) {
   await guest.open(`?room=${room.code}`);
   await guest.enter('阿米娅');
   await guest.waitFor((s) => s.room?.code === room.code, 'guest joined');
-  for (let i = 0; i < 6; i++) { await guest.click('.room-bar__right button', '准备就绪', { optional: true, timeout: 3000 }); await sleep(500); }
-  await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+  for (let i = 0; i < 6; i++) { await guest.roomReady({ optional: true, timeout: 3000 }); await sleep(500); }
+  await host.roomStart({ timeout: 20000 });
   for (const c of [host, guest]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
-  for (const c of [host, guest]) await c.click('.brief__foot .btn--primary', '准备就绪');
+  for (const c of [host, guest]) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
   for (const c of [host, guest]) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);
   const picked = new Set();
   const t0 = Date.now();

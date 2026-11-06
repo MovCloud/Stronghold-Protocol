@@ -1,0 +1,25 @@
+{
+  "manifest": 2,
+  "id": "ciallo",
+  "name": {
+    "zh": "表情套组：Ciallo",
+    "en": "Emote page: Ciallo"
+  },
+  "description": {
+    "zh": "一页表情轮盘（6 格）。图片必须由插件自己的 assets 部件提供；没有图片时轮盘显示本页的标题。",
+    "en": "One page of the emote wheel (6 cells). The pictures must come from this plugin's own assets part; when they are not there the wheel shows the page's title."
+  },
+  "version": "0.1.0",
+  "app": ">=0.3.0 <0.4.0",
+  "api": 2,
+  "class": "cosmetic",
+  "scope": [
+    "room",
+    "personal"
+  ],
+  "authors": [
+    "your name"
+  ],
+  "license": "CC0-1.0",
+  "emotes": "emotes.json"
+}

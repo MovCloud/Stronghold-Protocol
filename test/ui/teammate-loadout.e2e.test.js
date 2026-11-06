@@ -74,16 +74,16 @@ describe('DESIGN §16 — a teammate\'s unit shows its owner\'s loadout (real se
       });
       for (let i = 0; i < 5 && !(await guestReady()); i++) {
         await sleep(500);
-        await guest.click('.room-bar__right button', '准备就绪', { optional: true, timeout: 3000 });
+        await guest.roomReady({ optional: true, timeout: 3000 });
         await sleep(500);
       }
       assert.ok(await guestReady(), 'guest ready');
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
       for (const c of [host, guest]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
       const loOf = (c) => c.page.evaluate(() => globalThis.__SP__.store.get().match.private?.loadout ?? null);
       assert.deepEqual(await loOf(guest), { [BASE]: { skill: 0, module: 'none' } }, 'the guest\'s match loadout');
       assert.deepEqual(await loOf(host), {}, 'the host fights with the defaults');
-      for (const c of [host, guest]) await c.click('.brief__foot .btn--primary', '准备就绪');
+      for (const c of [host, guest]) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
       // the draft first (a client still in the briefing would count as done without picking: its turn then runs out —
       // Match.BAND_TURN_SECONDS, 50 s each since the 2026-10-10 official-play report)
       for (const c of [host, guest]) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);

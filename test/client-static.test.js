@@ -20,6 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { MAX_SEATS } from '../shared/constants.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -150,7 +151,7 @@ const JS_FILES = [...walk(path.join(PUBLIC, 'js'), '.js'), ...walk(path.join(PUB
 describe('client modules parse as ES modules', () => {
   test('found client modules', () => {
     for (const f of ['main.js', 'net.js', 'store.js', 'data.js', 'ui/components.js', 'ui/toasts.js',
-      'screens/title.js', 'screens/lobby.js', 'screens/room.js', 'screens/game.js']) {
+      'ui/nickname.js', 'screens/lobby.js', 'screens/room.js', 'screens/game.js']) {
       assert.ok(existsSync(path.join(PUBLIC, 'js', f)), `public/js/${f} exists`);
     }
   });
@@ -193,7 +194,7 @@ describe('HTML pages reference existing files', () => {
     const src = readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
     assert.match(src, /<script type="module" src="\/js\/main\.js"[^>]*><\/script>/);
     assert.match(src, /class="rotate-hint"/);
-    assert.match(src, /fonts\.googleapis\.com\/css2\?family=Noto\+Sans\+SC/);
+    assert.doesNotMatch(src, /https:\/\/fonts\.(googleapis|gstatic)\.com/);
     assert.match(src, /href="\/fonts\/fonts\.css"/);
   });
 });
@@ -291,13 +292,15 @@ describe('store.js', () => {
   test('selectRoute', async () => {
     const { selectRoute } = await mod('store.js');
     const base = { session: { entered: true }, room: null, match: { public: null } };
-    assert.equal(selectRoute({ ...base, session: { entered: false } }), 'title');
+    // no title screen: a refused name keeps the screen (ui/nickname.js NameHost opens over it)
+    assert.equal(selectRoute({ ...base, session: { entered: false } }), 'lobby');
+    assert.equal(selectRoute({ ...base, session: { entered: false }, room: { code: 'ABCD', inMatch: true } }), 'game');
     assert.equal(selectRoute(base), 'lobby');
     assert.equal(selectRoute({ ...base, room: { code: 'ABCD' } }), 'room');
     assert.equal(selectRoute({ ...base, room: { code: 'ABCD', inMatch: true } }), 'game');
     assert.equal(selectRoute({ ...base, room: { code: 'ABCD' }, match: { public: { phase: 'PREP' } } }), 'game');
     assert.equal(selectRoute({ ...base, room: { code: 'ABCD' }, match: { public: { phase: 'LOBBY' } } }), 'room');
-    assert.equal(selectRoute(undefined), 'title');
+    assert.equal(selectRoute(undefined), 'lobby');
   });
 
   test('serverNow applies the clock offset', async () => {
@@ -393,7 +396,7 @@ const quiet = async (fn) => {
 /** Answer the latest ping on a fake socket. */
 function ws0Pong(sock) {
   const p = sock.last('ping');
-  if (p) sock.recv({ t: 'pong', c: p.c, s: p.c });
+  if (p) sock.recv({ t: 'pong', rid: p.rid, c: p.c, s: p.c });
 }
 
 describe('net.js', () => {
@@ -422,12 +425,12 @@ describe('net.js', () => {
 
   test('defaultWsUrl', async () => {
     const { defaultWsUrl } = await mod('net.js');
-    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'a:3000' }), 'ws://a:3000/ws');
-    assert.equal(defaultWsUrl({ protocol: 'https:', host: 'x.io' }), 'wss://x.io/ws');
+    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'a:3000' }), 'ws://a:3000/ws?build=fp100-upstream024-20261011');
+    assert.equal(defaultWsUrl({ protocol: 'https:', host: 'x.io' }), 'wss://x.io/ws?build=fp100-upstream024-20261011');
   });
 
   test('connect without a name → connected + ping; setName → hello with token & version', async () => {
-    const { PROTOCOL_VERSION } = await import(pathToFileURL(path.join(ROOT, 'shared/constants.js')).href);
+    const { PROTOCOL_VERSION, MATCHMAKING_VERSION } = await import(pathToFileURL(path.join(ROOT, 'shared/constants.js')).href);
     const { net, ws, statuses } = await makeNet();
     net.connect();
     assert.equal(net.status, 'connecting');
@@ -436,16 +439,12 @@ describe('net.js', () => {
     assert.ok(ws().last('ping'), 'latency probe before hello');
     net.setName('  凯尔希  ');
     const hello = ws().last('hello');
-    // hello names the state-delta version it understands; a server that does not know the field ignores it.
+    // the fork's hello carries the matchmaking + player-capability versions it speaks (public/js/net.js _sendHello);
+    // upstream's hello only names the state-delta version, and a server that does not know a field ignores it
+    const { PLAYER_CAPACITY_VERSION } = await import(pathToFileURL(path.join(ROOT, 'shared/playerCapacity.js')).href);
     const { STATE_DELTA_VERSION } = await import(pathToFileURL(path.join(ROOT, 'shared/stateDelta.js')).href);
-    assert.deepEqual({ ...hello, rid: 0 }, {
-      t: 'hello',
-      rid: 0,
-      name: '凯尔希',
-      version: PROTOCOL_VERSION,
-      delta: STATE_DELTA_VERSION,
-      token: 'tok-1',
-    });
+    assert.deepEqual({ ...hello, rid: 0 }, { t: 'hello', rid: 0, name: '凯尔希', version: PROTOCOL_VERSION, matchmakingVersion: MATCHMAKING_VERSION, playerCapacityVersion: PLAYER_CAPACITY_VERSION,
+      stateDelta: STATE_DELTA_VERSION, token: 'tok-1' });
     assert.equal(net.status, 'handshaking');
     ws().recv({ t: 'welcome', rid: hello.rid, playerId: 'p_1', token: 't', name: '凯尔希', serverNow: Date.now() });
     assert.equal(net.status, 'online');
@@ -462,6 +461,81 @@ describe('net.js', () => {
     net.setName('A');
     ws().open();
     assert.equal(ws().last('hello').token, undefined);
+  });
+
+  test('presence is available before hello, updates live and survives the handshake', async () => {
+    const { net, ws } = await makeNet();
+    const counts = [];
+    net.on('status', (snap) => counts.push(snap.onlineCount));
+    assert.equal(net.snapshot().onlineCount, null, 'unknown is distinct from zero');
+    net.connect();
+    ws().open();
+    ws().recv({ t: 'presence', onlineCount: 3 });
+    assert.equal(net.status, 'connected');
+    assert.equal(net.snapshot().onlineCount, 3, 'title screen can read the count before entering');
+    ws().recv({ t: 'presence', onlineCount: 4 });
+    assert.equal(counts.at(-1), 4, 'new count reaches the store via the status event');
+    net.setName('A');
+    ws().recv({ t: 'welcome', rid: ws().last('hello').rid, playerId: 'p', token: 't', name: 'A', serverNow: 1 });
+    assert.equal(net.snapshot().onlineCount, 4, 'welcome does not erase presence');
+    ws().recv({ t: 'presence', onlineCount: 0 });
+    assert.equal(net.snapshot().onlineCount, 0, 'zero is a valid known count');
+    net.close();
+  });
+
+  test('malformed presence does not overwrite a valid count', async () => {
+    const { net, ws } = await onlineNet();
+    ws().recv({ t: 'presence', onlineCount: 12 });
+    for (const onlineCount of [null, undefined, '2', -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      ws().recv({ t: 'presence', onlineCount });
+      assert.equal(net.snapshot().onlineCount, 12);
+    }
+    net.close();
+  });
+
+  test('duplicate presence does not emit redundant status updates', async () => {
+    const { net, ws, statuses } = await onlineNet();
+    ws().recv({ t: 'presence', onlineCount: 3 });
+    const before = statuses.length;
+    ws().recv({ t: 'presence', onlineCount: 3 });
+    assert.equal(statuses.length, before);
+    assert.equal(net.snapshot().onlineCount, 3);
+  });
+
+  test('quiet title socket rotation clears the visible count before the next socket opens', async () => {
+    const { net, ws, timers } = await makeNet();
+    let visibleCount;
+    net.on('status', (snap) => { visibleCount = snap.onlineCount; });
+    net.connect();
+    ws().open();
+    ws().recv({ t: 'presence', onlineCount: 5 });
+    for (let i = 0; i < 10; i++) { ws0Pong(ws()); timers.advance(4000); }
+    ws0Pong(ws());
+    ws().drop(4002);
+    assert.equal(net.status, 'connected', 'quiet rotation does not show a reconnect banner');
+    assert.equal(ws().readyState, 0, 'the replacement socket has not opened');
+    assert.equal(visibleCount, null, 'subscribers must not display the old count during the quiet swap');
+    ws().open();
+    ws().recv({ t: 'presence', onlineCount: 4 });
+    assert.equal(visibleCount, 4);
+  });
+
+  test('disconnect clears stale presence until a new socket supplies a count', async () => {
+    const { net, ws, timers } = await onlineNet();
+    ws().recv({ t: 'presence', onlineCount: 7 });
+    const oldReceive = ws().onmessage;
+    ws().drop();
+    assert.equal(net.status, 'reconnecting');
+    assert.equal(net.snapshot().onlineCount, null);
+    timers.advance(501);
+    ws().open();
+    assert.equal(net.snapshot().onlineCount, null, 'opening a new socket does not restore stale presence');
+    oldReceive({ data: JSON.stringify({ t: 'presence', onlineCount: 999 }) });
+    assert.equal(net.snapshot().onlineCount, null, 'late frames from the old socket are ignored');
+    ws().recv({ t: 'presence', onlineCount: 2 });
+    assert.equal(net.snapshot().onlineCount, 2);
+    net.close();
+    assert.equal(net.snapshot().onlineCount, null, 'manual close clears presence too');
   });
 
   test('request resolves on ok, rejects on error with ERR text', async () => {
@@ -546,7 +620,7 @@ describe('net.js', () => {
     net.probe();
     const ping = ws().last('ping');
     timers.advance(40);
-    ws().recv({ t: 'pong', c: ping.c, s: ping.c + 20 + 5000 });
+    ws().recv({ t: 'pong', rid: ping.rid, c: ping.c, s: ping.c + 20 + 5000 });
     assert.equal(net.ping, 40);
     assert.equal(net.clockOffset, 5000);
     assert.ok(clocks.at(-1).synced);
@@ -572,7 +646,7 @@ describe('net.js', () => {
     for (let i = 0; i < 5; i++) {
       const ping = ws().last('ping');
       timers.advance(30);
-      ws().recv({ t: 'pong', c: ping.c, s: ping.c });   // server answers promptly
+      ws().recv({ t: 'pong', rid: ping.rid, c: ping.c, s: ping.c });   // server answers promptly
       timers.advance(60_000 - 30);                        // next (late) heartbeat
     }
     assert.equal(sockets.length, 1, 'no reconnect churn');
@@ -696,6 +770,7 @@ describe('net.js', () => {
     assert.equal(net.status, 'reconnecting');
     net.close();
   });
+
 });
 
 // ---- unit: identity ----------------------------------------------------------------------------------------
@@ -872,16 +947,11 @@ describe('identity (reconnect-token selection across tabs)', () => {
     assert.equal(await racing.init(), 'fromWelcome');
   });
 
-  test('entered flag, name, clearToken, bad tokens and missing storage', async () => {
+  test('name, clearToken, bad tokens and missing storage', async () => {
     const { createIdentity, tokenHash } = await mod('net.js');
     const local = memStorage();
     const id = createIdentity({ local, session: memStorage(), tabId: 'X', channel: null });
     await id.init();
-    assert.equal(id.wasEntered(), false);
-    id.setEntered(true);
-    assert.equal(id.wasEntered(), true);
-    id.setEntered(false);
-    assert.equal(id.wasEntered(), false);
     id.saveName('凯尔希');
     assert.equal(id.loadName(), '凯尔希');
     id.saveToken('t');
@@ -905,7 +975,6 @@ describe('identity (reconnect-token selection across tabs)', () => {
     none.saveToken('x');
     assert.equal(none.getToken(), 'x', 'kept in memory for this page');
     assert.equal(none.loadName(), '');
-    assert.equal(none.wasEntered(), false);
   });
 });
 
@@ -1005,8 +1074,8 @@ describe('data.js', () => {
 // ---- unit: screen helpers & components ----------------------------------------------------------------------
 
 describe('screen helpers', () => {
-  test('title: sanitizeName / isValidName / findUiAsset', async () => {
-    const { sanitizeName, isValidName, findUiAsset } = await mod('screens/title.js');
+  test('nickname: sanitizeName / isValidName / defaultName', async () => {
+    const { sanitizeName, isValidName, defaultName } = await mod('ui/nickname.js');
     assert.equal(sanitizeName('  凯尔希  '), '凯尔希');
     assert.equal(sanitizeName('a\u0000b\u200bc\u202ed'), 'abcd');
     assert.equal(sanitizeName('a   b'), 'a b');
@@ -1023,18 +1092,23 @@ describe('screen helpers', () => {
     assert.equal(sanitizeName(null), '');
     assert.equal(isValidName('   '), false);
     assert.equal(isValidName('Doctor'), true);
-    assert.equal(findUiAsset({ ui: { 'entry/bkg_01': '/assets/ui/entry/bkg_01.png' } }, ['titleBackdrop', 'entry/bkg_01']), '/assets/ui/entry/bkg_01.png');
-    assert.equal(findUiAsset({ ui: { titleBackdrop: { url: '/a.png' } } }, ['titleBackdrop']), '/a.png');
-    assert.equal(findUiAsset({ files: ['/assets/ui/entry_bkg_01.webp'] }, ['entry_bkg_01']), '/assets/ui/entry_bkg_01.webp');
-    assert.equal(findUiAsset(null, ['x']), null);
-    assert.equal(findUiAsset({ ui: {} }, ['x']), null);
+    // a first visit's name: 博士 + four digits, a valid name the server keeps unchanged
+    for (let i = 0; i < 20; i++) {
+      const name = defaultName();
+      assert.match(name, /^博士\d{4}$/);
+      assert.equal(server.sanitizeName(name), name);
+    }
   });
 
-  test('title exposes the shared settings modal', () => {
-    const source = readFileSync(path.join(PUBLIC, 'js/screens/title.js'), 'utf8');
-    assert.match(source, /import \{ SettingsModal \} from '\.\.\/ui\/settings\.js'/);
-    assert.match(source, /class="title-settings fsbtn tapx"/, 'title screen includes the settings control');
-    assert.match(source, /<\$\{SettingsModal\} open=\$\{settingsOpen\}/, 'settings control opens the shared modal');
+  test('no title screen: boot connects with the remembered or a generated name, the lobby renames (个人名片)', () => {
+    const main = readFileSync(path.join(PUBLIC, 'js/main.js'), 'utf8');
+    assert.ok(!/screens\/title\.js/.test(main) && !existsSync(path.join(PUBLIC, 'js/screens/title.js')));
+    assert.match(main, /const name = savedName \|\| defaultName\(\);/);
+    assert.match(main, /<\$\{NameHost\} \/>/, 'the rename dialog is mounted over every route');
+    const lobby = readFileSync(path.join(PUBLIC, 'js/screens/lobby.js'), 'utf8');
+    assert.match(lobby, /test: 'profile-rename'/, '改名 lives in 个人名片 now');
+    assert.ok(!/class="me-rename"/.test(lobby), 'the top bar has no ✎ of its own');
+    assert.ok(!/backToTitle|lobby-back/.test(lobby), 'no way back to a title screen');
   });
 
   test('lobby: normalizeCode / parseRoomParam / difficultyInfo', async () => {
@@ -1119,14 +1193,14 @@ describe('screen helpers', () => {
         { seat: 3, playerId: 'ai_1', name: 'AI·华法琳', isBot: true, ready: true, connected: true },
       ],
     };
-    assert.equal(normalizeSeats(room).length, 4);
+    assert.equal(normalizeSeats(room).length, MAX_SEATS);
     assert.equal(normalizeSeats({ mode: 'solo', seats: [room.seats[0], null, null, null] }).length, 1);
-    assert.deepEqual(normalizeSeats({ mode: 'coop', seats: 'bad' }), [null, null, null, null]);
+    assert.deepEqual(normalizeSeats({ mode: 'coop', seats: 'bad' }), Array(MAX_SEATS).fill(null));
     let f = roomFacts(room, 'h');
     assert.equal(f.isHost, true);
     assert.equal(f.canStart, false, 'guest not ready');
     assert.equal(f.humans.length, 2);
-    assert.equal(f.emptySeats, 1);
+    assert.equal(f.emptySeats, MAX_SEATS - 3);
     assert.equal(f.readyHumans, 1, 'host counts as ready (start = host ready)');
     room.seats[1].ready = true;
     f = roomFacts(room, 'h');
@@ -1155,7 +1229,7 @@ describe('screen helpers', () => {
     assert.equal(f.spectating, true);
     assert.equal(f.mine, null);
     assert.equal(f.humans.length, 1, 'never a player');
-    assert.equal(f.emptySeats, 3, 'a free player seat stays free (入座)');
+    assert.equal(f.emptySeats, MAX_SEATS - 1, 'a free player seat stays free (入座)');
     assert.deepEqual(f.spectators.map((x) => x.playerId), ['s']);
     const hf = roomFacts(room, 'h');
     assert.equal(hf.canStart, true, 'a spectator never blocks the start');
@@ -1227,6 +1301,7 @@ describe('multi-device & browser compatibility (static)', () => {
     for (const k of ['width=device-width', 'initial-scale=1', 'maximum-scale=1', 'user-scalable=no', 'viewport-fit=cover']) assert.ok(vp.includes(k), `viewport has ${k}`);
     const sheets = [...index.matchAll(/<link rel="stylesheet" href="(\/css\/[^"]+)"/g)].map((x) => x[1]);
     assert.equal(sheets[sheets.length - 1], '/css/devices.css', 'devices.css is the last stylesheet');
+    for (const href of sheets) assert.ok(href.startsWith('/css/'));
     assert.match(index, /<script nomodule src="\/js\/bootLegacy\.js">/, 'a browser without ES modules gets the external fallback');
     const boot = readFileSync(path.join(PUBLIC, 'js/boot.js'), 'utf8');
     const legacy = readFileSync(path.join(PUBLIC, 'js/bootLegacy.js'), 'utf8');

@@ -19,7 +19,7 @@ export class MatchReports {
   _onProgress(ps, msg) {
     if (!this.clientCombat) return fail(ERR.WRONG_PHASE, 'server-run combat');
     const f = this._fieldByBattle(msg.battleId);
-    if (!f || f.done || f.verifyJob || f.mode !== 'client' || f.authority !== ps.playerId) return OK;
+    if (!f || f.done || f.verifying || f.verifyJob || f.mode !== 'client' || f.authority !== ps.playerId) return OK;
     const p = f.progress;
     const maxTotal = Math.max(p.total, (f.spec.spawns.length + 1) * 400);
     p.gt = Math.max(p.gt, Math.min(Number(msg.gt) || 0, HARD_CAP_SECONDS));
@@ -50,10 +50,24 @@ export class MatchReports {
   }
 
   /** b.result from a field's authority: validated against the spec; an implausible one is replaced by the server's run. */
+  _onYield(ps, msg) {
+    if (!this.clientCombat) return fail(ERR.WRONG_PHASE, 'server-run combat');
+    const f = this._fieldByBattle(msg.battleId);
+    if (!f || f.done || f.heldResult || f.mode !== 'client' || f.authority !== ps.playerId) return OK;
+    if (f.kind === 'boss' || f.kind === 'hidden') {
+      if (this._finalEnding) {
+        f.result = syntheticResult(f.players, { bossBy: f.bossBy, time: this._fieldElapsed(f) });
+        this._fieldDone(f);
+        this._checkFinalEnd();
+      } else this._bossHandover(f, 'oversized-result', { demote: true });
+    } else this._runOnServer(f, 'oversized-result');
+    return OK;
+  }
+
   _onResult(ps, msg) {
     if (!this.clientCombat) return fail(ERR.WRONG_PHASE, 'server-run combat');
     const f = this._fieldByBattle(msg.battleId);
-    if (!f || f.done || f.heldResult || f.verifyJob || f.mode !== 'client' || f.authority !== ps.playerId) return OK;
+    if (!f || f.done || f.heldResult || f.verifying || f.verifyJob || f.mode !== 'client' || f.authority !== ps.playerId) return OK;
     const bossLike = f.kind === 'boss' || f.kind === 'hidden';
     // a room with gameplay plugins (opts.requireCs, DESIGN §32.6): the result must name the content set the battle runs
     // on — one without `cs`, or with another, came from a page that did not run this content: refused like an
@@ -64,7 +78,7 @@ export class MatchReports {
     if (!v.ok) {
       this.verifyStats.rejected++;
       this.log.warn?.(`[match ${this.roomCode}] ${f.fieldId}: rejected client result from ${ps.playerId} (${v.reason}) — server re-simulation`);
-      if (bossLike && this._finalEnding) { f.result = syntheticResult(f.players, { bossBy: f.bossBy, time: this._fieldElapsed(f) }); this._fieldDone(f); this._checkFinalEnd(); }
+      if (bossLike && this._endingOf(f.team)) { f.result = syntheticResult(f.players, { bossBy: f.bossBy, time: this._fieldElapsed(f) }); this._fieldDone(f); this._checkFinalEnd(); }
       else if (bossLike) this._bossHandover(f, 'invalid', { demote: true });
       else this._runOnServer(f, 'invalid');
       return OK;
@@ -79,13 +93,13 @@ export class MatchReports {
       // the client emptied the pool as it saw it (server hp − its unacknowledged damage): what is left on the server is
       // float dust from summing the fields' reports in another order — the boss is down (pools never hold less than
       // BOSS_POOL_MIN_HP, finalAssault.js: this only catches a noise-level disagreement at that boundary)
-      const pool = this.bossPool;
-      if (result.reason === 'cleared' && this._finalEnding !== 'forced' && pool && pool.hp > 0 && pool.hp < 1 + 1e-6) pool.damage(f.players[0] ?? null, pool.hp);
+      const pool = this._poolOf(f.team);
+      if (result.reason === 'cleared' && this._endingOf(f.team) !== 'forced' && pool && pool.hp > 0 && pool.hp < 1 + 1e-6) pool.damage(f.players[0] ?? null, pool.hp);
       // a boss field ends only when the shared pool is empty (the client saw it reach 0) or the match forced the end
       // (b.end): any other result — 'forced' / 'timeout' at t = 0, 'cleared' while the pool still holds — would stop
       // the pair's fight (and, with every field done, end the Final Assault as a defeat). The field is handed to the
       // partner's replica or the server instead, and the sender never reports it again.
-      if (!this._finalEnding && !(pool && pool.hp <= 0)) {
+      if (!this._endingOf(f.team) && !(pool && pool.hp <= 0)) {
         // 'cleared' while the budget still holds part of the client's cumulative report back: when that report covers
         // what the pool holds, the client emptied the pool as it saw it, only faster than BOSS_MIN_CLEAR_GS lets the
         // server credit (999-layer boards kill a 绝境 leader in 2–4 game s; official "boss一秒死", DESIGN §20.10). The
@@ -125,9 +139,44 @@ export class MatchReports {
    * 'sample' accepts immediately and only logs differences for ~1 battle in 8, even after the field's phase ends.
    */
   _verifyResult(f, result, accept) {
-    if (this.verifyMode === 'off') { accept(result); return; }
-    const required = this.verifyMode === 'all';
+    // A normal field's reinforcement survival ticks change the helper's stats in the same round's unite battle. Accept that
+    // carried state only after deterministic server verification, including when diagnostic SP_VERIFY is off.
+    const carriesSurvivalTicks = f.kind === 'normal' && Object.values(result.perPlayer || {}).some(p => p.remSurvivalTicks > 0);
+    if (this.verifyMode === 'off' && !carriesSurvivalTicks) { accept(result); return; }
+    const required = this.verifyMode === 'all' || carriesSurvivalTicks;
     const start = () => {
+      if (this.workerPool) {
+        if (required) {
+          f.verifying = true;
+          if (f.deadlineTimer) this.cancel(f.deadlineTimer);
+          f.deadlineTimer = null;
+          f.rearmDeadline = false;
+        }
+        const battleId = f.battleId;
+        const task = this._submitWorker('battle', { spec: f.spec, players: f.players }, {
+          priority: required ? 2 : 0,
+          valid: () => !required || (this.fields.includes(f) && f.battleId === battleId && !f.done && f.verifying && f.workerTask === task),
+          complete: (out) => {
+            const verified = this._compareVerified(f, result, out.result) || result;
+            if (!required) return;
+            f.workerTask = null;
+            f.result = verified;
+            f.resultSource = 'verified';
+            f.workerErrors = out.errors;
+            if (this.paused) return;
+            f.verifying = false;
+            accept(verified);
+          },
+          failed: () => {
+            if (!required) return;
+            f.workerTask = null;
+            this._runOnServer(f, 'verify-failed', { local: true });
+          },
+          fallback: required ? 'local verification' : 'sampling skipped',
+        });
+        if (required) f.workerTask = task;
+        return;
+      }
       const job = new HeadlessJob(this._specBattle(f.spec), { players: f.players, onError: (e) => this.reportError('verify', e) });
       if (required) {
         // The result has arrived: duplicate reports, disconnects and the old deadline must not start another run.
@@ -137,7 +186,7 @@ export class MatchReports {
         f.rearmDeadline = false;
       }
       const schedule = () => {
-        const timer = this.later(0, slice);
+        const timer = this.laterWork(slice);
         if (required) f.verifyTimer = timer;
       };
       const slice = () => {
@@ -164,7 +213,13 @@ export class MatchReports {
           }
           return;
         }
-        if (required) { f.verifyJob = null; accept(verified); }
+        if (required) {
+          f.verifyJob = null;
+          f.result = verified;
+          f.resultSource = 'verified';
+          if (this.paused) { f.verifying = true; return; }
+          accept(verified);
+        }
       };
       if (Number.isFinite(this.headlessSliceMs)) schedule();
       else slice(); // Virtual schedulers retain their synchronous fast path.
@@ -173,7 +228,22 @@ export class MatchReports {
     let h = 0;
     for (let i = 0; i < f.battleId.length; i++) h = (h * 31 + f.battleId.charCodeAt(i)) >>> 0;
     // Sample jobs use only match-level timers: field completion must not cancel the diagnostic work.
-    if (h % 8 === 0) this.later(0, start);
+    if (h % 8 === 0) {
+      if (this.workerPool) start();
+      else this.laterWork(start);
+    }
     accept(result);
+  }
+
+  _compareVerified(f, result, simulated) {
+    const mine = validateClientResult(f.spec, compactForVerify(simulated), { gd: this.gd });
+    const server = mine.ok ? mine.result : simulated;
+    this.verifyStats.checked++;
+    if (resultDigest(server).hash !== resultDigest(result).hash) {
+      this.verifyStats.mismatches++;
+      this.log.warn?.(`[match ${this.roomCode}] ${f.fieldId}: client result differs from the server's simulation`);
+      return server;
+    }
+    return null;
   }
 }

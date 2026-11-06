@@ -5,15 +5,17 @@
 //     peers such as a local cloudflared; '1' always; '0' never) → net.js trustProxy;
 //   * DEBUG → the console logger's debug level;
 //   * SP_MAX_ROOMS, SP_MAX_ROOMS_PER_ADDR, SP_MAX_MATCHES_PER_ADDR, SP_MAX_CONNECTIONS and SP_MAX_CONNECTIONS_PER_ADDR
-//     override the room / match / socket caps. A global cap of 0 (SP_MAX_ROOMS, SP_MAX_CONNECTIONS) rejects everything,
-//     a per-network cap of 0 (the _PER_ADDR ones) is unlimited; a value that is not a non-negative integer is ignored
-//     with a warning when the server starts, and an explicit startServer() option still wins over the environment;
-//   * SP_ASSET_INDEX=0 (or the `assetIndex: false` option) → no content-hash index: plain asset URLs, size-mtime ETags
-//     (assetIndex.js); the index of the default public/ persists in .cache/asset-hashes.json;
+//     override the room / match / socket caps (this repository's caps come from the hot-reloaded limits file
+//     server/onlineLimit.js, so the environment only supplies the starting values). A global cap of 0 (SP_MAX_ROOMS,
+//     SP_MAX_CONNECTIONS) rejects everything, a per-network cap of 0 (the _PER_ADDR ones) is unlimited; a value that is
+//     not a non-negative integer is ignored with a warning when the server starts, and an explicit startServer() option
+//     still wins over the environment;
 //   * SP_VERSIONS ('all' or a comma list of shared/versions.js ids), SP_VERSION_DEFAULT and SP_MAX_VERSION_HOSTS (or the
 //     `versions: { enabled, default, maxHosts }` option, which wins) → the official versions this server offers
 //     (DESIGN §35.23, versionsFrom): every registry id unless one of them narrows the list (SP_VERSIONS=act2autochess
 //     is 第二期下半 alone, the switch off);
+//   * SP_ASSET_INDEX=0 (or the `assetIndex: false` option) → no content-hash index: plain asset URLs, size-mtime ETags
+//     (assetIndex.js); the index of the default public/ persists in .cache/asset-hashes.json;
 //   * the served directories (public/, data/, shared/, the content packs' packs/ and the plugins' plugins/ of this
 //     repository unless the options name others), and which startServer() options are handed on to net.js Network and
 //     lobby.js Lobby.
@@ -27,12 +29,84 @@ import { DEFAULT_VERSION, VERSIONS, versionById } from '../../shared/versions.js
 /** Repository root. */
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+/** The managed announcement probe file the agent writes (merged from Misyra, §45). */
+export const DEFAULT_AGENT_ANNOUNCEMENT_FILE = process.platform === 'win32'
+  ? path.join(ROOT, '.state', 'announcement.json') : '/var/lib/stronghold-announcement/announcement.json';
+
+/**
+ * 站点 ID（§45.3）。统一的 `SP_SITE_ID` 是唯一的站点身份：公告（panel 源）与房间分享都从它取站点，
+ * 用两个不同的 ID 意味着「公告写到 A 站、房间登记到 B 站」，而两边都不会报错 —— 只会安静地各干各的。
+ * 所以旧的 `SP_PORTAL_SITE_ID` 只当兼容别名，**同时出现且不同就拒绝启动**。
+ * 显式的 startServer() 选项优先（它就是程序配置），这里不跟它对账。
+ * @param {{ siteId?: string, announcementSiteId?: string, portalSiteId?: string }} opts
+ * @param {Record<string, string | undefined>} env
+ */
+export function siteIdFrom(opts = {}, env = process.env) {
+  const explicit = opts.siteId ?? opts.announcementSiteId ?? opts.portalSiteId;
+  if (explicit != null && explicit !== '') {
+    if (!/^[a-z0-9-]{1,40}$/.test(explicit)) throw new RangeError('SP_SITE_ID must be 1..40 characters of [a-z0-9-]');
+    return explicit;
+  }
+  const primary = env.SP_SITE_ID, alias = env.SP_PORTAL_SITE_ID;
+  if (primary && alias && primary !== alias)
+    throw new RangeError('SP_SITE_ID and SP_PORTAL_SITE_ID are both set and differ: the announcement and the room share must use one site id');
+  const value = primary || alias;
+  if (value == null || value === '') return null;
+  if (!/^[a-z0-9-]{1,40}$/.test(value)) throw new RangeError('SP_SITE_ID must be 1..40 characters of [a-z0-9-]');
+  return value;
+}
+
+/**
+ * The announcement source options (merged from Misyra, §45): agent probe file (default), explicit feed file, or the
+ * portal's panel API. The default source is the managed probe file; explicit feed URLs remain compatible.
+ * @param {{ announcementSource?: string, announcementFile?: string, announcementAgentFile?: string, announcementPollMs?: number,
+ * announcementSiteId?: string, announcementPortalUrl?: string, announcementUrl?: string }} opts
+ * @param {Record<string, string | undefined>} env
+ */
+export function announcementOptionsFrom(opts = {}, env = process.env) {
+  const explicitUrl = opts.announcementUrl || env.SP_ANNOUNCEMENT_URL;
+  const source = opts.announcementSource ?? env.SP_ANNOUNCEMENT_SOURCE ?? (explicitUrl ? 'panel' : 'agent');
+  if (!['agent', 'panel', 'file'].includes(source)) throw new RangeError('SP_ANNOUNCEMENT_SOURCE must be agent, panel or file');
+  const filePath = path.resolve(ROOT, source === 'agent'
+    ? opts.announcementAgentFile ?? env.SP_ANNOUNCEMENT_AGENT_FILE ?? DEFAULT_AGENT_ANNOUNCEMENT_FILE
+    : opts.announcementFile ?? env.SP_ANNOUNCEMENT_FILE ?? 'announcement.json');
+  const pollMs = opts.announcementPollMs ?? Number(env.SP_ANNOUNCEMENT_POLL_MS || 10000);
+  if (!Number.isFinite(pollMs)) throw new RangeError('invalid SP_ANNOUNCEMENT_POLL_MS');
+  if (source !== 'panel') return { filePath, pollMs, announcementUrl: null, source: { mode: source, siteId: null } };
+  let url;
+  if (explicitUrl) url = new URL(explicitUrl);
+  else {
+    const siteId = siteIdFrom(opts, env);
+    if (!siteId) throw new RangeError('panel source requires a valid SP_SITE_ID or SP_ANNOUNCEMENT_URL');
+    const portal = opts.announcementPortalUrl ?? env.SP_PORTAL_URL;
+    if (!portal) throw new RangeError('panel source requires SP_PORTAL_URL or SP_ANNOUNCEMENT_URL');
+    url = new URL('/api/announce/v1/' + siteId, portal);
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
+    throw new RangeError('announcement URL must be HTTP(S) without credentials or a fragment');
+  }
+  return { filePath, pollMs, announcementUrl: url.href,
+    source: { mode: 'panel', siteId: /^\/api\/announce\/v1\/([a-z0-9-]{1,40})$/.exec(url.pathname)?.[1] ?? null } };
+}
+
+/**
+ * The lobby announcement board file (server/announcements.js board reader, served at /data/announcements.json):
+ * an operator file outside the image. Unset keeps the shipped data file, so this is opt-in per installation.
+ * @param {{ announcementBoardFile?: string }} opts
+ * @param {Record<string, string | undefined>} env
+ */
+export function announcementBoardFileFrom(opts = {}, env = process.env) {
+  const named = opts.announcementBoardFile ?? env.SP_ANNOUNCEMENTS_BOARD_FILE;
+  return named == null || named === '' ? null : path.resolve(ROOT, named);
+}
+
 export const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 
 /** startServer() options handed on to net.js Network / lobby.js Lobby (an absent one keeps that module's default). */
-const NET_OPTION_KEYS = ['reconnectWindowMs', 'heartbeatMs', 'helloTimeoutMs', 'ratePerSec', 'rateBurst', 'maxConnections', 'maxOnline', 'abuseDropsPerSec',
-  'maxConnectionsPerAddr', 'heavyPerSec', 'heavyBurst', 'trustProxy'];
-const LOBBY_OPTION_KEYS = ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs', 'versionVoteMs', 'versionRetryMs'];
+const NET_OPTION_KEYS = ['reconnectWindowMs', 'heartbeatMs', 'helloTimeoutMs', 'ratePerSec', 'rateBurst', 'maxConnections', 'abuseDropsPerSec',
+  'maxConnectionsPerAddr', 'heavyPerSec', 'heavyBurst', 'trustProxy', 'allowAsyncHandlers'];
+const LOBBY_OPTION_KEYS = ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'maxBots', 'maxBotsPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs', 'matchmaking', 'snapshotHz',
+  'afkRemoveRounds', 'versionVoteMs', 'versionRetryMs'];
 
 /**
  * Bind address used when neither the `host` option nor `HOST` says otherwise: one dual-stack socket, so the server
@@ -102,11 +176,54 @@ export function assetIndexOptionsFrom(opts, publicDir) {
 }
 
 /**
+ * SP_ASSET_ORIGIN: the base origin the asset download (设置 → 素材下载, public/js/assetDownload.js) fetches public
+ * material from, served to the page at /data/asset-source.json (http/static.js). '' (the default) keeps this page's own
+ * origin — the unchanged behaviour. An absolute HTTP(S) origin or a same-origin path prefix (e.g. /cdn) is accepted;
+ * trailing slashes are dropped and credentials, query and fragment are refused.
+ * @param {{ assetOrigin?: string }} opts
+ * @param {Record<string, string | undefined>} env
+ * @returns {string}
+ */
+export function assetOriginFrom(opts = {}, env = process.env) {
+  const raw = String(opts.assetOrigin ?? env.SP_ASSET_ORIGIN ?? '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('/')) {
+    const trimmed = raw.replace(/\/+$/, '');
+    if (!/^\/[A-Za-z0-9._~/-]*$/.test(trimmed) || trimmed.split('/').some((s) => s === '.' || s === '..'))
+      throw new RangeError('SP_ASSET_ORIGIN path prefix must be a safe absolute path without . or ..');
+    return trimmed;
+  }
+  let url;
+  try { url = new URL(raw); } catch { throw new RangeError('SP_ASSET_ORIGIN must be an absolute HTTP(S) origin or a path prefix'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)
+    throw new RangeError('SP_ASSET_ORIGIN must be HTTP(S) without credentials, query or fragment');
+  return (url.origin + url.pathname).replace(/\/+$/, '');
+}
+
+/**
+ * Three-state asset-download switch over assetOriginFrom: neither `opts.assetOrigin` nor SP_ASSET_ORIGIN is set →
+ * `{ origin: '', disabled: false }` (this page's own origin, the entry stays); either is set to an empty value →
+ * `{ origin: '', disabled: true }` (the operator opted out of a download channel; the client hides the entry,
+ * public/js/assetDownload.js + ui/assetSection.js); a non-empty value validates through assetOriginFrom.
+ * @param {{ assetOrigin?: string }} opts
+ * @param {Record<string, string | undefined>} env
+ * @returns {{ origin: string, disabled: boolean }}
+ */
+export function assetSourceFrom(opts = {}, env = process.env) {
+  const explicit = opts.assetOrigin !== undefined ? opts.assetOrigin : env.SP_ASSET_ORIGIN;
+  if (explicit === undefined) return { origin: '', disabled: false };
+  const raw = String(explicit).trim();
+  if (!raw) return { origin: '', disabled: true };
+  return { origin: assetOriginFrom({ assetOrigin: raw }, {}), disabled: false };
+}
+
+/**
  * net.js Network options out of the startServer() options; `trustProxy` falls back to TRUST_PROXY.
  * @param {Record<string, any>} opts @param {{ warn?: (m: string) => void } | null} [log] the server logger, for a junk SP_MAX_*
  */
 export function netOptionsFrom(opts, log = null) {
   const netOptions = {};
+  if (typeof opts.compactWire === 'boolean') netOptions.compactWire = opts.compactWire;
   for (const k of NET_OPTION_KEYS) {
     if (opts[k] != null) netOptions[k] = opts[k];
   }
@@ -136,13 +253,13 @@ export function parseRoomCode(v) {
 }
 
 /**
- * lobby.js Lobby options out of the startServer() options.
+ * lobby.js Lobby options out of the startServer() options; explicit solo null selects the official data fallback.
  * @param {Record<string, any>} opts @param {{ warn?: (m: string) => void } | null} [log] the server logger, for a junk SP_MAX_*
  */
 export function lobbyOptionsFrom(opts, log = null) {
   const lobbyOptions = {};
   for (const k of LOBBY_OPTION_KEYS) {
-    if (opts[k] != null) lobbyOptions[k] = opts[k];
+    if (opts[k] != null || (k === 'soloReconnectWindowMs' && opts[k] === null)) lobbyOptions[k] = opts[k];
   }
   applyEnvLimits(lobbyOptions, LOBBY_LIMIT_ENV, log);
   // Per instance only: startServer({ roomCode }) or the --room-code argument parsed by server/index.js. No environment
@@ -153,14 +270,14 @@ export function lobbyOptionsFrom(opts, log = null) {
 }
 
 /** Socket caps that SP_MAX_CONNECTIONS / SP_MAX_CONNECTIONS_PER_ADDR may override (net.js). */
-const NET_LIMIT_ENV = [['maxConnections', 'SP_MAX_CONNECTIONS'], ['maxConnectionsPerAddr', 'SP_MAX_CONNECTIONS_PER_ADDR'], ['maxOnline', 'SP_MAX_ONLINE']];
+const NET_LIMIT_ENV = [['maxConnections', 'SP_MAX_CONNECTIONS'], ['maxConnectionsPerAddr', 'SP_MAX_CONNECTIONS_PER_ADDR']];
 /** Room / match caps that SP_MAX_ROOMS / SP_MAX_ROOMS_PER_ADDR / SP_MAX_MATCHES_PER_ADDR may override (lobby.js). */
 const LOBBY_LIMIT_ENV = [['maxRooms', 'SP_MAX_ROOMS'], ['maxRoomsPerAddr', 'SP_MAX_ROOMS_PER_ADDR'], ['maxMatchesPerAddr', 'SP_MAX_MATCHES_PER_ADDR']];
 
 /**
  * One limit out of the environment: an empty or absent value keeps `fallback`; an unusable one warns and keeps it too,
- * because a typo must never silently drop a protection. '0' is meaningful, not junk: on a global cap it rejects
- * everything, on a per-network cap it is unlimited.
+ * because a typo must never silently drop a protection. '0' is meaningful, not junk: every cap in this fork treats 0 as
+ * unlimited (lobby.js and net.js only guard when a cap is positive), so '0' is an explicit way to say "no cap".
  * @param {string | undefined} raw @param {number | null} fallback @param {string} name @param {any} [log]
  * @returns {number | null}
  */

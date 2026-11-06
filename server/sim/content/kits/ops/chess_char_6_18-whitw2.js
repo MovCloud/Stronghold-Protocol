@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_6_18-whitw2.js — 荒芜拉普兰德 (char_1038_whitw2) kit, tier 6.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-6 kits: ../shared/tier6.js; kit contract and rules: ../README.md.
 
 import { sortEnemyTargets, canTargetEnemy } from '../../../targeting.js';
@@ -293,7 +294,7 @@ function whitw2(bb, chess, def) {
         if (cur) { cur.sp = Math.max(cur.sp, sp); cur.as = Math.max(cur.as, as); return; }
         const cfg = { sp, as };
         S.siracusa.set(unit.ownerId, cfg);
-        const sira = (u) => u && u.kind === 'op' && u.ownerId === unit.ownerId && hasBond(u, 'siracusaShip');
+        const sira = (u) => u && nativeOperator(u) && u.ownerId === unit.ownerId && hasBond(u, 'siracusaShip');
         // 初始技力+5: every (re)deployment starts with +5 SP (not on top of the SP a unite helper carries over)
         battle.on('deploy', ({ unit: u, initial }) => {
           if (!(cfg.sp > 0) || !sira(u) || !u.skill) return;

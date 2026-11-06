@@ -5,6 +5,9 @@
 // pushes (GitHub #87). Eliminated humans and spectator seats follow a player through every phase reset (community
 // report of 2026-10-06, item 56; the official DeadAutoObDn { obIndex, state, preparation }, research 09 §3.1; the idea
 // of PR #189): the player they last watched with a manual g.watch (`watchPref`), else the first player still in.
+// 2V2 ('versus'): a player's prep scouting / other-group boss field is team-scoped until the opponent is revealed
+// (`Match#opponentRevealed` — R14 on, shared/constants.js opponentRevealed); a spectator seat (`Match#isSpectator`) is
+// outside every team restriction and watches any player / field from the start.
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { PHASE, ERR } from '../../../shared/constants.js';
@@ -55,11 +58,16 @@ export class MatchWatch {
     const f = this.fields.find((x) => x.fieldId === fieldId);
     if (f) {
       // 最终攻势 / 隐秘核心: "两名参与者会处于同一个战场，但无法查看另一组队友的战场情况" — a fighting player sees its own
-      // boss field only (eliminated / departed players spectate freely)
+      // boss field only (co-op keeps this), UNLESS the 2V2 opponent has been revealed (R14+, `Match#opponentRevealed`;
+      // spectator seats have no own field and always watch anything). Eliminated / departed players spectate freely.
       const own = this.fieldOf(ps);
-      if ((f.kind === 'boss' || f.kind === 'hidden') && own && own !== f.fieldId) return fail(ERR.BAD_TARGET, 'other group hidden');
+      const revealed = this.isVersus && this.opponentRevealed;
+      if ((f.kind === 'boss' || f.kind === 'hidden') && own && own !== f.fieldId
+        && !this.isSpectator(ps) && !revealed) return fail(ERR.BAD_TARGET, 'other group hidden');
       this.watchers.set(ps.playerId, fieldId);
       this._watchPrefSet(ps, f, playerId);
+      // 返回战场 to a field this browser runs locally: it re-shows its own replica (localReplica.js)
+      if (this._offerLocal(ps, f, { resend: true })) { this._sendDamageTo(ps.playerId); return OK; }
       this._sendField(ps.playerId, fieldId);
       return OK;
     }
@@ -71,6 +79,11 @@ export class MatchWatch {
       if (this.fields.length) return fail(ERR.BAD_TARGET, 'no such field');
       const target = this.players.get(fieldId.slice(2));
       if (!target || !target.alive) return fail(ERR.BAD_TARGET);
+      // 2V2 ('versus'): prep scouting is TEAM-ONLY until the opponent is revealed — the opponent's board (their lineup,
+      // hand and coming wave) must never be visible before the Final Assault. From R14 on (`Match#opponentRevealed`)
+      // it opens; a spectator seat (no team) scouts anyone from the start.
+      if (this.isVersus && !this.isSpectator(ps) && !this.opponentRevealed
+        && this.teamIdOf(target) !== this.teamIdOf(ps)) return fail(ERR.BAD_TARGET, 'opponent hidden');
       this.watchers.set(ps.playerId, fieldId);
       if (target !== ps) this.watchPref.set(ps.playerId, target.playerId);
       this._notifyPrepScouts(target, { to: ps.playerId });
@@ -99,7 +112,11 @@ export class MatchWatch {
     const ok = (pid) => { const t = typeof pid === 'string' && pid !== ps.playerId ? this.players.get(pid) : null; return !!t && t.alive && !t.left; };
     const pref = this.watchPref.get(ps.playerId);
     if (ok(pref)) return pref;
-    return this.order.find((q) => ok(q.playerId))?.playerId ?? null;
+    // 2V2: an eliminated player follows its OWN team only (never spies on the opponent) — unless the opponent is
+    // revealed (R14+). A spectator seat has no team and follows anyone, `opponentRevealed` or not.
+    const ownTeamOnly = this.isVersus && !this.isSpectator(ps) && !this.opponentRevealed;
+    const pool = ownTeamOnly ? this.order.filter((q) => this.teamIdOf(q) === this.teamIdOf(ps)) : this.order;
+    return pool.find((q) => ok(q.playerId))?.playerId ?? null;
   }
 
   /** The field of the player `ps` follows among `fields` (null when that player has none this phase). */
@@ -131,19 +148,24 @@ export class MatchWatch {
   /**
    * g.watch under client-side combat: the watcher gets the field's spec (b.start, display only) and runs a local
    * replica fast-forwarded to the field's clock. No watching while the own normal battle runs; the other pair's boss
-   * field is never shown to a fighting player; eliminated players may watch anything.
+   * field is shown to a fighting player only once the 2V2 opponent is revealed (R14+); eliminated players (and
+   * spectator seats, which have no own field) may watch anything.
    */
   _watchClient(ps, fieldId, playerId = null) {
     const f = this.fields.find((x) => x.fieldId === fieldId) || null;
     if (!f) return fail(ERR.BAD_TARGET, 'no such field');
     const own = this.fields.find((x) => x.players.includes(ps.playerId)) || null;
     if (ps.alive) {
-      if ((f.kind === 'boss' || f.kind === 'hidden') && own && own !== f) return fail(ERR.BAD_TARGET, 'other group hidden');
+      // the other pair's boss field opens with the 2V2 reveal (R14+): see watch(); co-op keeps it closed
+      const revealed = this.isVersus && this.opponentRevealed;
+      if ((f.kind === 'boss' || f.kind === 'hidden') && own && own !== f
+        && !this.isSpectator(ps) && !revealed) return fail(ERR.BAD_TARGET, 'other group hidden');
       if (f.kind === 'normal' && own && own !== f && own.live) return fail(ERR.WRONG_PHASE, 'own battle running');
     }
     this.watchers.set(ps.playerId, f.fieldId);
     this._watchPrefSet(ps, f, playerId);
     this.sendTo(ps.playerId, this._startMsg(f, ps.playerId, { watch: !f.players.includes(ps.playerId) }));
+    this._sendDamageTo(ps.playerId);
     return OK;
   }
 
@@ -171,7 +193,9 @@ export class MatchWatch {
       const f = own || this._watchTargetField(ps, this.fields) || this.fields[0];
       if (!f) continue;
       this.watchers.set(ps.playerId, f.fieldId);
-      if (ps.connected) this._sendField(ps.playerId, f.fieldId);
+      // a browser that simulates locally (the own field, or the one an eliminated human follows): b.start instead of
+      // the stream (localReplica.js)
+      if (ps.connected && !this._offerLocal(ps, f)) this._sendField(ps.playerId, f.fieldId);
     }
   }
 
@@ -190,18 +214,22 @@ export class MatchWatch {
   }
 
   /**
-   * The spec a spectator seat is shown: the field's own, minus the players' `contentInfo.funds` — a private number (the
-   * player's funds at the battle start) that no battle effect reads, so the replica still plays the same battle. The
-   * other contentInfo counters stay: battle effects read them (sim/content: handUnits, roundStats.gainedChess).
+   * The spec a spectator seat is shown: the field's own, minus the players' `contentInfo.funds`. It is not read by
+   * battle effects. The other contentInfo counters stay: battle effects read them (sim/content: handUnits,
+   * roundStats.gainedChess).
    */
   _spectatorSpec(f) {
     if (!f.spectatorSpec) {
       const s = f.spec;
       const strip = (p) => {
-        if (!p || !p.contentInfo || !Object.hasOwn(p.contentInfo, 'funds')) return p;
-        const { funds, ...contentInfo } = p.contentInfo;
-        void funds;
-        return { ...p, contentInfo };
+        if (!p || typeof p !== 'object') return p;
+        let view = p;
+        if (p.contentInfo && Object.hasOwn(p.contentInfo, 'funds')) {
+          const { funds, ...contentInfo } = p.contentInfo;
+          void funds;
+          view = { ...view, contentInfo };
+        }
+        return view;
       };
       f.spectatorSpec = s && Array.isArray(s.players) ? { ...s, players: s.players.map(strip) } : s;
     }
@@ -225,15 +253,18 @@ export class MatchWatch {
   _sendField(playerId, fieldId) {
     const f = this.fields.find((x) => x.fieldId === fieldId);
     if (f) {
+      if (f.remote) { f.battle.runner?.requestField(playerId, fieldId); this._sendDamageTo(playerId); return; }
+      this._sampleDamage(true);
+      this._sendDamageTo(playerId);
       let meta;
-      try { meta = f.battle.fieldMeta(); } catch (e) { this.reportError('fieldMeta', e); return; }
+      try { meta = f.battle.fieldMeta({ includeUnitStats: true }); } catch (e) { this.reportError('fieldMeta', e); return; }
       this.sendTo(playerId, { t: 'm.field', ...meta, fieldId: f.fieldId, kind: f.kind, live: !!f.live });
       try { this.sendTo(playerId, snapFrame(f.fieldId, f.battle.snapshot())); } catch (e) { this.reportError('snapshot', e); }
       return;
     }
     if (typeof fieldId === 'string' && fieldId.startsWith('n:')) {
       const target = this.players.get(fieldId.slice(2));
-      if (target && target.alive) this.sendTo(playerId, this.prepFieldMeta(target));
+      if (target && target.alive) { this.sendTo(playerId, this.prepFieldMeta(target)); this._sendDamageTo(playerId); }
     }
   }
 
@@ -254,6 +285,6 @@ export class MatchWatch {
     ps._prepScoutSig = sig;
     const dest = changed ? watchers : (to ? [to] : []);
     if (!dest.length) return;
-    for (const pid of dest) this.sendTo(pid, meta);
+    for (const pid of dest) { this.sendTo(pid, meta); this._sendDamageTo(pid); }
   }
 }

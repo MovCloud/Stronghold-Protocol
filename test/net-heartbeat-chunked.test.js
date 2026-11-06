@@ -8,13 +8,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { Network } from '../server/net.js';
+import { OutboundPump } from '../server/outboundPump.js';
 
+// The chunked pass is the pump's (server/outboundPump.js): Network.heartbeat() only queues a 'heartbeat' job and the
+// pump runs it in slices of PUMP_VISITS with a yield between. So the fake needs a real pump over its conns, and the
+// per-connection path still needs the emergency flag heartbeatConn reads.
 function fakeNet(count, { alive = true, session = {} } = {}) {
   const net = Object.create(Network.prototype);
   net.opts = { helloTimeoutMs: 1000 };
   net.log = { debug() {}, error() {}, info() {}, warn() {} };
   net.now = () => 10_000;
   net.closed = false;
+  net.emergency = { active: false };
   net.conns = new Map();
   for (let i = 0; i < count; i++) {
     const conn = {
@@ -22,8 +27,16 @@ function fakeNet(count, { alive = true, session = {} } = {}) {
       ws: { ping() { conn.pings++; }, terminate() { conn.terminated++; } },
       close() { conn.closes++; },
     };
-    net.conns.set('c' + i, conn);
+    net.conns.set(conn.ws, conn);
   }
+  net.outbound = new OutboundPump({
+    conns: net.conns,
+    opts: { maxQueuedFrames: 64, backpressurePollMs: 1000 },
+    diagnostics: { slowDisconnects: 0, droppedSnapshots: 0, coalescedStates: 0 },
+    defaults: { snapDropBytes: 0, hardBufferBytes: 0 },
+    isClosed: () => net.closed,
+    writeFrame: () => true, writeMessage: () => true, encode: () => null, send: () => true,
+  });
   return net;
 }
 
@@ -74,7 +87,7 @@ test('fewer connections than one chunk complete in the same tick, like the old l
   const net = fakeNet(127);
   net.heartbeat();
   for (const c of net.conns.values()) assert.equal(c.pings, 1, 'all of them were pinged synchronously');
-  assert.equal(net._heartbeatPending, true, 'nothing yielded, so the pass had already run when the caller resumed');
+  assert.equal(net._heartbeatPending, false, 'the pass ran to completion inside the call, so nothing is left pending');
 });
 
 test('a closed server never starts a pass', () => {
@@ -82,7 +95,7 @@ test('a closed server never starts a pass', () => {
   net.closed = true;
   net.heartbeat();
   for (const c of net.conns.values()) assert.equal(c.pings, 0, 'a shut-down server pings nothing');
-  assert.equal(net._heartbeatPending, undefined, 'and does not mark a pass pending');
+  assert.equal(net._heartbeatPending, false, 'and does not mark a pass pending');
 });
 
 test('a server that closes while the pass is yielding stops the rest of it', async () => {
@@ -91,7 +104,7 @@ test('a server that closes while the pass is yielding stops the rest of it', asy
   net.closed = true;                                // shutdown lands after the first chunk, before the next one
   for (let i = 0; i < 10; i++) await settle();
   assert.equal([...net.conns.values()].filter((c) => c.pings === 1).length, 128, 'only the chunk that had already run');
-  assert.equal(net._heartbeatPending, false, 'the pass ended rather than pinging the rest');
+  assert.equal(net._heartbeatPending, true, 'the abandoned job is never drained once the server is closed, and a closed server never starts another pass');
 });
 
 test('a connection removed or replaced while the pass yields is left to the next pass', async () => {

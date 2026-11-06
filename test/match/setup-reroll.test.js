@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeMatch } from './harness.js';
-import { ERR, PHASE } from '../../shared/constants.js';
+import { ERR, PHASE, SETUP_REROLL_COOLDOWN_MS } from '../../shared/constants.js';
+import { REROLL_VOTE_MS, MAX_SETUP_REROLLS, rerollNeed } from '../../server/match/match/setupVote.js';
+import { restoreMatch, snapshotMatch } from '../../server/match/snapshot.js';
+import { createRngFromState } from '../../server/sim/rng.js';
 import { validateC2S } from '../../shared/protocol.js';
 import { createRng, deriveSeed } from '../../server/sim/rng.js';
 import { setupMatchWaves } from '../../server/match/waves.js';
@@ -44,7 +47,7 @@ test('protocol requires setup revisions and vote identities; old initial ready r
   }
 });
 
-test('four humans must agree; rerolls the entire official setup and stock, preserves seats/settings/RNG', (t) => {
+test('three of four humans (ceil 0.75 n) reroll the entire official setup and stock, preserving seats/settings/RNG', (t) => {
   const h = makeMatch({ humans: 4, difficulty: 'HARD', seed: 123, spectators: ['viewer'] }).start();
   t.after(() => h.m.dispose());
   const m = h.m;
@@ -61,14 +64,16 @@ test('four humans must agree; rerolls the entire official setup and stock, prese
   h.sched.advance(500);
   assert.deepEqual(m.requestSetupReroll('p_0', 0), { ok: true });
   assert.deepEqual(m.setupVote.voters, ['p_0', 'p_1', 'p_2', 'p_3']);
+  assert.equal(m.setupVote.need, 3);
   assert.equal(m.deadline, 0);
   assert.deepEqual(approve(m, 'p_1'), { ok: true });
-  assert.deepEqual(approve(m, 'p_2'), { ok: true });
-  h.sched.advance(30000);
+  h.sched.advance(5000);
   assert.equal(m.phase, PHASE.INFO_CHECK);
-  assert.deepEqual(snapshot(m), before, 'nothing rerolled until everyone agrees');
+  assert.deepEqual(snapshot(m), before, 'nothing rerolled below the threshold');
   assert.equal(m.handle('viewer', { t: 'g.rerollVote', voteId: m.setupVote.id, agree: true }).error, ERR.SPECTATOR);
-  assert.deepEqual(approve(m, 'p_3'), { ok: true });
+  const voteId = m.setupVote.id;
+  assert.deepEqual(approve(m, 'p_2'), { ok: true });
+  assert.equal(approve(m, 'p_3', voteId).error, ERR.WRONG_PHASE, 'the vote is over once three agreed');
   assert.equal(m.setupRevision, 1);
   assert.equal(m.setupVote, null);
   const rng = createRng(deriveSeed(m.seed, 'reroll-setup:1'));
@@ -98,6 +103,31 @@ test('four humans must agree; rerolls the entire official setup and stock, prese
   assert.equal(m.phase, PHASE.BAND_DRAFT);
 });
 
+for (const capacity of [4, 8, 12, 16, 20]) for (const independent of [false, true]) {
+  test(`setup reroll replaces every ${capacity}-seat ${independent ? 'independent' : 'shared'} pool atomically`, t => {
+    const h = makeMatch({ humans: capacity, seed: 123, difficulty: 'HARD', experimental: {
+      revivalEnabled: false, disableSharedPool: independent, ...(capacity > 4 ? { playerCapacity: capacity } : {}),
+    } }).start();
+    t.after(() => h.m.dispose());
+    const m = h.m, groups = m.poolGroups, playerPools = m.playerPools;
+    const oldPools = groups.map(g => g.pool), shape = groups.map(({ id, playerIds, scale }) => ({ id, playerIds, scale }));
+    assert.deepEqual(m.requestSetupReroll('p_0', 0), { ok: true });
+    for (const ps of m.order.slice(1)) if (m.setupVote) assert.deepEqual(approve(m, ps.playerId), { ok: true });
+    assert.equal(m.setupRevision, 1);
+    assert.notEqual(m.poolGroups, groups);
+    assert.deepEqual(m.poolGroups.map(({ id, playerIds, scale }) => ({ id, playerIds, scale })), shape);
+    if (playerPools) assert.notEqual(m.playerPools, playerPools);
+    for (const ps of m.order) {
+      const group = m.poolGroups.find(g => g.playerIds.includes(ps.playerId)), pool = m.poolFor(ps);
+      assert.strictEqual(pool, group.pool);
+      assert.ok(!oldPools.includes(pool), 'no player retains a pre-reroll transaction pool');
+      for (const id of m.gd.visibleChess) assert.equal(pool.has(id), !m.bannedChess.includes(id));
+    }
+    if (!independent) assert.strictEqual(m.pool, m.poolGroups[0].pool);
+    h.invariants();
+  });
+}
+
 test('reject/cancel restores exact remaining countdown and keeps setup and ready flags', (t) => {
   const h = makeMatch({ humans: 2, timerScale: 0.5 }).start();
   t.after(() => h.m.dispose());
@@ -107,14 +137,14 @@ test('reject/cancel restores exact remaining countdown and keeps setup and ready
   h.sched.advance(1000);
   const remaining = m.deadline - h.sched.now();
   m.requestSetupReroll('p_0', 0);
-  h.sched.advance(10000);
+  h.sched.advance(5000);
   assert.deepEqual(m.handle('p_1', { t: 'g.rerollVote', voteId: m.setupVote.id, agree: false }), { ok: true });
   assert.deepEqual(snapshot(m), before);
   assert.equal(m.setupRevision, 0);
   assert.equal(h.ps('p_1').infoReady, true);
   assert.equal(m.deadline, h.sched.now() + remaining, 'real remaining ms, no extra timer scaling');
-  // The rejected vote did not give p_0 its cooldown back, but any other seat can still open one.
-  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.RATE);
+  // The rejected vote did not give p_0 its seat cooldown back, but any other seat can still open one.
+  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.RATE, 'the seat cooldown answers before the proposal mark');
   assert.deepEqual(m.requestSetupReroll('p_1', 0), { ok: true });
   assert.deepEqual(m.cancelSetupReroll('p_0', m.setupVote.id), { ok: true }, 'any seated player may cancel');
   assert.equal(m.deadline, h.sched.now() + remaining);
@@ -140,6 +170,9 @@ test('reroll cancels queued all-ready transition; stale ready and previous vote 
     assert.equal(m.handle('p_1', msg).error, ERR.BAD_TARGET);
   }
   assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.BAD_TARGET);
+  // the fork's 300 ms request guard answers first, before the window the completed reroll reopened
+  assert.equal(m.requestSetupReroll('p_0', 1).error, ERR.RATE);
+  h.sched.advance(300);
   assert.deepEqual(m.requestSetupReroll('p_0', 1), { ok: true }, 'a completed reroll opens a fresh window');
   assert.equal(m.requestSetupReroll('p_0', 1).error, ERR.WRONG_PHASE, 'one vote at a time');
   assert.equal(approve(m, 'p_1', oldVote).error, ERR.BAD_TARGET);
@@ -171,34 +204,135 @@ test('solo and one human with bots refresh immediately without a forced timer; f
   }
 });
 
-test('disconnect and leave cancel rather than count as consent; reconnect sees current vote/setup', (t) => {
-  const h = makeMatch({ humans: 3, timerScale: 4 }).start();
+test('a voter that disconnects or leaves is dropped and the vote recounted, never cancelled; reconnect sees it', (t) => {
+  const h = makeMatch({ humans: 4 }).start();
   t.after(() => h.m.dispose());
   const m = h.m;
   const before = snapshot(m);
   m.requestSetupReroll('p_0', 0);
   const id = m.setupVote.id;
-  m.onReconnect('p_1');
-  assert.equal(h.lastTo('p_1', 'm.public').rerollVote.id, id);
+  assert.equal(m.setupVote.need, 3);
+  assert.deepEqual(m.handle('p_1', { t: 'g.rerollVote', voteId: id, agree: false }), { ok: true });
+  m.onReconnect('p_2');
+  assert.equal(h.lastTo('p_2', 'm.public').rerollVote.id, id);
+  // the no-voter drops: 3 voters left, need ceil(2.25) = 3, still open
   m.onDisconnect('p_1');
-  assert.equal(m.setupVote, null);
-  assert.deepEqual(snapshot(m), before);
-  h.sched.advance(300);
-  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.NOT_READY);
+  assert.equal(m.setupVote.id, id);
+  assert.deepEqual(m.setupVote.voters, ['p_0', 'p_2', 'p_3']);
+  assert.deepEqual([...m.setupVote.rejected], []);
+  assert.equal(m.setupVote.need, 3);
+  assert.equal(m.handle('p_1', { t: 'g.rerollVote', voteId: id, agree: true }).error, ERR.NOT_IN_ROOM);
+  // back online: not a voter of this vote
   m.onReconnect('p_1');
-  assert.equal(h.lastTo('p_1', 'm.public').rerollVote, null);
-  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.RATE, 'the cancelled vote keeps p_0 on cooldown');
-  assert.deepEqual(m.requestSetupReroll('p_2', 0), { ok: true }, 'another seat is free to ask');
-  assert.deepEqual(m.cancelSetupReroll('p_1', m.setupVote.id), { ok: true }, 'any seated player may cancel');
-  h.sched.advance(30_000);
-  assert.deepEqual(m.requestSetupReroll('p_0', 0), { ok: true }, 'after the cooldown the same seat may ask again');
-  m.onLeave('p_1');
+  assert.equal(m.handle('p_1', { t: 'g.rerollVote', voteId: id, agree: true }).error, ERR.NOT_IN_ROOM);
+  approve(m, 'p_2');
+  assert.deepEqual(snapshot(m), before);
+  // p_3 leaves: 2 voters, need 2, both agreed → passes on the recount
+  m.onLeave('p_3');
   assert.equal(m.setupVote, null);
-  assert.equal(m.setupRevision, 0);
-  assert.deepEqual(m.requestSetupReroll('p_2', 0), { ok: true });
-  assert.deepEqual(m.setupVote.voters, ['p_0', 'p_2']);
-  approve(m, 'p_0');
   assert.equal(m.setupRevision, 1);
+  assert.equal(h.lastBc('m.notice').kind, 'rerollPassed');
+});
+
+test('thresholds, early failure on rejections, the 20 s timeout and offline humans outside the vote', (t) => {
+  assert.deepEqual([1, 2, 3, 4, 5, 8, 12, 16, 20].map(rerollNeed), [1, 2, 3, 3, 4, 6, 9, 12, 15]);
+  for (const [n, need] of [[2, 2], [3, 3], [4, 3], [8, 6], [20, 15]]) {
+    const h = makeMatch({ humans: n, experimental: n > 4 ? { revivalEnabled: false, disableSharedPool: false, playerCapacity: n } : undefined }).start();
+    t.after(() => h.m.dispose());
+    h.m.requestSetupReroll('p_0', 0);
+    assert.equal(h.m.setupVote.need, need, `n=${n}`);
+    assert.equal(h.lastBc('m.public').rerollVote.need, need);
+  }
+  // 4 humans, one offline: 3 voters, need 3; one no makes passing impossible
+  const h = makeMatch({ humans: 4, timerScale: 0.5 }).start();
+  t.after(() => h.m.dispose());
+  const m = h.m;
+  m.onDisconnect('p_3');
+  h.sched.advance(1000);
+  const remaining = m.deadline - h.sched.now();
+  assert.deepEqual(m.requestSetupReroll('p_1', 0), { ok: true });
+  assert.deepEqual(m.setupVote.voters, ['p_0', 'p_1', 'p_2']);
+  assert.equal(m.setupVote.need, 3);
+  assert.deepEqual(m.handle('p_2', { t: 'g.rerollVote', voteId: m.setupVote.id, agree: false }), { ok: true });
+  assert.equal(m.setupVote, null, 'failed early');
+  assert.deepEqual(h.lastBc('m.notice'), { t: 'm.notice', kind: 'rerollFailed', voteId: 1, reason: 'rejected' });
+  assert.equal(m.deadline, h.sched.now() + remaining);
+  // a timed-out vote fails and restores the confirmation time
+  h.sched.advance(300);
+  const left = m.deadline - h.sched.now();
+  assert.deepEqual(m.requestSetupReroll('p_2', 0), { ok: true }, 'a seat that never proposed is free to ask');
+  const vote = h.lastBc('m.public').rerollVote;
+  assert.deepEqual(vote, { id: 2, proposerId: 'p_2', voters: ['p_0', 'p_1', 'p_2'], agreed: ['p_2'], rejected: [], need: 3,
+    deadline: h.sched.now() + m.scaled(REROLL_VOTE_MS) });
+  assert.deepEqual(approve(m, 'p_0'), { ok: true });
+  h.sched.advance(m.scaled(REROLL_VOTE_MS) - 1);
+  assert.equal(m.setupVote.id, 2);
+  assert.equal(m.deadline, 0, 'confirmation stays paused while voting');
+  h.sched.advance(1);
+  assert.equal(m.setupVote, null);
+  assert.deepEqual(h.lastBc('m.notice'), { t: 'm.notice', kind: 'rerollFailed', voteId: 2, reason: 'timeout' });
+  assert.equal(m.setupRevision, 0);
+  assert.equal(m.deadline, h.sched.now() + left);
+  assert.equal(m.phase, PHASE.INFO_CHECK);
+});
+
+test('proposer withdrawal, the per-match limit of three and a checkpoint dropping the vote', (t) => {
+  const h = makeMatch({ humans: 2 }).start();
+  t.after(() => h.m.dispose());
+  const m = h.m;
+  m.requestSetupReroll('p_0', 0);
+  assert.deepEqual(m.handle('p_0', { t: 'g.rerollVote', voteId: m.setupVote.id, agree: false }), { ok: true });
+  assert.equal(m.setupVote, null);
+  assert.deepEqual(h.lastBc('m.notice'), { t: 'm.notice', kind: 'rerollCancelled', voteId: 1, by: 'p_0' });
+  for (let rev = 0; rev < MAX_SETUP_REROLLS; rev++) {
+    h.sched.advance(300);
+    assert.deepEqual(m.requestSetupReroll(rev % 2 ? 'p_0' : 'p_1', rev), { ok: true });
+    assert.deepEqual(approve(m, rev % 2 ? 'p_1' : 'p_0'), { ok: true });
+    assert.equal(m.setupRevision, rev + 1);
+  }
+  h.sched.advance(300);
+  assert.equal(m.requestSetupReroll('p_0', MAX_SETUP_REROLLS).error, ERR.ALREADY);
+  // a vote open at a checkpoint is gone after the restore, the paused confirmation time kept
+  const h2 = makeMatch({ humans: 2, seed: 7 }).start();
+  t.after(() => h2.m.dispose());
+  h2.sched.advance(2000);
+  const remaining = h2.m.deadline - h2.sched.now();
+  const at = h2.sched.now();
+  h2.m.requestSetupReroll('p_0', 0);
+  const doc = JSON.parse(JSON.stringify(snapshotMatch(h2.m)));
+  assert.equal(doc.deadlineRemainingMs, remaining);
+  const h3 = makeMatch({ seats: doc.seats, seed: doc.seed });
+  t.after(() => h3.m.dispose());
+  assert.equal(restoreMatch(h3.m, doc, { createRngFromState }), true);
+  assert.equal(h3.m.setupVote, null);
+  assert.equal(h3.m._setupProposals.size, 0);
+  // The proposal mark is transient, the seat cooldown is not: the restored match still refuses that seat.
+  assert.equal(h3.m._rerollStartAt.get('p_0'), at, 'the seat cooldown is the persistent half, on the virtual clock');
+  // restoreMatch leaves every human seat offline (the platform rebinds it), and h3's clock starts 2 s behind h2's:
+  // 28 s of the 30 s window are still left for that seat
+  h3.m.players.get('p_0').connected = true;
+  h3.sched.advance(SETUP_REROLL_COOLDOWN_MS - 2000);
+  assert.equal(h3.m.requestSetupReroll('p_0', 0).error, ERR.RATE, 'the mark is gone after the restore, the cooldown is not');
+});
+
+test('the seat cooldown answers before the per-revision mark, and a completed reroll gives it back', (t) => {
+  const h = makeMatch({ humans: 2 }).start();
+  t.after(() => h.m.dispose());
+  const m = h.m;
+  assert.deepEqual(m.requestSetupReroll('p_0', 0), { ok: true });
+  assert.deepEqual(m.cancelSetupReroll('p_1', m.setupVote.id), { ok: true }, 'any seated player may cancel');
+  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.RATE, 'a cancelled vote does not give the cooldown back');
+  h.sched.advance(SETUP_REROLL_COOLDOWN_MS);
+  assert.equal(m.phase, PHASE.INFO_CHECK, 'the cooldown expires inside the confirmation window the cancel restored');
+  assert.equal(m.requestSetupReroll('p_0', 0).error, ERR.ALREADY, 'one proposal per player per setup revision');
+  // the rest stays in the same window (VERSUS_INFO_SECONDS): only the 300 ms request guard is left to satisfy
+  h.sched.advance(300);
+  assert.deepEqual(m.requestSetupReroll('p_1', 0), { ok: true });
+  assert.deepEqual(approve(m, 'p_0'), { ok: true }, '2 humans, need 2 → passes');
+  assert.equal(m.setupRevision, 1);
+  assert.equal(m._rerollStartAt.size, 0, 'a completed reroll is a new opening and a new window');
+  h.sched.advance(300);
+  assert.deepEqual(m.requestSetupReroll('p_1', 1), { ok: true }, 'the same seat may ask again in the new window');
 });
 
 test('autoplay humans still explicitly consent; dispose stops a paused vote and invalid actors are refused', (t) => {
@@ -222,7 +356,7 @@ test('autoplay humans still explicitly consent; dispose stops a paused vote and 
 test('failed DIY stock preparation leaves every opening field and player stock intact', (t) => {
   const h = makeMatch({ humans: 2, difficulty: 'HARD' }).start();
   t.after(() => h.m.dispose());
-  const m = h.m, before = snapshot(m), pool = m.pool, stage = m.stage;
+  const m = h.m, before = snapshot(m), pool = m.pool, stage = m.stage, groups = m.poolGroups, playerPools = m.playerPools;
   const stocks = m.order.map((ps) => ps.diyStock), banned = m.order.map((ps) => ps.diyBanned);
   h.sched.advance(1000);
   const remaining = m.deadline - h.sched.now();
@@ -232,6 +366,7 @@ test('failed DIY stock preparation leaves every opening field and player stock i
   assert.equal(approve(m, 'p_1').error, ERR.INTERNAL);
   h.ps('p_1').buildDiyStock = original;
   assert.deepEqual(snapshot(m), before); assert.equal(m.pool, pool); assert.equal(m.stage, stage);
+  assert.strictEqual(m.poolGroups, groups); assert.strictEqual(m.playerPools, playerPools);
   for (const [i, ps] of m.order.entries()) { assert.equal(ps.diyStock, stocks[i]); assert.equal(ps.diyBanned, banned[i]); }
   assert.equal(m.setupRevision, 0); assert.equal(m.setupVote, null);
   assert.equal(m.deadline - h.sched.now(), remaining);

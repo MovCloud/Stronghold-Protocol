@@ -17,7 +17,6 @@
 //     manifest.js buildPluginIndex; the vanilla content hash beside it — server/plugins/identity.js);
 //   * the files of a loaded cosmetic plugin, and the frame files of a loaded ui plugin (pluginFile) — served at
 //     /p/<id>/<hash8>/<path> (server/http/static.js; the visual sets that use cosmetic files: server/plugins/visualSet.js).
-//     A ui file's response also carries the frame Content-Security-Policy (shared/plugins/ui.js UI_FRAME_CSP).
 // The classes lang, cosmetic (P1a) and ui (P4) load. A cosmetic plugin's asset overlay is read when it is scanned
 // (shared/plugins/visual.js readAssetOverlay: its shape, files, references to data/assets.json, permissions; plugin.lock.json
 // for its Spine models) and the files that shape it are hashed — SHA-256, kept by path while the file keeps its size,
@@ -39,6 +38,7 @@
 // every such rescan is told to its listeners (onScan: the visual sets look for the sets in use whose plugins changed).
 // server/packs.js re-exports the pack API of this file for its old callers.
 
+import { BackgroundClient } from '../workers/backgroundClient.js';
 import { nodeSha256 } from './identity.js';
 import { mergeLocalChars, readInstalledAssetOverlay } from './artReferences.js';
 import { readScripts, applyTrust, isScriptClass } from './trusted.js';
@@ -64,6 +64,7 @@ import { readThemeDeclaration } from '../../shared/plugins/theme.js';
 import { manifestTextWithoutNotices } from '../../shared/plugins/notices.js';
 import { PLUGIN_OFFERS_PER_PLUGIN } from '../../shared/plugins/limits.js';
 import { readOfferFile, readOfferCards } from '../../shared/plugins/offers.js';
+import { readEmotePage } from '../../shared/plugins/emoteCatalog.js';
 import { offerReferenceProblems } from './offerData.js';
 import { issueList, issueLine, makeIssue } from '../../shared/plugins/errors.js';
 
@@ -285,7 +286,9 @@ export function walkProblem(listed) {
 
 /**
  * The asset overlay of a cosmetic plugin (see the header; shared/plugins/visual.js): its `assets` part read and checked
- * against the installation's manifest, plugin.lock.json for its Spine models, the files that shape it hashed.
+ * against the installation's manifest, plugin.lock.json for its Spine models, the files that shape it hashed. A plugin's
+ * `emotes` page (shared/plugins/emoteCatalog.js) is checked here too and joins the file table — it is not art, but the
+ * client reads the page from that table and fetches it hash-pinned, so the file must be part of the set and be served.
  * @param {string} dir the plugin folder
  * @param {PluginManifest} manifest
  * @param {{ rel: string, bytes: number, link?: boolean }[]} listed the folder's files (listPluginFiles)
@@ -308,6 +311,18 @@ function readVisual(dir, manifest, listed, { vanilla, hashCache }) {
     else { const bad = checkJsonLimits(r.json); if (bad) list.problem('PLUGIN_JSON_LIMIT', `${assetsFile}: ${bad}`, { file: assetsFile }); else assets = r.json; }
   }
   const fileSet = new Set(listed.filter((f) => !f.link).map((f) => f.rel));
+  // the `emotes` part: one page file (always emotes.json), checked with the catalogue's reader and kept in the file
+  // table like the art files, so a browser can find it there and fetch it hash-pinned
+  const emotePart = manifest.parts.emotes;
+  const emoteFiles = [];
+  for (const rel of emotePart?.files || []) {
+    if (!fileSet.has(rel)) continue; // a declared path that is not there is reported by checkPluginFiles
+    const r = readJson(path.join(dir, ...rel.split('/')));
+    if (r.error) { list.problem(r.code, `${rel}: ${r.error}`, { file: rel, detail: r.error }); continue; }
+    const bad = checkJsonLimits(r.json);
+    if (bad) { list.problem('PLUGIN_JSON_LIMIT', `${rel}: ${bad}`, { file: rel }); continue; }
+    if (readEmotePage(r.json, manifest.id, list)) emoteFiles.push(rel);
+  }
   let lock = null;
   if (fileSet.has(LOCK_FILE)) {
     const r = readJson(path.join(dir, LOCK_FILE));
@@ -328,7 +343,7 @@ function readVisual(dir, manifest, listed, { vanilla, hashCache }) {
   list.take(ov);
   if (problems.length) return out(null);
   // the files that shape the overlay (shared/plugins/visual.js: the `files` of its part of a vs)
-  const shaping = [...new Set([PLUGIN_MANIFEST, ...(lock ? [LOCK_FILE] : []), ...(assetsFile ? [assetsFile] : []), ...ov.files])];
+  const shaping = [...new Set([PLUGIN_MANIFEST, ...(lock ? [LOCK_FILE] : []), ...(assetsFile ? [assetsFile] : []), ...emoteFiles, ...ov.files])];
   /** @type {Record<string, StatIdentity & { sha256: string }>} */
   const hashed = {};
   for (const rel of shaping) {
@@ -345,7 +360,7 @@ function readVisual(dir, manifest, listed, { vanilla, hashCache }) {
   if (problems.length) return out(null);
   /** @type {Map<string, ServedFile>} */
   const served = new Map();
-  for (const rel of ov.files) {
+  for (const rel of new Set([...ov.files, ...emoteFiles])) {
     const h = hashed[rel];
     const abs = path.join(dir, ...rel.split('/'));
     // the native realpath — the very function a request compares with (server/http/static.js fsp.realpath): the JS one
@@ -553,7 +568,7 @@ export function readPluginFolder(dir, { app = APP_VERSION, api = PLUGIN_API, whe
     id, type: manifest.type, class: manifest.class, status, source: 'plugins', layout: 'folder', where: at,
     supported: status === 'loaded' && manifest.class === 'lang', manifest, files: served, bytes: check.bytes, count: check.count,
   };
-  if ((manifest.class === 'cosmetic' || manifest.class === 'ui' || (['content','script','trusted'].includes(manifest.class) && manifest.parts.assets)) && status === 'loaded') {
+  if ((manifest.class === 'cosmetic' || manifest.class === 'ui' || (['content','script','trusted'].includes(manifest.class) && (manifest.parts.assets || manifest.parts.emotes))) && status === 'loaded') {
     const art = typeof vanilla === 'function' ? vanilla() : vanilla;
     if (manifest.class === 'ui') {
       const u = readUiFrame(dir, manifest, files, { vanilla: art, hashCache });
@@ -914,7 +929,7 @@ function signature({ publicDir, dataDir, packsDir, pluginsDir }) {
  * @param {{ log?: { info: Function, warn: Function }, app?: string, recheckMs?: number }} [opts]
  *   recheckMs: how long a scan stays trusted before the folders are looked at again (default 1000; 0 = every call)
  */
-export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, app = APP_VERSION, recheckMs = 1000, scriptHost = '0.0.0.0', scriptMode = process.env.SP_PLUGIN_SCRIPTS } = {}) {
+export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, app = APP_VERSION, recheckMs = 1000, background = false, scriptHost = '0.0.0.0', scriptMode = process.env.SP_PLUGIN_SCRIPTS } = {}) {
   let sig = null;
   let checkedAt = -Infinity;
   /** @type {ReturnType<typeof scanPlugins> & { packs: Plugin[], index: ReturnType<typeof packIndexOf>, byId: Map<string, Plugin> }} */
@@ -928,8 +943,38 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
   /** @type {Set<() => void>} told after every scan that read the folders (onScan) */
   const scanListeners = new Set();
 
+  const scanner = background ? new BackgroundClient(new URL('../workers/pluginScan.js', import.meta.url), {
+    dirs, options: { app, recheckMs: 0, scriptHost, scriptMode },
+  }) : null;
+  let scanning = null;
+  let closed = false;
+  function notifyScan() {
+    for (const fn of [...scanListeners]) { try { fn(); } catch (e) { log.warn?.(`[plugins] a scan listener failed: ${e?.message || e}`); } }
+  }
+  function refreshAsync(force = false, host = undefined) {
+    if (!scanner) { refresh(force); return Promise.resolve(); }
+    if (closed) return Promise.reject(new Error('plugin registry closed'));
+    if (scanning) return force || host !== undefined ? scanning.then(() => refreshAsync(force, host)) : scanning;
+    checkedAt = Date.now();
+    scanning = scanner.request({ force, scriptHost: host }).then(({ snapshot, lines }) => {
+      if (closed) return;
+      for (const [level, line] of lines) log[level]?.(line);
+      if (snapshot) {
+        const first = !state;
+        state = snapshot;
+        if (!first) notifyScan();
+      }
+    }).finally(() => { scanning = null; });
+    return scanning;
+  }
+
   function refresh(force = false) {
     const now = Date.now();
+    if (scanner) {
+      if (!state) throw new Error('await registry.refresh() before using a background registry');
+      if (!closed && (force || now - checkedAt >= recheckMs)) refreshAsync(force).catch((e) => log.warn?.(`[plugins] background scan failed: ${e.message}`));
+      return state;
+    }
     if (state && !force && now - checkedAt < recheckMs) return state;
     checkedAt = now;
     const s = signature(dirs);
@@ -959,18 +1004,22 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
 
   return {
     contentDirs: { ...dirs },
+    snapshot: () => refresh(),
+    refreshAsync,
+    close: async () => { closed = true; await scanner?.close(); },
     /** Recheck the actual listening address, and retain it across every subsequent rescan. */
     setScriptHost(host) {
       scriptHost = host;
+      if (scanner) return refreshAsync(true, host);
       if (state) applyTrust(state.plugins, { pluginsDir:dirs.pluginsDir, host:scriptHost, mode:scriptMode, log });
     },
     /** Re-read the folders now if they changed (force: even within recheckMs). */
-    refresh: (force = false) => { refresh(force); },
+    refresh: (force = false) => scanner ? refreshAsync(force) : refresh(force),
     /**
      * Re-read the folders now even when their names, sizes and times look unchanged: a served file was found changed
      * (server/http/static.js /p/), deeper than the signature looks or within a second of the last look.
      */
-    rescan: () => { sig = null; refresh(true); },
+    rescan: () => { if (scanner) return refreshAsync(true); sig = null; refresh(true); },
     /**
      * `fn()` after every scan that read the folders again (not the first): the visual sets look for the sets in use
      * whose plugins changed (server/plugins/visualSet.js onStale). Returns the unsubscribe.
@@ -1012,7 +1061,7 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
     /**
      * A file of a loaded cosmetic plugin that its overlay names, or a frame file of a loaded ui plugin (served at
      * /p/<id>/<hash8>/<rel>), with its plugin folder, or null — the only files of plugins/ ever served beside a lang
-     * plugin's. `frame` is true for a ui file (the response then carries the frame CSP).
+     * plugin's. `frame` is true for a ui file (the host mounts it in a sandboxed iframe).
      * @param {string} id
      * @param {string} rel
      * @returns {(ServedFile & { dir: string, frame: boolean }) | null}

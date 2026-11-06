@@ -16,8 +16,10 @@
 
 import assert from 'node:assert/strict';
 import { createBattleFromSpec, compactResult, battleProgress, attachLpMeter } from '../../server/sim/spec.js';
-import { RehearsalRun } from '../../server/sim/rehearsal.js';
+import { RehearsalRun, rehearsalLimits } from '../../server/sim/rehearsal.js';
 import { validateC2S } from '../../shared/protocol.js';
+import { decodeWire } from '../../shared/wireCodec.js';
+import { MAX_SEATS } from '../../shared/constants.js';
 import { TICK } from '../../server/sim/constants.js';
 
 const SLICE_MS = 250;
@@ -81,7 +83,7 @@ export class SimClient {
     this.pools.push(msg);
     for (const e of this.battles.values()) {
       const pool = e.battle.sharedBoss;
-      if (pool && typeof pool.sync === 'function') pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
+      if (pool && typeof pool.sync === 'function') pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined, msg.max);
     }
   }
 
@@ -144,7 +146,7 @@ export class SimClient {
     } else {
       msg.leaks = p.leaks;
       // 联防: the leakers' enemies still standing (like public/js/battle/runner.js)
-      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
+      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, MAX_SEATS));
     }
     this.send(msg);
   }
@@ -216,7 +218,7 @@ export function attachWsSimClient(tc, opts = {}) {
   tc.ws.on('message', (data, isBinary) => {
     if (isBinary) return;
     let msg;
-    try { msg = JSON.parse(String(data)); } catch { return; }
+    try { msg = decodeWire(JSON.parse(String(data)), 's2c'); } catch { return; }
     try { sc.onMessage(msg); } catch (e) { sc.error = e; }
   });
   return sc;
@@ -235,7 +237,9 @@ export function attachWsSimClient(tc, opts = {}) {
  * @param {{ BattleClass?: Function }} [opts]
  */
 export function simulateRehearsal(task, ds, { BattleClass } = {}) {
-  const run = new RehearsalRun(task.specs.map((spec) => () => createBattleFromSpec(spec, ds, { BattleClass, quiet: true, recordEvents: false })), task.playerId, task.cap, task.limits || {});
+  // mirrors the worker's normalization of the limits (public/js/battle/rehearsalWorker.js)
+  const run = new RehearsalRun(task.specs.map((spec) => () => createBattleFromSpec(spec, ds, { BattleClass, quiet: true, recordEvents: false })), task.playerId, task.cap,
+    rehearsalLimits(task.limits));
   run.run();
   return run.score.index;
 }

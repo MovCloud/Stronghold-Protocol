@@ -1,12 +1,14 @@
 // 设置 →「异形屏适配」→「界面大小」 (ui/screenFit.js, DESIGN §35.43; reworked from PR #838 by @zasx77771): one manual
-// factor --sp-ui on <html>, default 100 %, no automatic shrink. What this file guards: the stored percentage (75–100 in
-// 5 % steps, 100 when missing or invalid) next to the edge offsets; --sp-ui only while it is not 100 % (at 100 % the
+// factor --sp-ui on <html>, default 100 %, no automatic shrink. What this file guards: the stored percentage (70–120 in
+// 10 % steps, 100 when missing or invalid) next to the edge offsets; --sp-ui only while it is not 100 % (at 100 % the
 // page is exactly the design); the layout root and the 异形屏适配 root multiplied by it; the 文字大小 floors of 中 / 大 /
-// 特大 (64 / 76 / 88 px) never shrinking, while 小 (1rem, no floor) follows the layout; and
+// 特大 (64 / 76 / 88 px) carrying the factor at every step, as they have in this repo, while 小 (1rem, no floor) follows
+// the layout; and
 // the stylesheet guard: every max(<rem>, <N>px) floor in public/css carries the factor — a size floor (width, height,
 // min-*, flex, grid tracks, custom properties) above 32 px as max(<rem>, 32px, calc(Npx * var(--sp-ui, 1))), so a touch
 // target ≥ 32 px stays ≥ 32 px, one of 32 px or less stays bare px (it never shrinks), and a value that mirrors a size
-// floor copies it exactly — or is a listed exemption (the readability properties: font-size, line-height, letter-spacing, --t).
+// floor copies it exactly — or is a listed exemption (line-height, letter-spacing, and the text floors font-size / --t,
+// which carry the factor in this repo and are checked for the form below).
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -18,15 +20,15 @@ const F = await import('../../public/js/ui/screenFit.js');
 const css = (rel) => readFileSync(path.join(ROOT, rel), 'utf8');
 
 describe('the stored size', () => {
-  test('sanitizeFit: ui is a percentage 75–100 snapped to 5 %, 100 when missing or invalid; the edges as before', () => {
+  test('sanitizeFit: ui is a percentage 70–120 snapped to 10 %, 100 when missing or invalid; the edges as before', () => {
     assert.deepEqual(F.sanitizeFit(null), { l: 0, r: 0, t: 0, b: 0, ui: 100 });
-    assert.equal(F.sanitizeFit({ ui: 85 }).ui, 85);
-    assert.equal(F.sanitizeFit({ ui: 83 }).ui, 85);
-    assert.equal(F.sanitizeFit({ ui: 40 }).ui, 75);
-    assert.equal(F.sanitizeFit({ ui: 150 }).ui, 100, 'above 100 % is not offered: the layout is authored to fill 19.2 × 10.8 rem');
+    assert.equal(F.sanitizeFit({ ui: 90 }).ui, 90);
+    assert.equal(F.sanitizeFit({ ui: 83 }).ui, 80);
+    assert.equal(F.sanitizeFit({ ui: 40 }).ui, 70);
+    assert.equal(F.sanitizeFit({ ui: 150 }).ui, 120, "120 % is the top of this repo's 界面大小 list (its steps ran 70–120)");
     assert.equal(F.sanitizeFit({ ui: 'x' }).ui, 100);
     assert.equal(F.sanitizeFit({ l: 4 }).ui, 100, 'a value stored before 0.3.2 reads as 100 %');
-    assert.deepEqual([F.UI_MIN, F.UI_MAX, F.UI_STEP], [75, 100, 5]);
+    assert.deepEqual([F.UI_MIN, F.UI_MAX, F.UI_STEP], [70, 120, 10]);
   });
 });
 
@@ -43,43 +45,35 @@ describe('applyFit on <html>', () => {
   }
   test('a size under 100 %: --sp-ui alone (no data-fit while no edge moved), then one resize for the board and the HUD', () => {
     withRoot((el, props, resized) => {
-      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 85 });
+      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 80 });
       assert.ok(!('fit' in el.dataset));
-      assert.deepEqual(Object.fromEntries(props), { '--sp-ui': '0.85' });
+      assert.deepEqual(Object.fromEntries(props), { '--sp-ui': '0.8' });
       assert.equal(resized(), 1);
     });
   });
-  test('100 %: no property at all — the page is exactly the design; the edges keep working beside the size', () => {
+  test('100 %: no property at all — the page is exactly the design; the edges keep working beside the size, and 110 % enlarges it', () => {
     withRoot((el, props) => {
-      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 75 });
+      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 70 });
       F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 100 });
       assert.equal(props.size, 0);
-      F.applyFit({ l: 6, r: 0, t: 0, b: 0, ui: 90 });
+      F.applyFit({ l: 6, r: 0, t: 0, b: 0, ui: 110 });
       assert.ok('fit' in el.dataset);
-      assert.equal(props.get('--sp-ui'), '0.9');
+      assert.equal(props.get('--sp-ui'), '1.1');
       assert.equal(props.get('--fit-l'), '6px');
     });
   });
 });
 
-describe('文字大小 中 and above turn the size off', () => {
-  test('effectiveUi: the stored size at 小 (or no text size), 100 at 中 / 大 / 特大 — their kept text floors clipped in shrinking boxes', () => {
-    assert.equal(F.effectiveUi(80, 'sm'), 80);
-    assert.equal(F.effectiveUi(80, undefined), 80);
-    for (const k of ['md', 'lg', 'xl']) { assert.equal(F.effectiveUi(80, k), 100, k); assert.equal(F.uiAllowed(k), false); }
-    assert.equal(F.effectiveUi(83, 'sm'), 85, 'sanitized');
+describe('the size applies at every 文字大小 step', () => {
+  test('effectiveUi takes only the stored size: no text step turns it off, because the text floors carry the factor here', () => {
+    assert.equal(F.effectiveUi(80), 80);
+    assert.equal(F.effectiveUi(83), 80, 'sanitized');
+    assert.equal(F.effectiveUi(120), 120, "this repo's top step");
+    assert.equal(F.effectiveUi('x'), 100);
   });
-  test('applyFit at 中: no --sp-ui for a stored 75 %; at 小 it is back', () => {
-    const g = globalThis, saved = { document: g.document, dispatchEvent: g.dispatchEvent };
-    const props = new Map();
-    g.document = { documentElement: { dataset: {}, style: { setProperty: (k, v) => props.set(k, v), removeProperty: (k) => props.delete(k) } } };
-    g.dispatchEvent = () => true;
-    try {
-      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 75 }, 'md');
-      assert.equal(props.size, 0);
-      F.applyFit({ l: 0, r: 0, t: 0, b: 0, ui: 75 }, 'sm');
-      assert.equal(props.get('--sp-ui'), '0.75');
-    } finally { g.document = saved.document; g.dispatchEvent = saved.dispatchEvent; }
+  test('applyFit writes --sp-ui whatever 文字大小 is (the settings modal no longer reads textSize)', () => {
+    const src = readFileSync(path.join(ROOT, 'public/js/ui/screenFit.js'), 'utf8');
+    assert.ok(!/textSize|settingsStore/.test(src), 'the size must not depend on the text step');
   });
 });
 
@@ -96,13 +90,13 @@ describe('the stylesheet side', () => {
     assert.equal(fitRoots.length, 2);
     for (const r of fitRoots) assert.match(r, /\* var\(--sp-ui, 1\)\);$/);
   });
-  test('theme.css: the 文字大小 floors never shrink with the factor; 小 has none and follows the layout', () => {
+  test('theme.css: the 文字大小 floors carry the factor at every step; 小 has none and follows the layout', () => {
     const theme = css('public/css/theme.css');
-    assert.match(theme, /:root \{ --t: 1rem; \}/, '小: the design\'s own sizes, following 界面大小 (no clipped label at 75 %)');
+    assert.match(theme, /:root \{ --t: 1rem; \}/, '小: the design\'s own sizes, following 界面大小 (no clipped label at 70 %)');
     for (const [k, n, mul] of [['md', 64, ''], ['lg', 76, 'calc\\(1rem \\* 1\\.15\\)'], ['xl', 88, 'calc\\(1rem \\* 1\\.3\\)']]) {
       const one = mul || '1rem';
-      // the px floor unscaled: 界面大小 is at most 100 %, so the floor holds whatever the factor
-      assert.match(theme, new RegExp(`:root\\[data-text="${k}"\\] \\{ --t: max\\(${one}, ${n}px\\); \\}`));
+      // the px floor scales with the factor, as it has in this repo since the factor existed
+      assert.match(theme, new RegExp(`:root\\[data-text="${k}"\\] \\{ --t: max\\(${one}, calc\\(${n}px \\* var\\(--sp-ui, 1\\)\\)\\); \\}`));
     }
   });
 
@@ -110,8 +104,14 @@ describe('the stylesheet side', () => {
   const EXEMPT = new Set(['font-size', 'line-height', 'letter-spacing', '--t']);
   const SIZE = new Set(['width', 'height', 'min-width', 'min-height', 'flex', 'flex-basis', 'grid-template-columns', 'grid-template-rows',
     'grid-auto-rows', 'grid-auto-columns', 'inline-size', 'block-size', 'min-inline-size', 'min-block-size']);
-  // Listed exemptions beyond the readability properties: none today. Add `file:property:argument` with a reason.
-  const LISTED = new Set([]);
+  // Listed exemptions beyond the readability properties. Add `file:property:argument` with a reason.
+  const LISTED = new Set([
+    // --utility-text is the utility dialogs' own text-size variable (the fork's css/utility-mobile.css): it carries the
+    // factor through --t, and its own 64 px floor is the fork's value (it holds there at every size).
+    'public/css/utility-mobile.css:--utility-text:64px',
+    // a font shorthand whose only value is the size of a 9 px monospace label: readability, same as font-size
+    'public/css/screens/lobby.css:font:9px',
+  ]);
   function* cssFiles(dir) {
     for (const f of readdirSync(dir)) {
       const p = path.join(dir, f);
@@ -178,7 +178,7 @@ describe('the stylesheet side', () => {
         if (a === '32px' && !isSize(f.prop) && f.args.some((b) => {
           const m = SCALED.exec(b); return m && sigs.has(`${remArg(f.args)}|${Number(m[1])}`);
         })) continue;
-        if (LISTED.has(`${f.file}:${f.prop}:${a}`)) continue;
+        if (LISTED.has(`${f.file.replace(/\\/g, '/')}:${f.prop}:${a}`)) continue;
         bad.push(`${f.file}:${f.line} ${f.prop}: max(${f.args.join(', ')})`);
       }
     }
@@ -212,8 +212,9 @@ describe('the stylesheet side', () => {
     }
     assert.deepEqual(bad, []);
   });
-  test('guard: font-size floors stay unscaled px (readability), so 界面大小 never shrinks a text floor', () => {
-    const bad = floors().filter((f) => f.prop === 'font-size' && f.args.some((a) => a.includes('--sp-ui')));
+  test('guard: a text floor (font-size, --t) that carries the factor writes it as calc(Npx * var(--sp-ui, 1)) — this repo scales the text floors too', () => {
+    const bad = floors().filter((f) => (f.prop === 'font-size' || f.prop === '--t') &&
+      f.args.some((a) => /var\(--sp-ui/.test(a) && !SCALED.test(a)));
     assert.deepEqual(bad.map((f) => `${f.file}:${f.line}`), []);
   });
 });

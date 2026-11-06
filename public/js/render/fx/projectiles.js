@@ -23,6 +23,12 @@ const SHELL_RISE = 0.34, SHELL_UP = 5.5;
 /** 蕾缪安 S3 shell (fx 'bombardShell'); `look` 'mortar' is its own flight (_stepMortar). */
 const BOMBARD_SHELL = Object.freeze({ look: 'mortar', tint: 0xfff2d8, glow: 0xff9c33, trail: 0xffb35c, smoke: 0x3a3430, len: 1.3, width: 0.3, head: 0.56 });
 
+/**
+ * (fork) A 重炮手's (fortress) cannon round: lobbed on an arc onto the target's feet, as in the official mode, instead of
+ * the sim kind's straight tracer ('arrow'). Cosmetic only: the kind — and so the flight time, projSpeed — is the sim's.
+ */
+const FORTRESS_SHELL = Object.freeze({ look: 'shell', tint: 0xffeed0, glow: 0xff8a3d, len: 0.8, width: 0.3, head: 0.56, trail: 0xff9c4a, arc: 1.0, smoke: 0x2e2824, muzzle: 0xffb35c, hit: 'boom' });
+
 export class FxProjectiles {
   // ---- helpers ------------------------------------------------------------------------------------------
 
@@ -55,7 +61,9 @@ export class FxProjectiles {
     // chain: the source is the previous target of the bounce (sim ai.js), so the arc hops unit to unit
     if (kind === 'chain' || kind === 'chainHeal') { if (tgt && tgt !== src) this._beam(src, tgt, kind === 'chainHeal' ? 0x7dffa8 : 0xc9a2ff, 0.22, 1, true); return; }
     if (kind === 'beam') { if (tgt && tgt !== src) this._beam(src, tgt, src.isEnemy ? 0xff7a5a : 0xffe6a8, 0.18, 0.15); return; }
-    const spec = PROJ[kind];
+    // (fork) a lord's melee strike (UnitView.meleeReach) is a slash, not a shot: its sim kind is 'arrow' either way
+    if (src.lord && src.shot === 'melee') { this._slashAt = src.id; return; }
+    const spec = PROJ[kind] && src.fortress ? FORTRESS_SHELL : PROJ[kind];
     if (!spec || !tgt) {
       if (kind === 'none' || !kind) this._slashAt = src.id;
       return;
@@ -415,21 +423,21 @@ export class FxProjectiles {
    * brightening plus the blast radius throbbing until the impact. The shell takes the shooter's lock on that spot: the
    * lock ends with this shell's 'bombard' (_landed).
    */
-  mortar(src, x, y, r, flight) {
+  mortar(src, x, y, r, flight, { exactRadius = false, drop = false } = {}) {
     const pr = this._takeProj();
     const gz = this._groundZ(x, y);
     pr.kind = 'bombardShell'; pr.spec = BOMBARD_SHELL; pr.src = src; pr.tgt = null;
     pr.x0 = src ? src.x : x; pr.y0 = src ? src.y : y; pr.z0 = src ? bodyZ(this.ctx.cam(), src, SHOT_HEIGHT.launch) : gz + 0.5;
     pr.tx = x; pr.ty = y; pr.tz = gz;
     pr.t = 0; pr.dur = clamp(flight, 0.1, 4); pr.fade = 0; pr.hit = false; pr.emit = 0; pr.arc = 0; pr.ang = Math.PI / 2;
-    pr.rise = pr.dur >= 0.45 ? SHELL_RISE : 0;
+    pr.rise = !drop && pr.dur >= 0.45 ? SHELL_RISE : 0;
     pr.glow = BOMBARD_SHELL.glow; pr.trailTint = BOMBARD_SHELL.trail;
     const L = this._nearestLock(src ? src.id : null, x, y, 3, true);
     if (L) { L.shell = true; L.sx = x; L.sy = y; }
     this._dressProj(pr);
     pr.shadow.visible = false;
     this.projs.push(pr);
-    const rr = Math.max(0.5, r);
+    const rr = Math.max(exactRadius ? 0.01 : 0.5, r);
     this.ring(x, y, gz, rr, rr * 0.22, 0xff5a3a, pr.dur, 'shock', 'in');
     this.ring(x, y, gz, rr * 0.96, rr, 0xff7a4a, pr.dur, 'ring', 'pulse');
     if (src && this.rich) {

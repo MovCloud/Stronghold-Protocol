@@ -82,7 +82,7 @@ import { diyRecordOf, DIY_TIERS } from '../shared/diy.js';
 import { unitForm } from '../shared/standIn.js';
 import { POTENTIAL_DEFAULT, CULTIVATE_DEFAULT } from '../shared/potential.js';
 import { OPERATOR_KITS, KITTED_CHARS } from '../server/sim/content/kits/index.js';
-import { GEO } from '../shared/constants.js';
+import { GEO, UF } from '../shared/constants.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 /** The default player's 潜能 / 练度 of every owned operator (shared/potential.js; the owner's decision of 2026-10-08). */
@@ -91,7 +91,19 @@ export const GOLDEN_DIR = join(ROOT, 'test', 'golden', ...(toolVersion === DEFAU
 export const FAMILY_NAMES = Object.freeze(['roster', 'bonds', 'fields', 'matches', 'standins', 'diy']);
 
 const QUIET = Object.freeze({ warn() {}, error() {}, info() {}, log() {}, debug() {} });
-const data = getData({ log: QUIET });
+// The reference corpus is upstream 0.2.0. Our runtime's alive/4 override is tested separately, not baked into its goldens.
+const liveData = getData({ log: QUIET });
+const data = {
+  ...liveData,
+  config: {
+    ...liveData.config,
+    bossHpScale: { ...liveData.config.bossHpScale, perPlayer: true, coop: 1, solo: 1, aliveScaling: false },
+    modes: Object.fromEntries(Object.entries(liveData.config.modes).map(([id, mode]) => [id, {
+      ...mode,
+      bossHpScale: { bloodPointKey: mode.bossHpScale?.bloodPointKey ?? null, unaffectedByEnemyScale: mode.bossHpScale?.unaffectedByEnemyScale ?? true },
+    }])),
+  },
+};
 const ds = new DataSource(data, null); // what Match and browsers use (no research fallback)
 const gdCache = new Map();
 const availableMode = (modeId) => data.config.modes[modeId] ? modeId : modeId.replace('_abyss', '_hard');
@@ -178,7 +190,8 @@ export function runBattle(sc, probe = {}) {
       const s = b.snapshot();
       const canon = {
         t: s.t, dp: s.dp, dps: s.dps ?? null, killed: s.killed, total: s.total, boss: s.boss ?? null,
-        units: s.units.map((u) => [cid(u[0]), ...u.slice(1)]),
+        // UF.LIFTOFF only tells the view to draw an ally aloft (display, like the snapshot's side tables): masked
+        units: s.units.map((u) => [cid(u[0]), ...u.slice(1, 7), u[7] & ~UF.LIFTOFF, ...u.slice(8)]),
         down: (s.down || []).map((d) => [cid(d[0]), ...d.slice(1)]),
         elem: (s.elem || []).map((d) => [cid(d[0]), ...d.slice(1)]),
       };
@@ -729,12 +742,23 @@ export function matchScenarios() {
   out.push({ id: `coop2-NORMAL-${MATCH_DIY_SEED}-diy`, mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: MATCH_DIY_SEED, human: { diy: MATCH_DIY, shopLevel: 5 } });
   // The measured shared-stock changes leave the original seeds without a fielded DIY/stand-in operator. Keep those
   // original outcomes, and add companion seeds that still exercise the complete shop → deployment → battle path.
-  out.push({ id: 'coop2-NORMAL-1-coverage-standins', mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: 1, human: { notOwned: MATCH_NOT_OWNED } });
-  out.push({ id: 'coop2-NORMAL-5-coverage-diy', mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: 5, human: { diy: MATCH_DIY, shopLevel: 5 } });
-  // A player without any NORMAL operators must use stand-ins regardless of which operators its AI buys.
+  // Local AI opening preference (2026-10-15): reseed the stand-in coverage companion to keep multiple stand-ins
+  // fielded under the new opening choices. The original outcome scenarios above stay in place.
+  // Ioleta now stays at low shop levels to build elites. This coverage-only companion starts at L5,
+  // like the DIY companion, and also lacks 斯卡蒂 so it exercises normal AND elite stand-ins.
+  // The unboosted original above continues to pin the natural strategy outcome.
+  out.push({ id: 'coop2-NORMAL-4-coverage-standins', mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: 4,
+    human: { notOwned: [...MATCH_NOT_OWNED, 'chess_char_3_05_a'], shopLevel: 5 } });
+  // The DIY companion keeps the upstream seed 5: under the merged AI the fork's seed 3 never buys a 自选 piece,
+  // so the shop → deployment → battle path is no longer exercised there.
+  // Merged AI (2026-11-02): seed 5 stopped buying one too (its shop still rolls the slots, nothing is bought), so the
+  // companion moves to seed 19 — there the seat draws five 自选 rolls, buys 推进之王 and fields it from round 9.
+  out.push({ id: 'coop2-NORMAL-19-coverage-diy', mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: 19, human: { diy: MATCH_DIY, shopLevel: 5 } });
+  // A player without any NORMAL operators fields stand-ins once its shop can offer higher-tier chess;
+  // at low shop levels Ioleta can build a PRESET-only board instead.
   out.push({ id: 'coop2-NORMAL-1-unowned-roster', mode: 'coop', difficulty: 'NORMAL', bots: 1, seed: 1,
-    human: { notOwned: STANDIN_CHESS.filter((c) => !c.isGolden).map((c) => c.chessId) } });
-  const humanAbout = (h) => (h.notOwned ? ` + 1 human seat (AI 托管) without ${h.notOwned.length} operators (补位 stand-ins)`
+    human: { notOwned: STANDIN_CHESS.filter((c) => !c.isGolden).map((c) => c.chessId), shopLevel: 5 } });
+  const humanAbout = (h) => (h.notOwned ? ` + 1 human seat (AI 托管) without ${h.notOwned.length} operators (补位 stand-ins)${h.shopLevel ? ` and its 调度中心 at level ${h.shopLevel} from the first prep` : ''}`
     : ` + 1 human seat (AI 托管) with ${Object.keys(h.diy || {}).length} 自选 picks${h.shopLevel ? ` and its 调度中心 at level ${h.shopLevel} from the first prep` : ''}`);
   return out.filter((m) => data.config.modes[`mode_${m.mode === 'solo' ? 'single' : 'multi'}_${m.difficulty.toLowerCase()}`]).map((m) => ({ ...m, family: 'matches', kind: 'match', about: `${m.mode} ${m.difficulty}, ${m.bots} bot seat(s)${m.human ? humanAbout(m.human) : ''}, seed ${m.seed}${m.clientCombat === false ? ', server-run combat' : ''}${m.boost ? `, LP ${m.boost.lp} and ${m.boost.layers} layers per bond from the first prep` : ''}` }));
 }
@@ -773,6 +797,11 @@ function boardStr(ps) {
 const bondsStr = (bonds) => Object.entries(bonds || {}).filter(([, b]) => b && (b.active || b.layers > 0)).map(([id, b]) => `${id} ${b.tier}/${b.layers}`).sort(byId).join(', ');
 const MATCH_ROW_COLS = Object.freeze(['alive', 'lp', 'prepFunds', 'funds', 'pending', 'level', 'deployed', 'board', 'layers', 'bonds', 'killed', 'total', 'leaks', 'gold']);
 
+// Official 0.2.1 reference only: rewards remain deferred until SETTLE; its original-map rule matches the fork.
+class OfficialReferenceMatch extends Match {
+  _syncNormalLayers() {} // Runtime realtime gains are tested separately.
+}
+
 export function runMatch(cfg) {
   const sched = new VirtualScheduler();
   const seats = [];
@@ -789,7 +818,7 @@ export function runMatch(cfg) {
   let summary = null;
   const logged = [];
   const log = { info() {}, debug() {}, warn() {}, error: (...a) => logged.push(a.map(String).join(' ').slice(0, 120)) };
-  const m = new Match({
+  const m = new OfficialReferenceMatch({
     roomCode: 'GOLD', mode: cfg.mode, difficulty: cfg.difficulty, seats, seed: cfg.seed, data, log, scheduler: sched,
     send: () => true, broadcast: () => {}, onEnd: (s) => { summary = s; },
     clientCombat: cfg.clientCombat !== false, verify: 'off',
@@ -1041,7 +1070,7 @@ const ABOUT = {
  * fields (one of them a Hidden Core), six matches (solo 标准 / 绝境, co-op 2 / 4, the boosted Hidden Core run, the 补位
  * match) and the normal-record stand-in battles.
  */
-const FAST_MATCHES = new Set(['solo-FUNNY-1', 'solo-HARD-1', 'coop2-NORMAL-3', 'coop4-ABYSS-7', 'solo-HARD-9-boosted', 'coop2-NORMAL-14-standins', `coop2-NORMAL-${MATCH_DIY_SEED}-diy`, 'coop2-NORMAL-1-coverage-standins', 'coop2-NORMAL-5-coverage-diy', 'coop2-NORMAL-1-unowned-roster']);
+const FAST_MATCHES = new Set(['solo-FUNNY-1', 'solo-HARD-1', 'coop2-NORMAL-3', 'coop4-ABYSS-7', 'solo-HARD-9-boosted', 'coop2-NORMAL-14-standins', `coop2-NORMAL-${MATCH_DIY_SEED}-diy`, 'coop2-NORMAL-4-coverage-standins', 'coop2-NORMAL-19-coverage-diy', 'coop2-NORMAL-1-unowned-roster']);
 const FAST_FIELDS = new Set(['boss-boss_1-pair', 'boss-boss_4-solo', 'boss-boss_7-pair', 'hidden-boss_9-pair', 'unite-1', 'unite-2']);
 export function isFast(sc) {
   if (sc.family === 'matches') return FAST_MATCHES.has(sc.id);
@@ -1149,7 +1178,7 @@ export function compareFamily(stored, computed) {
 }
 
 export function formatDiffs(family, list, { maxScenarios = 12, maxDiffs = 8 } = {}) {
-  const fmt = (v) => { const s = typeof v === 'string' ? v : (JSON.stringify(v) ?? String(v)); return s.length > 160 ? `${s.slice(0, 157)}…` : s; };
+  const fmt = (v) => { const s = v === undefined ? '(missing)' : typeof v === 'string' ? v : (JSON.stringify(v) ?? String(v)); return s.length > 160 ? `${s.slice(0, 157)}…` : s; };
   const lines = [`golden ${family}: ${list.length} scenario(s) differ`];
   for (const { scenario, diffs } of list.slice(0, maxScenarios)) {
     lines.push(`  ${scenario}:`);

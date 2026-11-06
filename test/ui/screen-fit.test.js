@@ -61,14 +61,20 @@ describe('applyFit on <html>', () => {
 });
 
 test('the stylesheet: the inset box and its layout root only under [data-fit]', () => {
+  // this fork: the layout root is theme.css's (with the match's 界面大小 scale), the inset box devices.css §6
+  const theme = readFileSync(path.join(ROOT, 'public/css/theme.css'), 'utf8');
+  assert.match(theme, /html\[data-fit\] \{ font-size: clamp\(40px, min\(calc\(\(100vw - var\(--fit-l, 0px\) - var\(--fit-r, 0px\)\) \/ 19\.2\), calc\(\(100vh - var\(--fit-t, 0px\) - var\(--fit-b, 0px\)\) \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\); \}/);
+  assert.match(theme, /html\[data-fit\] \{ font-size: clamp\(40px, min\(calc\(\(100vw - var\(--fit-l, 0px\) - var\(--fit-r, 0px\)\) \/ 19\.2\), calc\(\(100svh - var\(--fit-t, 0px\) - var\(--fit-b, 0px\)\) \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\); \}/,
+    'with the insets taken off (svh after the vh fallback), times 界面大小');
   const css = readFileSync(path.join(ROOT, 'public/css/devices.css'), 'utf8');
-  const sec = css.slice(css.indexOf('/* ---- 5. 异形屏适配'));
+  const sec = css.slice(css.indexOf('/* ---- 6. 异形屏适配'));
   assert.ok(sec.length > 0 && sec.length < css.length);
   const root = sec.match(/html\[data-fit\] \{([^}]*)\}/)?.[1] || '';
   assert.match(root, /font-size: calc\(clamp\(40px, min\(calc\(\(100vw - var\(--fit-l, 0px\) - var\(--fit-r, 0px\)\) \/ 19\.2\), calc\(\(100vh - var\(--fit-t, 0px\) - var\(--fit-b, 0px\)\) \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\)\);/);
   assert.match(root, /font-size: calc\(clamp\(40px, min\(calc\(\(100vw - var\(--fit-l, 0px\) - var\(--fit-r, 0px\)\) \/ 19\.2\), calc\(\(100svh - var\(--fit-t, 0px\) - var\(--fit-b, 0px\)\) \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\)\);/,
     'theme.css\'s layout root, with the insets taken off (svh after the vh fallback), times 界面大小');
-  assert.match(sec, /html\[data-fit\] :is\(\.app-root, \.st, \.lo, \.guide\) \{\n {2}left: var\(--fit-l, 0px\); right: var\(--fit-r, 0px\); top: var\(--fit-t, 0px\); bottom: var\(--fit-b, 0px\);/);
+  // the panels this fork fixes over the screens: 统计, S.W.E.E.P., the protocol pages, 干员调配, 玩法说明, 成就统计
+  assert.match(sec, /html\[data-fit\] :is\(\.app-root, \.st, \.sw, \.proto, \.lo, \.guide, \.ach\) \{\n {2}left: var\(--fit-l, 0px\); right: var\(--fit-r, 0px\); top: var\(--fit-t, 0px\); bottom: var\(--fit-b, 0px\);/);
   assert.doesNotMatch(sec, /!important/);
   assert.doesNotMatch(sec, /--t\s*:/, 'the text size setting is left alone');
   const settings = readFileSync(path.join(ROOT, 'public/js/ui/settings.js'), 'utf8');

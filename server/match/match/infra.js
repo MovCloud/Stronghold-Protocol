@@ -5,6 +5,7 @@
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { buildDeployMap } from '../board.js';
+import { PHASE, opponentRevealed } from '../../../shared/constants.js';
 
 export class MatchInfra {
   /** Run a callback with error isolation, then flush the views. */
@@ -19,6 +20,60 @@ export class MatchInfra {
     const msg = `${label}: ${e && e.message ? e.message : e}`;
     if (this.errors.length < 50) this.errors.push({ label, message: String(e && e.message ? e.message : e), stack: e && e.stack ? String(e.stack).split('\n').slice(0, 6).join('\n') : null });
     this.log.error?.(`[match ${this.roomCode}] ${msg}`, e && e.stack ? String(e.stack).split('\n').slice(1, 4).join(' | ') : '');
+  }
+
+  /** Track asynchronous CPU work; callbacks may mutate state only while their captured owner is still live. */
+  _submitWorker(type, payload, { valid, complete, failed, progress, priority = 0, fallback = 'using bounded local slices' }) {
+    let input = payload, inner = null, generation = 0, settled = false;
+    const release = () => { settled = true; input = null; inner = null; this._workerTasks.delete(handle); };
+    const stop = () => {
+      generation++;
+      if (inner) { this.workerStats.cancelled++; inner.cancel(); inner = null; }
+    };
+    const handle = {
+      type,
+      cancel: () => { stop(); release(); },
+      suspend: stop,
+      resume: () => {
+        if (settled || inner || this.offlinePaused || this.disposed || this.ended) return;
+        // Initial callers attach the returned handle before their ownership predicate is usable.
+        if (generation > 0 && !valid()) { release(); return; }
+        const id = ++generation;
+        this.workerStats.submitted++;
+        inner = this.workerPool.submit(type, input, { priority,
+          onProgress: progress ? (out) => {
+            if (id === generation && !this.offlinePaused && !this.disposed && !this.ended && valid()) this.guard(() => progress(out));
+          } : null });
+        inner.promise.then((out) => {
+          if (id !== generation) return;
+          this.workerStats.completed++;
+          release();
+          if (!this.disposed && !this.ended && valid()) this.guard(() => complete(out));
+        }, (err) => {
+          if (id !== generation) return;
+          release();
+          if (err.code === 'TASK_CANCELLED' || this.disposed || this.ended || !valid()) return;
+          const rejected = ['POOL_CLOSED', 'POOL_FULL', 'REHEARSAL_BUSY'].includes(err.code);
+          this.workerStats[rejected ? 'rejected' : 'failed']++;
+          const now = this.sched.now();
+          if (now - this._workerAuditAt >= 10000) {
+            this._workerAuditAt = now;
+            this.onAudit?.(rejected ? 'worker.rejected' : 'worker.failed', { type, code: err.code || 'UNKNOWN',
+              round: this.round, phase: this.phase, load: this.workerPool.load?.() || null, ...this.workerStats });
+            this.log.warn?.(`[match ${this.roomCode}] worker ${type}: ${err.message}; ${fallback}`);
+          }
+          this.guard(() => failed(err));
+        });
+      },
+    };
+    this._workerTasks.add(handle);
+    handle.resume();
+    return handle;
+  }
+
+  _cancelWorkerTasks() {
+    for (const task of this._workerTasks) task.cancel();
+    this._workerTasks.clear();
   }
 
   /** Schedule a guarded callback (tracked for dispose). */
@@ -38,6 +93,19 @@ export class MatchInfra {
     if (!h) return;
     this.sched.clearTimeout(h);
     this._timers.delete(h);
+  }
+
+  /** Real CPU work yields through the shared queue; virtual/custom schedulers retain their timer contract. */
+  laterWork(fn) {
+    if (!this.sched.setWork) return this.later(0, fn);
+    if (this.disposed) return null;
+    let h = null;
+    h = this.sched.setWork(() => {
+      this._timers.delete(h);
+      if (!this.disposed) this.guard(fn);
+    });
+    if (h) this._timers.add(h);
+    return h;
   }
 
   scaled(ms) { return Math.max(0, Math.round(ms * this.timerScale)); }
@@ -67,13 +135,38 @@ export class MatchInfra {
       return;
     }
     const ms = this.scaled(seconds * 1000);
-    this.deadline = silent ? 0 : this.sched.now() + ms;
+    this.deadline = silent ? 0 : this.sched.gameNow() + ms;
     this._phaseTimer = this.later(ms, () => { this._phaseTimer = null; if (this.test === true) { this._testArmed = null; this._testHeld = null; } fn(); });
     if (this.test === true) this._testArmed = { seconds, fn, silent: !!silent };
   }
 
   /**
-   * Solo timers (research 01 §843 / 06 §3: 下半 独立模拟 has no time limit on 休整期 / 机变 — "休整期及机变阶段没有时间
+   * Arm one fixed-group draft turn. A test match with timers off holds the expire in `_testDraftHolds`
+   * (one slot per group, so parallel drafts can all pause). Single-group test matches still go through
+   * setDeadline so the public countdown / g.test advance cover them.
+   */
+  armDraftTurnTimer(g, ms, expire, { singleGroupHold = false } = {}) {
+    if (g && g.timer) { this.cancel(g.timer); g.timer = null; }
+    if (g) g._expire = expire;
+    if (this.test === true && this.testTimers === false && typeof expire === 'function') {
+      if (g) g.turnDeadline = 0;
+      this._testDraftHolds.set(String(g?.token ?? g?.id ?? ''), expire);
+      return;
+    }
+    if (singleGroupHold) {
+      this.setDeadline(ms / 1000 / (this.timerScale || 1), expire);
+      if (g) g.turnDeadline = this.deadline;
+      return;
+    }
+    if (g) {
+      g.turnDeadline = this.sched.gameNow() + ms;
+      g.timer = this.later(ms, expire);
+    } else {
+      this.later(ms, expire);
+    }
+  }
+
+  /** Solo timers (research 01 §843 / 06 §3: 下半 独立模拟 has no time limit on 休整期 / 机变 — "休整期及机变阶段没有时间
    * 限制"; the strategy draft is free too): a solo match publishes a deadline ONLY for its battles. INFO_CHECK waits
    * for 准备就绪 (co-op keeps the official 25 s guard), BAND_DRAFT / SP_DRAFT / PREP are untimed, and the fixed
    * presentation steps (BATTLE_CHECK, ROUND_START, SETTLE) run silently (no countdown). The same holds for any match
@@ -86,13 +179,38 @@ export class MatchInfra {
     return this.isSolo ? this.gd.config.version?.rules?.soloTimed !== true || this.opts.soloUnlimited === true : this.loneHuman;
   }
 
+  /**
+   * A safe point for a checkpoint (server/match/snapshot.js; docs/DEPLOY.md「断点续玩」): the platform's
+   * opts.onCheckpoint(match, reason), when it has one, may take it now — synchronously, before anything else changes.
+   * Never fails the match.
+   */
+  _checkpoint(reason) {
+    const fn = this.opts?.onCheckpoint;
+    if (typeof fn !== 'function' || this.disposed || this.ended) return;
+    try { fn(this, reason); } catch (e) { this.reportError('checkpoint', e); }
+  }
+
   nextUid() { return ++this.uidSeq; }
 
   alivePlayers() { return this.order.filter((p) => p.alive); }
 
-  /** Whether any chess of a bond is in this match's pool (a 驰援 card of a fully banned bond is never offered). */
-  bondInPool(bondId) {
-    for (const id of this.pool.entries.keys()) {
+  /** The chess pool a seat draws from: its group's in an expanded room, else the single shared pool. A null or unknown
+   * seat in an expanded room is a bug (never silently another group's pool); bond-availability queries use bondInPool. */
+  poolFor(player) {
+    const id = typeof player === 'string' ? player : player?.playerId;
+    // An ordinary room has exactly one pool; an expanded room must resolve the seat, never guess another group's.
+    if (!this.playerPools) return this.pool;
+    const pool = id == null ? null : this.playerPools.get(id);
+    if (pool) return pool;
+    throw new TypeError('player card pool required');
+  }
+
+  /** Whether any chess of a bond is in this match's pool (a 驰援 card of a fully banned bond is never offered). A null
+   * player asks the whole-match view (`pool`): every group shares the same banned set and chess list, so its keys are
+   * the match-wide view. */
+  bondInPool(bondId, player = null) {
+    const pool = player == null ? this.pool : this.poolFor(player);
+    for (const id of pool.entries.keys()) {
       const c = this.gd.chess(id);
       if (c && Array.isArray(c.bonds) && c.bonds.includes(bondId)) return true;
     }
@@ -104,10 +222,36 @@ export class MatchInfra {
    * 奥术 … never activate, research 02 §2.1) and still with chess in the pool. 机变 tactic cards whose every target bond
    * is dead are not offered (choices.js).
    */
-  bondLive(bondId) {
-    return !this.gd.modeInactiveBonds.has(bondId) && this.bondInPool(bondId);
+  bondLive(bondId, player = null) {
+    return !this.gd.modeInactiveBonds.has(bondId) && this.bondInPool(bondId, player);
   }
   humans() { return this.order.filter((p) => !p.isBot && !p.left); }
+
+  /**
+   * 2V2 ('versus'): the team a player fights for (PlayerState.team; 0 for solo/coop, where every player is one team).
+   * Restored from the merge (the callers — planUnites, watch, confront, the versus suite — were kept, this was dropped).
+   * @returns {number}
+   */
+  teamIdOf(ps) { return ps && Number.isInteger(ps.team) ? ps.team : 0; }
+
+  /**
+   * 2V2 ('versus'): whether the opponent's side is open RIGHT NOW — the public view sends the opponent's real rows (no
+   * `hidden` stub), `g.watch` accepts their boards / boss fields and the client offers 「前往查看」. The round rule
+   * lives in shared/constants.js `opponentRevealed(round)` (R14 最终攻势 on, i.e. after the R13 最终狩猎); the
+   * settlement (RESULT) always shows both sides. Solo/co-op have no opponent, so it is always true there.
+   * Restored from the merge (the callers — watch.js and messaging — were kept, this getter was dropped).
+   * @returns {boolean}
+   */
+  get opponentRevealed() { return !this.isVersus || this.phase === PHASE.RESULT || opponentRevealed(this.round); }
+
+  /**
+   * A spectator SEAT (never a player: watch.js addSpectator's frozen stand-in, `spectator: true`). A spectator has no
+   * team and no board: it watches any player / field from the start, whatever `opponentRevealed` says (a remake
+   * feature, MAX_SPECTATORS). Restored from the merge with its watch.js callers.
+   * @param {{spectator?: boolean}|null} ps
+   * @returns {boolean}
+   */
+  isSpectator(ps) { return !!(ps && ps.spectator); }
 
   /** [ASSUMED] Touch's initial, match-long team grant survives its holder's elimination/quit; focus alone grants none. */
   teamMedicGranted() { return this.order.some(p => (this.gd.band(p.bandId)?.effectRef ?? p.bandId) === 'band_amedic'); }

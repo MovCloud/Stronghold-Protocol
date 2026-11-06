@@ -1,3 +1,4 @@
+// Adapted from xinhai-ai/Stronghold-Protocol (GPL-3.0-or-later).
 /** RSS covers the whole Node process; these heap/external counters belong to the reporting thread. */
 export function memorySample() {
   const { heapUsed, heapTotal, external, arrayBuffers } = process.memoryUsage();

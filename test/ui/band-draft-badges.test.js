@@ -55,8 +55,8 @@ test('the wall gates the badge on draftRecords().badges with the official sprite
   assert.ok(JSON.parse(read('data/assets.json')).ui['statistics/strategyBadge'], 'the official badge sprite is in the asset list');
   const css = read('public/css/screens/draft.css');
   assert.match(css, /\.dband__badge \{ position: absolute; top: -10\.8%; right: -10\.8%; width: 82\.35%; height: 84\.8%; pointer-events: none; \}/);
-  // the PR's dead rules are gone
-  assert.doesNotMatch(css, /\.acct-tag|\.dorder__n \{|\.dband__who|\.draft-order__info/);
+  // the PR's dead rules are gone (the fork keeps `.dband__who`: the per-band 「谁选了」 avatars, fork feature)
+  assert.doesNotMatch(css, /\.acct-tag|\.dorder__n \{|\.draft-order__info/);
 });
 
 test('the order rows\' name cards wear the doctor\'s outfit (B6, docs/SKINS.md): the seat cards\' seatCardSkin, then chessPortraitUrl', () => {

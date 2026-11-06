@@ -1,5 +1,5 @@
 // test/assets-diy.test.js — the art of the 自选 picks in the asset pipeline (tools/fetch-assets.mjs dataExtras,
-// tools/assets/plan.mjs patternOperator / buildPlan `extraOperators` / `moduleTypes`; docs/ASSETS.md): the owned-6★
+// tools/assets/plan.mjs patternOperator / buildPlan `extraOperators` / `moduleTypes`; docs/development/ASSETS.md): the owned-6★
 // units of data/backups.json are planned from research 07's URL patterns (avatar, portrait — E2 too —, battle Spine
 // Front / Back, every skill icon), their summons as tokens, and every module's type icon as manifest `modules`; the
 // committed data/assets.json lists them (checked against public/assets when present); --add-only never rewrites a file.
@@ -98,7 +98,7 @@ test('--add-only: parsed, refused with --prune / --force; its downloader keeps e
 
 test('the committed data/assets.json lists every 自选 operator\'s avatar, portrait, Front Spine and skill icons, and a type icon per module (files on disk when public/assets is here)', () => {
   const m = load('assets');
-  const disk = existsSync(join(ROOT, 'public', 'assets', 'char'));
+  const disk = existsSync(join(ROOT, 'public', 'assets', 'char', 'avatar')); // full art root — the aggregated product ships a partial tree (skin previews only)
   const onDisk = (u) => !disk || existsSync(join(ROOT, 'public', u));
   for (const id of BACKUPS.diy.ownedPool) {
     const c = m.chars[id];

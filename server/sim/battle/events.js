@@ -5,6 +5,8 @@
 import { bondTimerView } from '../content/bonds/timers.js';
 import { EVENT_BUFFER_CAP } from '../constants.js';
 import { elementView } from '../attack.js';
+import { damageRows } from '../damageBoard.js';
+import { unitStatsEntry } from '../../../shared/protocol.js';
 import { unitInfo, snapshotUnits, ammoView, wolfView, negView, moteView, coinView, mysticView, layerView, chargeView } from '../snapshot.js';
 
 export class BattleEvents {
@@ -69,7 +71,9 @@ export class BattleEvents {
   }
 
   /**
-   * Compact full snapshot of this field (DESIGN §8.2 b.snap), plus (only when non-empty):
+   * Compact full snapshot of this field (DESIGN §8.2 b.snap). With includeUnitStats: true, unitStats is always an
+   * array of detail DTOs for the exact units in the tuples, using their already-computed stats (no extra lazy s read).
+   * An explicit diagnostic call may opt in; periodic streaming never copies these details. Plus (only when non-empty):
    *   down: [[id, respawnAt, respawnTime, state, row, col]] — operators that left the field waiting to redeploy (isDown): the
    *         game time their respawn timer ends, its length (s), constants.js DOWN_STATE and the tile they lie on (and
    *         come back on: _layBody — where they fell, or their home);
@@ -96,11 +100,13 @@ export class BattleEvents {
    * ammo / wolves / neg / motes / energy / layers / charges / stand / standCut / face are display only: no sim state
    * reads them, and the nine-field unit tuples are unchanged. bondTimers is also display only (golden canon excludes it).
    */
-  snapshot() {
+  snapshot({ includeUnitStats = false } = {}) {
+    const unitStats = includeUnitStats ? [] : null;
     const snap = {
       fieldId: this.fieldId,
       t: Math.round(this.time * 1000) / 1000,
-      units: snapshotUnits(this.units, this.time),
+      units: snapshotUnits(this.units, this.time, unitStats),
+      ...(unitStats ? { unitStats } : {}),
       dp: this.players.length ? Math.floor(this.players[0].dp) : 0,
       killed: this.killed,
       total: this.total,
@@ -166,14 +172,30 @@ export class BattleEvents {
     return snap;
   }
 
+  /** Freeze the detail panel after the first tick; reading it never triggers lazy stat recomputation. */
+  captureStartUnitStats() {
+    if (this._startUnitStats != null) return;
+    this._startUnitStats = this.units.filter(u => u.alive && u.deployed && !u.hidden)
+      .map(u => unitStatsEntry(u, u._s || null));
+  }
+
   /**
-   * Field meta for m.field: { fieldId, kind, rect, stageId, units: UnitInfo[] } — the units on the field, knocked-out
-   * operators waiting to redeploy included (a client joining mid-battle shows them down).
+   * Field meta for m.field: { fieldId, kind, rect, stageId, players, sides, units: UnitInfo[] } — the units on the field,
+   * knocked-out operators waiting to redeploy included (a client joining mid-battle shows them down). The optional detail
+   * cache is sent only on entry/start/resync and filtered to this view's units, never regenerated during combat.
    */
-  fieldMeta() {
+  fieldMeta({ includeUnitStats = false } = {}) {
+    const units = this.units.filter((u) => (u.alive && u.deployed && !u.hidden) || this.isDown(u))
+      .map(u => unitInfo(u, includeUnitStats ? u._s || u.base : null));
+    const listed = includeUnitStats ? new Set(units.map(u => u.id)) : null;
     return {
       fieldId: this.fieldId, kind: this.kind, rect: { ...this.rect }, stageId: this.stageId,
-      units: this.units.filter((u) => (u.alive && u.deployed && !u.hidden) || this.isDown(u)).map(unitInfo),
+      players: this.players.map((p) => p.playerId),
+      sides: Object.fromEntries(this.players.map((p) => [p.playerId, p.half])),
+      units,
+      ...(includeUnitStats && this._startUnitStats ? { unitStats: this._startUnitStats.filter(u => listed.has(u.id)) } : {}),
     };
   }
+
+  damageRows() { return damageRows(this); }
 }

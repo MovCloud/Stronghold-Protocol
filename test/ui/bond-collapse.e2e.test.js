@@ -75,6 +75,8 @@ describe('collapsible bond strip (issue #142)', { skip: !ENABLED && 'set SP_E2E=
         await page.waitForSelector('.bstrip--empty', { visible: true });
 
         await activate('.bonds-toggle');
+        // the compact roster starts folded on a phone (ui/teamPanel.js rosterStartsOpen): open it before watching a teammate
+        if (await page.$eval('.team', (el) => el.classList.contains('is-folded'))) await activate('.team__toggle');
         await activate('.team__row:not(.is-self) .team__btn');
         if (await page.$('.team__ob')) await activate('.team__ob');
         await page.waitForSelector('.gm__watching');

@@ -27,11 +27,15 @@ export function renderInfo(u) {
   return {
     id: u.id, uid: u.uid ?? null, kind: u.kind || 'enemy', side: u.side === 'ally' ? 'ally' : 'enemy', ownerId: u.ownerId ?? null,
     defId: u.defId ?? null, name: u.name ?? '', tier: u.tier ?? 1, golden: !!u.golden, spine: u.spine ?? u.defId ?? null,
+    // 干员皮肤 (docs/SKINS.md): the owner's chosen skin (UnitInfo.skin); UnitView hands it to spineEntry / the avatar resolver
+    skin: typeof u.skin === 'string' && u.skin ? u.skin : null,
     avatar: u.avatar ?? u.defId ?? null, x: Number(u.x) || 0, y: Number(u.y) || 0, facing: u.facing === -1 ? -1 : 1,
     maxHp: Number(u.maxHp) || 1, boss: !!u.boss, motion: u.motion,
     // the unit's OWN attack interval (UnitInfo.atkInterval, the sim's `s.interval` with its buffs): the view paces the
     // attack clip over it (render/attackRate.js) — dropping it here sent every view back to the operator-record guess
     atkInterval: Number.isFinite(u.atkInterval) && u.atkInterval > 0 ? u.atkInterval : undefined,
+    sp: Number.isFinite(u.sp) && u.sp >= 0 ? u.sp : 0,
+    spMax: Number.isFinite(u.spMax) && u.spMax >= 0 ? u.spMax : 0,
     // deploy direction of allies (UnitInfo.dir, DESIGN §3): the model (Back for UP, mirrored for LEFT) and the
     // ground wedge follow it; absent = unknown (legacy frames) → derived from `facing`, no wedge
     dir: typeof u.dir === 'string' ? u.dir : undefined,
@@ -49,18 +53,17 @@ export function renderInfo(u) {
     // the ally's equipped item ids (UnitInfo.items, DESIGN §16 / §21.11): the detail card needs them for a teammate's
     // unit (resolveDetail `unitItems` → the read-only 装备 section and the 变形同构体 pairing chips); the owner's own
     // unit takes its items from the piece instead, so only other players' boards ever read this field
-    items: Array.isArray(u.items) ? u.items.filter((x) => typeof x === 'string') : undefined,
+    items: Array.isArray(u.items) ? u.items.filter((x) => typeof x === 'string' && x.length > 0) : undefined,
     // 0.2.0 补位: the replaced operator's charId of a chess fighting as its stand-in (UnitInfo.standInFor; spine / avatar /
     // name are already the stand-in's) — the detail card and the view's data lookups (attack interval, splash FX) follow it
     standInFor: typeof u.standInFor === 'string' && u.standInFor ? u.standInFor : undefined,
+    // 2V2 对抗期: the seat that PLACED this enemy (spawn `confrontSeat`) — UnitView outlines it pale red and prints its
+    // P<n> badge under it. Display only; the leak billing keeps using sourcePlayerId / ownerId.
+    confrontSeat: Number.isInteger(u.confrontSeat) ? u.confrontSeat : undefined,
     // 0.2.0 自选编队: the pick of a DIY slot's unit (UnitInfo.diy { charId, skillIndex, uniEquipId }; spine / avatar / name
     // are already the operator's) — the detail card composes the operator from it, the data lookups follow it
     diy: u.diy && typeof u.diy === 'object' && typeof u.diy.charId === 'string'
       ? { charId: u.diy.charId, skillIndex: Number.isInteger(u.diy.skillIndex) ? u.diy.skillIndex : null, uniEquipId: typeof u.diy.uniEquipId === 'string' ? u.diy.uniEquipId : null }
       : undefined,
-    // 干员皮肤 (docs/SKINS.md): the owning player's chosen skinId, sent with the snapshot (UnitInfo.skin) — the view asks
-    // assets.js for that appearance's Spine / avatar and falls back to the operator's own model when the manifest has no
-    // such skin. render/app.js clears it for another player's unit while 设置「显示其他玩家的皮肤」 is off.
-    skin: typeof u.skin === 'string' && u.skin ? u.skin : null,
   };
 }

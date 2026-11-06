@@ -1,4 +1,4 @@
-// Tests for the asset pipeline (tools/assets/*) and the generated manifest
+﻿// Tests for the asset pipeline (tools/assets/*) and the generated manifest
 // data/assets.json. The pure helpers (animation-role resolver, atlas
 // normalizer, PNG/WOFF2/audio helpers, plan id sets) are always tested; the
 // on-disk checks run only when public/assets exists (it is git-ignored and
@@ -744,6 +744,9 @@ describe('generated manifest data/assets.json', () => {
   const manifest = haveManifest ? JSON.parse(readFileSync(MANIFEST, 'utf8')) : null;
   const skip = !haveManifest ? 'data/assets.json not generated (run npm run assets)'
     : !haveAssets ? 'public/assets missing (run npm run assets)' : false;
+  // The aggregated product ships a partial public/assets tree (skin previews and local emote pics only); the
+  // full art set is downloaded (`npm run assets`). Disk-dependent checks need the spine art root to mean "full".
+  const skipArt = skip || (!existsSync(join(ASSETS, 'spine')) && 'public/assets spine art missing (run npm run assets)');
 
   /** Every '/assets/…' or '/fonts/…' URL in the manifest. */
   function urls(node, out = []) {
@@ -761,14 +764,14 @@ describe('generated manifest data/assets.json', () => {
     }
   });
 
-  test('every manifest path exists on disk', { skip }, () => {
+  test('every manifest path exists on disk', { skip: skipArt }, () => {
     const all = [...new Set(urls(manifest))];
     assert.ok(all.length > 3000, `manifest lists ${all.length} files`);
     const missing = all.filter((u) => !existsSync(join(PUBLIC, u)) || statSync(join(PUBLIC, u)).size === 0);
     assert.deepEqual(missing, []);
   });
 
-  test('every visible chess operator has avatar, portrait and a Front Spine', { skip }, () => {
+  test('every visible chess operator has avatar, portrait and a Front Spine', { skip: skipArt }, () => {
     const ops = readJson('docs/research/03-operators.json');
     const ids = new Set(ops.chess.filter((c) => !c.isHidden && c.chessType !== 'DIY' && c.charId).map((c) => c.charId));
     assert.ok(ids.size >= 100);
@@ -790,7 +793,7 @@ describe('generated manifest data/assets.json', () => {
     for (const id of Object.keys(a07.enemies)) assert.ok(manifest.enemies[id]?.icon, id);
   });
 
-  test('DESIGN §16 loadouts: every selectable skill has its icon; a multi-skill operator model has a clip per skill index', { skip }, () => {
+  test('DESIGN §16 loadouts: every selectable skill has its icon; a multi-skill operator model has a clip per skill index', { skip: skipArt }, () => {
     const chess = readJson('data/chess.json');
     const miss = [];
     const noClip = [];
@@ -809,7 +812,7 @@ describe('generated manifest data/assets.json', () => {
     assert.deepEqual(noClip, [], 'Spine skill clips per index (a non-default skill never plays the default skill\'s animation)');
   });
 
-  test('every atlas on disk has size: lines (and pma: true for enemies)', { skip }, () => {
+  test('every atlas on disk has size: lines (and pma: true for enemies)', { skip: skipArt }, () => {
     const atlases = [];
     const walk = (dir) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -843,7 +846,7 @@ describe('generated manifest data/assets.json', () => {
     }
   });
 
-  test('every Spine model loads like the client does (pixi-spine atlas reader + AtlasAttachmentLoader)', { skip }, async () => {
+  test('every Spine model loads like the client does (pixi-spine atlas reader + AtlasAttachmentLoader)', { skip: skipArt }, async () => {
     const { createRequire } = await import('node:module');
     const require = createRequire(join(ROOT, 'package.json'));
     const core = require('@pixi/core');

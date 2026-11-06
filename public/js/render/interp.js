@@ -7,6 +7,11 @@
 //   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms),
 //     advancing at `rate` and gently steered back when network jitter pushes it off target (hard snap when it
 //     is more than `snapAfter` real seconds off),
+//   * `adaptive`: sizes that delay from the stream itself — one snapshot interval plus the 95th percentile of how late
+//     the snapshots of the last `jitterWindow` real seconds arrived (each one's arrival against its game time at the
+//     nominal rate, relative to the earliest of the window) plus `jitterMargin`, within [minDelay, maxDelay]; a later
+//     stream raises it at once, a steadier one lowers it by `delayEase` real s per real s. A gap in the stream longer
+//     than `jitterGap` (a pause, a hidden tab, a new battle) starts the window over,
 //   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot;
 //     positions are extrapolated along the last velocity for at most that long, then freeze — never for a unit the
 //     newest snapshot shows dead, stunned (frozen, asleep) or blocked, nor for an enemy it shows standing (`stand`),
@@ -64,6 +69,11 @@ const ELEMENT_KEYS = new Set(['neural', 'erosion', 'burn', 'apoptosis', 'necrosi
 const MAX_EVENTS = 6000;
 const finite = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+/** Uniform Catmull-Rom between p1 and p2 at t ∈ [0, 1] (p0 / p3 the neighbours): passes through every point. */
+const catmull = (p0, p1, p2, p3, t) => {
+  const t2 = t * t, t3 = t2 * t;
+  return 0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (3 * p1 - p0 - 3 * p2 + p3) * t3);
+};
 
 /**
  * Game time unit `id` starts moving between snapshot `a` and the newer `b` (interpolation and extrapolation share it):
@@ -75,7 +85,7 @@ function movementStart(a, b, id) {
 }
 
 /** Cosmetic event kinds that may be dropped when far behind (never state-changing). */
-export const COSMETIC_EVENTS = new Set(['atk', 'dmg', 'heal', 'fx', 'layer', 'bounty', 'cast']);
+export const COSMETIC_EVENTS = new Set(['atk', 'dmg', 'heal', 'fx', 'layer', 'bounty', 'bank', 'cast']);
 /**
  * Whether an event may be dropped when stale or shed from a full queue. An 'fx' that carries an enemy's model `form`
  * (shared/protocol.js fxForm) is state: dropping it left the view on the old model after a long main-thread stall, on a
@@ -97,8 +107,8 @@ export function frameTime(msg) {
 
 /**
  * Validate & normalise a b.snap payload. Returns `{ t, units: Map<id, tuple>, down: [[id, respawnAt, respawnTime,
- * state, row?, col?]] | null, ammo, wolves: Map id → [left, max] | null, neg: Map id → fill | null, stand: Map<id, until> | null,
- * standCut: Map<id, at> | null, face: Map<id, ±1> | null, raw }` or null when unusable. Tuples with a non-finite id/x/y are skipped; other numbers
+ * state, row?, col?]] | null, ammo, wolves: Map id → [left, max] | null, neg: Map id → fill | null, st: Map id → [[status,
+ * endsAt, duration, value]] | null, stand: Map<id, until> | null, standCut: Map<id, at> | null, face: Map<id, ±1> | null, raw }` or null when unusable. Tuples with a non-finite id/x/y are skipped; other numbers
  * default to 0; a unit's `elem` entry (see header) is appended to its tuple; malformed `elem` / `down` / `ammo` / `wolves` /
  * `neg` entries are dropped. `stand` keeps finite end times after `t` of units in the snapshot; `standCut` keeps finite
  * times in [0, t] of units in it.
@@ -157,6 +167,28 @@ export function normalizeSnapshot(snap) {
       (down || (down = [])).push(e);
     }
   }
+  // the time left and strength of each status icon (server/sim/snapshot.js statusView): endsAt / duration finite or both
+  // null, value finite or null
+  let st = null;
+  if (Array.isArray(snap.st)) {
+    for (const e of snap.st) {
+      if (!Array.isArray(e) || !units.has(e[0]) || typeof e[1] !== 'string') continue;
+      const timed = Number.isFinite(e[2]) && Number.isFinite(e[3]) && e[3] > 0;
+      const value = Number.isFinite(e[4]) ? e[4] : null;
+      if (!timed && value == null) continue;
+      const row = [e[1], timed ? e[2] : null, timed ? e[3] : null, value];
+      const list = (st || (st = new Map())).get(e[0]);
+      if (list) list.push(row); else st.set(e[0], [row]);
+    }
+  }
+  // the 屏障 a unit holds (server/sim/snapshot.js shieldView): a positive amount
+  let sh = null;
+  if (Array.isArray(snap.sh)) {
+    for (const e of snap.sh) {
+      if (!Array.isArray(e) || !units.has(e[0]) || !(Number.isFinite(e[1]) && e[1] > 0)) continue;
+      (sh || (sh = new Map())).set(e[0], e[1]);
+    }
+  }
   let stand = null;
   if (Array.isArray(snap.stand)) {
     for (const e of snap.stand) {
@@ -171,6 +203,22 @@ export function normalizeSnapshot(snap) {
       (standCut || (standCut = new Map())).set(e[0], e[1]);
     }
   }
+  // 丰川祥子's free-flight notes (server/sim/notes.js; b.snap `notes`): [id, owner, x, y, hx, hy, look, state]
+  let notes = null;
+  if (Array.isArray(snap.notes)) {
+    for (const e of snap.notes) {
+      if (!Array.isArray(e) || !Number.isFinite(e[0]) || !Number.isFinite(e[2]) || !Number.isFinite(e[3])) continue;
+      (notes || (notes = new Map())).set(e[0], [e[0], e[1], e[2], e[3], finite(e[4]), finite(e[5]), typeof e[6] === 'string' ? e[6] : '', finite(e[7]) | 0, Number.isFinite(e[8]) ? e[8] : null]);
+    }
+  }
+  // the Fever gauge each Ave Mujica member shows (server/sim/fever.js; b.snap `fever`): id → [fill 0..1, active]
+  let fever = null;
+  if (Array.isArray(snap.fever)) {
+    for (const e of snap.fever) {
+      if (!Array.isArray(e) || !units.has(e[0]) || !Number.isFinite(e[1])) continue;
+      (fever || (fever = new Map())).set(e[0], [clamp(e[1], 0, 1), e[2] ? 1 : 0]);
+    }
+  }
   let face = null;
   if (Array.isArray(snap.face)) {
     for (const e of snap.face) {
@@ -178,7 +226,7 @@ export function normalizeSnapshot(snap) {
       (face || (face = new Map())).set(e[0], e[1]);
     }
   }
-  return { t, units, down, ammo, wolves, coins, energy, charges, layers, neg, motes, stand, standCut, face, raw: snap };
+  return { t, units, down, ammo, wolves, coins, energy, charges, layers, neg, st, sh, motes, stand, standCut, notes, fever, face, raw: snap };
 }
 
 /**
@@ -212,6 +260,13 @@ export class SnapshotBuffer {
     this.keep = Math.max(0.5, finite(opts.keep, 2.5));
     this.teleport = Math.max(0.5, finite(opts.teleport, 2.5));
     this.snapAfter = Math.max(0.2, finite(opts.snapAfter, 0.75));
+    this.adaptive = opts.adaptive === true;
+    this.minDelay = Math.max(0, finite(opts.minDelay, 0.1));
+    this.maxDelay = Math.max(this.minDelay, finite(opts.maxDelay, 0.6));
+    this.jitterWindow = Math.max(1, finite(opts.jitterWindow, 8));
+    this.jitterMargin = Math.max(0, finite(opts.jitterMargin, 0.02));
+    this.jitterGap = Math.max(0.2, finite(opts.jitterGap, 1));
+    this.delayEase = Math.max(0, finite(opts.delayEase, 0.05));
     this.reset();
   }
 
@@ -224,6 +279,9 @@ export class SnapshotBuffer {
     this.renderT = NaN;
     this.lastNow = NaN;
     this.interval = 0.1 * this.defaultRate / 2; // game s between snapshots (estimated)
+    /** @type {[number, number][]} adaptive: [arrival, arrival − game time / nominal rate] of the recent snapshots */
+    this.lateness = [];
+    this.lastArrival = NaN; // (a new battle's clock is not comparable: the learned `delay` stays, its window starts over)
     /** @type {{t:number, ev:any}[]} */
     this.events = [];
     /** @type {Map<number|string, number[]>} Parasite attachment blink times, retained after cosmetic fx is consumed. */
@@ -251,6 +309,7 @@ export class SnapshotBuffer {
       else if (s.t <= newest) return false;
     }
     s.at = now;
+    if (this.adaptive) this._adapt(s.t, now);
     const prev = this.snaps[this.snaps.length - 1];
     if (prev) {
       const dt = s.t - prev.t;
@@ -278,6 +337,24 @@ export class SnapshotBuffer {
     if (!Number.isFinite(this.renderT)) this.renderT = Math.max(this.snaps[0].t, s.t - this.delay * this.rate);
     else if (this.renderT < this.snaps[0].t) this.renderT = this.snaps[0].t;
     return true;
+  }
+
+  /** Adaptive delay (see header): the lateness of the snapshot of game time `t` that arrived at real time `now`. */
+  _adapt(t, now) {
+    const w = this.lateness;
+    const gap = Number.isFinite(this.lastArrival) ? now - this.lastArrival : Infinity;
+    this.lastArrival = now;
+    if (!(gap >= 0 && gap <= this.jitterGap)) w.length = 0;
+    w.push([now, now - t / this.defaultRate]);
+    while (w.length > 1 && now - w[0][0] > this.jitterWindow) w.shift();
+    if (w.length < 6) return;
+    let min = Infinity;
+    for (const e of w) if (e[1] < min) min = e[1];
+    const late = w.map((e) => e[1] - min).sort((a, b) => a - b);
+    const p95 = late[Math.min(late.length - 1, Math.floor(late.length * 0.95))];
+    const want = clamp(this.interval / this.defaultRate + p95 + this.jitterMargin, this.minDelay, this.maxDelay);
+    if (want > this.delay) this.delay = want;
+    else if (gap >= 0 && gap <= this.jitterGap) this.delay = Math.max(want, this.delay - this.delayEase * gap);
   }
 
   /**
@@ -382,11 +459,50 @@ export class SnapshotBuffer {
    * The `down` list (knocked-out operators waiting to redeploy, see header) of the snapshot shown at `time` (default
    * renderT) — the same snapshot sample() reads flags from — or null.
    */
+  /**
+   * The notes in the air at `time` (b.snap `notes`): each note of the older snapshot, its position on a Catmull-Rom
+   * spline through the snapshots around `time` (the one before, the two framing it, the one after — a wandering note
+   * curves smoothly between the snapshots, 0.1 s apart, instead of turning corners at each), the newer snapshot's end
+   * point when it is the last one; a new note appears where it is, a gone one is not drawn. Fills and returns `out`
+   * (an array of { id, owner, x, y, hx, hy, look, state, tgt }).
+   */
+  notesAt(time = this.renderT, out = []) {
+    out.length = 0;
+    const s = this.snaps;
+    if (!s.length || !Number.isFinite(time)) return out;
+    let ia = this._indexAt(time);
+    if (ia < 0) ia = 0;
+    const A = s[ia], B = ia + 1 < s.length ? s[ia + 1] : null;
+    if (!A.notes) return out;
+    const P0 = ia > 0 ? s[ia - 1] : null, P3 = ia + 2 < s.length ? s[ia + 2] : null;
+    const span = B ? B.t - A.t : 0;
+    const k = B && span > 0 ? clamp((time - A.t) / span, 0, 1) : 0;
+    for (const [id, a] of A.notes) {
+      const b = B && B.notes ? B.notes.get(id) : null;
+      let x = a[2], y = a[3];
+      if (b) {
+        // the neighbours (a note born or gone there repeats the end it has)
+        const p0 = (P0 && P0.notes && P0.notes.get(id)) || a, p3 = (P3 && P3.notes && P3.notes.get(id)) || b;
+        x = catmull(p0[2], a[2], b[2], p3[2], k);
+        y = catmull(p0[3], a[3], b[3], p3[3], k);
+      }
+      out.push({ id, owner: a[1], x, y, hx: b ? b[4] : a[4], hy: b ? b[5] : a[5], look: a[6], state: b ? b[7] : a[7], tgt: b ? b[8] : a[8] });
+    }
+    return out;
+  }
+
   downAt(time = this.renderT) {
     const s = this.snaps;
     if (!s.length || !Number.isFinite(time)) return null;
     const ia = this._indexAt(time);
     return s[ia < 0 ? 0 : ia].down || null;
+  }
+
+  /** Supplemental authoritative state of the snapshot on the render clock (e.g. cannon telegraphs). */
+  rawAt(time = this.renderT) {
+    if (!this.snaps.length || !Number.isFinite(time)) return null;
+    const index = this._indexAt(time);
+    return this.snaps[index < 0 ? 0 : index].raw;
   }
 
   /**
@@ -463,6 +579,9 @@ export class SnapshotBuffer {
       o.charges = A.charges?.get(id) ?? null;
       o.layers = A.layers?.get(id) ?? 0;
       o.neg = A.neg ? A.neg.get(id) || 0 : 0;
+      o.st = A.st?.get(id) ?? null;
+      o.sh = A.sh?.get(id) ?? 0;
+      o.fever = A.fever?.get(id) ?? null;
       o.motes = A.motes ? A.motes.get(id) || null : null;
       o.face = A.face ? A.face.get(id) ?? null : null;
       o.seen = stamp;

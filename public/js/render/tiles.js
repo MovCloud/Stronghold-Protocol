@@ -94,6 +94,33 @@ const SIDE_MAT = {
 };
 
 /**
+ * Terrain hint layer: an outline on the blocking tiles and a whole-tile lift on the high ground, so the three terrain
+ * classes of a stage (data/stages.json `tiles`: `groundPassable` / `height`) read apart at a glance. Both the
+ * procedural atlas and the official board art draw the blocked ground in the very same family as the walkable ground,
+ * and a high ground's top is the same plate as the ground next to it — the classes are only told apart by the block
+ * sides, which a top-down camera mostly hides.
+ *   block  blocked ground: '#' (tile_forbidden), 'X' (the rows-6/13 separator) and 'b' (tile_fence_bound: LOW, but
+ *          groundPassable false) — outlined, no fill (`fill: 0`, the "轮廓高亮" of the request).
+ *   high   'h' (tile_wall: the 高台) — filled + edged (the "整体高亮").
+ * Colours stay inside the existing palette: the amber of the hazard bands / range stripes for the outline, and
+ * `COLORS.gold` for the high ground — the colour `board3d/layout.js` paints a wall's sides (`goldSide`, L208).
+ * Drawn in every board mode — the hint Graphics live in the overlay, so they stay above the 2D meshes and above the
+ * 3D board's own canvas alike (the field keeps its overlay in external mode, see the header).
+ * Off by default (the boards already read apart with the official art); the operator turns it on with
+ * `"tileHints": true` in /data/site.json — ui/siteConfig.js applies it at boot, so a reload picks a change up.
+ */
+let tileClassHints = false;
+
+/** Turn the terrain hint layer on/off (the operator's /data/site.json `tileHints`; see TILE_HINT). @param {any} on */
+export function setTileClassHints(on) { tileClassHints = on === true; }
+
+/** The two terrain classes the layer marks, and their look (see the block comment above). */
+const TILE_HINT = Object.freeze({
+  block: Object.freeze({ glyphs: new Set(['#', 'X', 'b']), color: 0xffb04a, line: 1, fill: 0 }),
+  high: Object.freeze({ glyphs: new Set(['h']), color: COLORS.gold, line: 1, fill: 0.38 }),
+});
+
+/**
  * Parse a stage record into a per-tile info grid (tolerant of partial/malformed data). `band` = [r0, r1] rows drawn;
  * `field` = [f0, f1] rows of the active field — drawn rows outside it are dim, non-playable scenery (e.g. the enemy
  * preview pen behind the normal field, or the normal field behind the boss field).
@@ -230,6 +257,7 @@ export class TileField {
    */
   constructor(layers) {
     const P = globalThis.PIXI;
+    this.destroyed = false;
     this.P = P;
     this.layers = layers;
     this.atlas = tileAtlas();
@@ -248,7 +276,8 @@ export class TileField {
     this.boxes = [];               // gate / objective wire boxes { r, c, gate, g } (in the unit layer)
     this.flowGfx = new P.Graphics();
     this.flowGfx.blendMode = P.BLEND_MODES.ADD;
-    layers.overlay.addChild(this.hlGfx, this.flowGfx);
+    this.hintGfx = new P.Graphics();   // terrain hints (blocked-ground outline / high-ground lift; _drawTileHints)
+    layers.overlay.addChild(this.hintGfx, this.hlGfx, this.flowGfx);
     this.animLayer = new P.Container();
     layers.anim.addChild(this.animLayer);
     this.highlights = new Map();   // group → { tiles: [[r,c]], style }
@@ -465,6 +494,8 @@ export class TileField {
   }
 
   _freeSurface(s) {
+    // the row's own hint is ours (not a child of any caller): destroy it, so no orphan stays in the overlay
+    if (s._hint) { s._hint.destroy(); s._hint = null; }
     // children belong to their owners (unit shadows, fx rings…): hand them back to the ground layers
     for (const ch of [...s.children]) { if (ch !== s._hl) this.layers.overlay.addChild(ch); }
     s.destroy({ children: true });
@@ -492,6 +523,7 @@ export class TileField {
     for (const [row, s] of this.rowSurfaces) s.zIndex = rowDepthKey(cam, row) + ROW_KEY.surface;
     for (const b of this.boxMeshes) b.dirty = true;
     this._drawHighlights();
+    this._drawTileHints();
     this._placeDevices();
     this._placeAnim();
   }
@@ -515,6 +547,7 @@ export class TileField {
    * diagonal stripes over the fill (the official striped range tiles; drawn under the units like every highlight).
    */
   setHighlights(tiles, style = 'range', group, opts) {
+    if (this.destroyed) return;
     let st = typeof style === 'object' && style ? { ...HL_STYLES.range, ...style } : (HL_STYLES[style] || HL_STYLES.range);
     if (opts && opts.stripes) st = { ...st, stripes: true };
     const key = group || (typeof style === 'object' && style?.group) || (typeof style === 'string' ? style : 'custom');
@@ -531,11 +564,13 @@ export class TileField {
   }
 
   clearHighlights(group) {
+    if (this.destroyed) return;
     if (group) this.highlights.delete(group); else this.highlights.clear();
     this._drawHighlights();
   }
 
   _drawHighlights() {
+    if (this.destroyed) return;
     this.hlGfx.clear();
     for (const s of this.rowSurfaces.values()) if (s._hl) s._hl.clear();
     const cam = this.cam;
@@ -569,6 +604,51 @@ export class TileField {
         g.endFill();
         if (style.stripes) drawStripes(g, cam, r, c, z, inset, Math.max(1.5, sc * 0.05), p);
       }
+    }
+  }
+
+  /**
+   * Terrain hint layer (see TILE_HINT): every drawn, non-scenery blocked tile ('#', 'X', 'b') gets an outline,
+   * every 'h' high-ground tile a translucent lift. Raised tiles are drawn with their block row (into that row's
+   * surface container, like the raised-tile highlights above), low ones into the overlay — both above whatever board
+   * draws the ground underneath (the 2D meshes, the official art, or the 3D board's own canvas). Off unless the
+   * operator turns it on (`setTileClassHints`); the clear still runs, so flipping it off drops the previous pass.
+   */
+  _drawTileHints() {
+    const g = this.hintGfx;
+    g.clear();
+    for (const s of this.rowSurfaces.values()) if (s._hint) s._hint.clear();
+    if (!tileClassHints || this.destroyed) return;
+    const cam = this.cam;
+    if (!cam) return;
+    const p = this._p;
+    const inset = 0.06;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const t = this.grid[r][c];
+      if (!t || !t.drawn || t.scenery) continue;
+      const style = TILE_HINT.block.glyphs.has(t.glyph) ? TILE_HINT.block
+        : TILE_HINT.high.glyphs.has(t.glyph) ? TILE_HINT.high : null;
+      if (!style) continue;
+      const h = t.h;
+      let gfx = g;
+      if (h > 1e-3) {
+        const s = this.surfaceLayer(r);
+        if (s) {
+          if (!s._hint) { s._hint = new this.P.Graphics(); s.addChildAt(s._hint, 0); }
+          gfx = s._hint;
+        }
+      }
+      const z = h + 0.014;
+      const cs = [c - 0.5 + inset, r + 0.5 - inset, c + 0.5 - inset, r + 0.5 - inset, c + 0.5 - inset, r - 0.5 + inset, c - 0.5 + inset, r - 0.5 + inset];
+      const pts = new Array(8); // Graphics keeps a reference to the polygon's points: never reuse this array
+      for (let k = 0; k < 4; k++) {
+        cam.project(cs[k * 2], cs[k * 2 + 1], z, p);
+        pts[k * 2] = p.x; pts[k * 2 + 1] = p.y;
+      }
+      const a = t.alpha; // the faded margin keeps its faint outline, like the tile itself
+      gfx.lineStyle(Math.max(1.5, cam.scaleAt(c, r, z) * 0.035), style.color, style.line * a, 0.5);
+      if (style.fill > 0) { gfx.beginFill(style.color, style.fill * a); gfx.drawPolygon(pts); gfx.endFill(); }
+      else gfx.drawPolygon(pts);
     }
   }
 
@@ -779,6 +859,9 @@ export class TileField {
   }
 
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.highlights.clear();
     for (const d of this.devices) d.gfx.destroy();
     for (const a of this.animSprites) a.sprite.destroy();
     for (const b of [...this.boxMeshes]) b.destroy();
@@ -789,7 +872,7 @@ export class TileField {
     this.meshes = []; this.rowMeshes.clear(); this.rowSurfaces.clear(); this.mesh = null; this.plane = null;
     for (const b of this.boxes) b.g.destroy();
     this.boxes = [];
-    this.hlGfx.destroy(); this.flowGfx.destroy(); this.animLayer.destroy();
+    this.hlGfx.destroy(); this.flowGfx.destroy(); this.hintGfx?.destroy(); this.animLayer.destroy();
   }
 }
 
@@ -1166,15 +1249,20 @@ function drawWireBox(g, cam, cx, cy, z0, size, height, color, pulse, gate) {
     const p1 = lerp2(a, b, tick), p2 = lerp2(a, c2, tick);
     g.moveTo(p1[0], p1[1]); g.lineTo(a[0], a[1]); g.lineTo(p2[0], p2[1]);
   }
-  // warning triangle glyph on the front face
-  const f = cam.project(cx, cy - size / 2, z0 + height * 0.5);
-  const tri = s * 0.2;
+  // warning triangle glyph on the TOP face, pointing north — the official gate prefab's marking (the blue box's atlas
+  // quadrant: a white outline triangle with the exclamation inside, no fill; render/board3d/scene.js draws the mesh
+  // itself). 0.3.1 drew it on the front face half-way up, so the 3D board's gates did not match the official one.
+  const zt = z0 + height;
+  const P = (x, y) => cam.project(x, y, zt);
+  const apex = P(cx, cy - size * 0.22), bl = P(cx - size * 0.24, cy + size * 0.15), br = P(cx + size * 0.24, cy + size * 0.15);
   g.lineStyle(lw * 1.4, gate ? 0xffd0c8 : 0xd8f0ff, 0.95 * pulse);
-  g.drawPolygon([f.x, f.y - tri, f.x + tri * 1.1, f.y + tri * 0.8, f.x - tri * 1.1, f.y + tri * 0.8]);
+  g.drawPolygon([apex.x, apex.y, br.x, br.y, bl.x, bl.y]);
+  const barTop = P(cx, cy - size * 0.11), barBot = P(cx, cy + size * 0.03), dot = P(cx, cy + size * 0.095);
+  g.lineStyle(lw * 1.4, gate ? 0xffd0c8 : 0xd8f0ff, 0.95 * pulse);
+  g.moveTo(barTop.x, barTop.y); g.lineTo(barBot.x, barBot.y);
   g.lineStyle(0);
   g.beginFill(gate ? 0xffd0c8 : 0xd8f0ff, 0.95 * pulse);
-  g.drawRect(f.x - lw * 0.7, f.y - tri * 0.45, lw * 1.4, tri * 0.75);
-  g.drawCircle(f.x, f.y + tri * 0.52, lw * 0.9);
+  g.drawCircle(dot.x, dot.y, lw * 0.9);
   g.endFill();
 }
 

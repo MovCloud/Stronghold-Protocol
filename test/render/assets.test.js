@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { markPackInstalled, onPackInstalled, resetPackState } from '../../public/js/resourcePacks.js';
 import {
   avatarUrl, portraitUrl, enemyIconUrl, tokenAvatarUrl, bondIconUrl, bandIconUrl, itemIconUrl, skillIconUrl, uiUrl,
   profIconUrl, subProfIconUrl, spineEntry, hasBackSpine, unitPictureUrl, bgmEntry, sfxUrl, unitSfxUrl, baseCharId,
@@ -207,6 +208,7 @@ describe('RefLru', () => {
     await assert.rejects(lru.acquire('x'), /404/);
     await assert.rejects(lru.acquire('x'), /404/);
     assert.equal(calls, 1);
+    lru.release('x'); lru.release('x');
     now = 5000;
     await assert.rejects(lru.acquire('x'), /404/);
     assert.equal(calls, 2);
@@ -501,6 +503,29 @@ describe('createAssets store', () => {
     } finally { console.warn = warn; }
   });
 
+  test('explicit image retries replace only failed cache entries and share any in-flight retry', async () => {
+    let loads = 0, available = false, finish;
+    const loadedImage = { src: '/art/unit.png' };
+    const a = createAssets({ manifest: M, loadImage: async () => {
+      loads++;
+      if (!available) throw new Error('temporary image failure');
+      return await new Promise(resolve => { finish = resolve; });
+    } });
+    const url = loadedImage.src;
+    assert.equal(await a.image(url), null);
+    assert.equal(await a.image(url), null);
+    assert.equal(loads, 1, 'ordinary reads still cache failures instead of spinning');
+    available = true;
+    const retry = a.image(url, { retry: true });
+    assert.equal(a.image(url, { retry: true }), retry, 'simultaneous views share one load');
+    await Promise.resolve();
+    finish(loadedImage);
+    assert.equal(await retry, loadedImage);
+    assert.equal(await a.image(url, { retry: true }), loadedImage);
+    assert.equal(a.imageNow(url), loadedImage);
+    assert.equal(loads, 2, 'a successful cached image is never discarded by retry');
+  });
+
   test('image cache + preload progress (failures resolve to null)', async () => {
     const loaded = [];
     let fail = true;
@@ -530,6 +555,72 @@ describe('createAssets store', () => {
     a.spine.release(e);
     await assert.rejects(a.spine.acquire(null), /no spine/);
     assert.equal(a.spine.stats().refs, 0);
+  });
+});
+
+describe('spine pack gate: existence before load (a bare local install without the /assets/spine pack)', () => {
+  test('a proven-missing pack (404 probe) skips the model with one warning per pack root', async () => {
+    resetPackState();
+    const probes = [];
+    const a = createAssets({ manifest: M, fetch: async (url) => { probes.push(url); return { ok: false, status: 404 }; } });
+    const warns = [];
+    const warn = console.warn; console.warn = (...as) => warns.push(as.join(' '));
+    try {
+      await assert.rejects(a.spine.acquire(a.spineEntry('char_002_amiya')), /spine pack missing/);
+      assert.deepEqual(probes, ['/assets/spine/amiya_f.skel'], 'one silent probe, no loader attempts');
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /^\[assets\] \/assets\/spine pack is missing/);
+      // the pack root is proven once: every later model of it skips with NO request (one judgement for the group)
+      await assert.rejects(a.spine.acquire(a.spineEntry('char_010_chen')), /spine pack missing/);
+      assert.equal(warns.length, 1, 'one warning per pack root, not per model');
+      assert.deepEqual(probes, ['/assets/spine/amiya_f.skel'], 'no further probes once the root is proven missing');
+    } finally { console.warn = warn; }
+  });
+
+  test('an ok probe and a failed probe both hand over to the default loader (down sources keep their real errors)', async () => {
+    resetPackState();
+    const ok = createAssets({ manifest: M, fetch: async () => ({ ok: true }) });
+    // no PIXI in Node: reaching the default loader fails with its own message, not the gate's
+    await assert.rejects(ok.spine.acquire(ok.spineEntry('char_002_amiya')), /PIXI \/ pixi-spine not loaded/);
+    const down = createAssets({ manifest: M, fetch: async () => { throw new Error('ECONNREFUSED'); } });
+    await assert.rejects(down.spine.acquire(down.spineEntry('char_002_amiya')), /PIXI \/ pixi-spine not loaded/);
+  });
+
+  test('imported / non-material skeleton paths load without probing', async () => {
+    resetPackState();
+    const probes = [];
+    const a = createAssets({ manifest: M, fetch: async (url) => { probes.push(url); return { ok: true }; } });
+    const imported = { skel: '/assets/~0123456789abcdef/model.skel', atlas: '/assets/~0123456789abcdef/model.atlas', textures: [], pma: false, anims: {}, animations: ['Idle'], events: [], hits: {}, bounds: null };
+    await assert.rejects(a.spine.acquire(imported), /PIXI \/ pixi-spine not loaded/);
+    assert.deepEqual(probes, [], 'the gate only probes public material paths');
+  });
+
+  test('a finished pack import flips its roots to passable: failures are purged and loads retry', async () => {
+    resetPackState();
+    let ok = false; let imgOk = false; const imgFetches = [];
+    const a = createAssets({
+      manifest: M,
+      fetch: async (url) => (ok ? { ok: true, blob: async () => new Blob(['x']), body: null } : { ok: false, status: 404 }),
+      // the interface's image element path (opts.loadImage), stubbed: a miss resolves null and is remembered
+      loadImage: async (url) => { imgFetches.push(url); if (!imgOk) throw new Error('material image unavailable'); return { src: 'blob:fresh' }; },
+    });
+    // a missing icon is remembered…
+    assert.equal(await a.image('/assets/char/avatar/amiya.png'), null);
+    assert.equal(a.imageNow('/assets/char/avatar/amiya.png'), null);
+    // …and a spine model of the same failure lands in the LRU as failed
+    await assert.rejects(a.spine.acquire(a.spineEntry('char_002_amiya')), /spine pack missing/);
+    // the import finishes: roots flip to 'ok', failure memories under them go, the views are told to re-resolve
+    const reResolved = [];
+    a.onChange((what) => reResolved.push(what));
+    const changed = markPackInstalled(['/assets/char/avatar/amiya.png', '/assets/spine/amiya_f.skel']);
+    assert.deepEqual(changed.sort(), ['/assets/char', '/assets/spine']);
+    assert.deepEqual(reResolved, ['manifest']);
+    // the same icon loads now, no reload needed; the spine failure expired and the gate passes the loader
+    imgOk = true; ok = true;
+    const img = await a.image('/assets/char/avatar/amiya.png');
+    assert.deepEqual(imgFetches, ['/assets/char/avatar/amiya.png', '/assets/char/avatar/amiya.png']);
+    assert.equal(img && img.src, 'blob:fresh');
+    await assert.rejects(a.spine.acquire(a.spineEntry('char_002_amiya')), /PIXI \/ pixi-spine not loaded/, 'reaching the default loader = the gate passed it');
   });
 });
 

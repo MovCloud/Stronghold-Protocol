@@ -6,6 +6,22 @@ import { store } from '../store.js';
 import { t } from '../../../shared/i18n.js';
 import { toast } from './toasts.js';
 
+/**
+ * Switch this page to a saved local seat (identity.resume rechecks that no live page holds it) and reconnect with it.
+ * @param {{ id: string, name: string, code: string }} item an identity.recoverable() entry
+ * @returns {Promise<boolean>} false: held by a live page, or this browser cannot resume it safely
+ */
+export async function resumeLocalMatch(item) {
+  if (!(await identity.resume(item.id))) return false;
+  store.patch('session', { entered: true });
+  // Keep the tentative token in this document until welcome persists it. Reloading here
+  // would either lose the selection or falsely turn it into an established session claim.
+  net.close();
+  net.setName(item.name);
+  net.connect();
+  return true;
+}
+
 export function ResumeMatchButton() {
   const [items, setItems] = useState(() => identity.recoverable());
   const [open, setOpen] = useState(false);
@@ -21,14 +37,7 @@ export function ResumeMatchButton() {
   const resume = async (item) => {
     if (busy) return;
     setBusy(true);
-    if (await identity.resume(item.id)) {
-      identity.setEntered(true);
-      store.patch('session', { entered: true });
-      // Keep the tentative token in this document until welcome persists it. Reloading here
-      // would either lose the selection or falsely turn it into an established session claim.
-      net.close();
-      net.setName(item.name);
-      net.connect();
+    if (await resumeLocalMatch(item)) {
       setOpen(false);
       setBusy(false);
     } else {
@@ -37,7 +46,7 @@ export function ResumeMatchButton() {
     }
   };
   return html`<${Button} variant="secondary" size="sm" data-testid="resume-local-match" onClick=${() => setOpen(true)}>${t('恢复本机对局')}<//>
-    <${Modal} open=${open} onClose=${() => !busy && setOpen(false)} title=${t('恢复本机对局')}>
+    <${Modal} open=${open} onClose=${() => !busy && setOpen(false)} title=${t('恢复本机对局')} utility=${true} class="resume-modal">
       <p>${t('选择已关闭窗口的对局。服务器重启或对局过期后无法恢复。')}</p>
       ${items.map((item) => html`<${Button} key=${item.id} variant="secondary" block=${true} disabled=${busy} onClick=${() => resume(item)}>
         ${t('{name} · 同盟 {code}', { name: item.name || t('博士'), code: item.code || '—' })}<//>`)}

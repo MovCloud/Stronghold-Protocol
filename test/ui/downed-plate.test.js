@@ -42,7 +42,9 @@ test('the official map, the project\'s Modal, no drawn crest; not ready without 
 test('screens/game.js: the dialog once the own alive turns false from real data; 离开模拟 opens the exit dialog', () => {
   const g = read('public/js/screens/game.js');
   assert.match(g, /if \(!spectator && !priv && !meP\) return;/);
-  assert.match(g, /if \(downedArtReady\(\) && downedDue\(\{ was, alive, spectator, pub, myId \}\)\) setDowned\(true\);/);
+  // this fork's 复活: a seat waiting for a rescue (m.public pendingDeath) is still standing — the plate waits for the window
+  assert.match(g, /const standing = alive \|\| !!meP\?\.pendingDeath;/);
+  assert.match(g, /if \(downedArtReady\(\) && downedDue\(\{ was, alive: standing, spectator, pub, myId \}\)\) setDowned\(true\);/);
   assert.match(g, /<\$\{DownedPlate\} open=\$\{downed\} onWatch=\$\{\(\) => setDowned\(false\)\} onLeave=\$\{\(\) => \{ setDowned\(false\); setExitOpen\(true\); \}\} \/>/);
 });
 

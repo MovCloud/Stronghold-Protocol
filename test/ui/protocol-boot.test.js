@@ -109,3 +109,17 @@ test('the stylesheet: every keyframe it uses is defined, reduced motion stops it
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\n\s+\.pboot, \.pboot \*, \.pboot \*::after \{ animation: none; \}/);
   for (const page of ['public/index.html', 'public/dev/game-mock.html']) assert.match(read(page), /href="\/css\/screens\/protocol-boot\.css"/, page);
 });
+
+test('bootLayout past six (this fork\'s 8–20-seat rooms): every doctor, two columns, rows inside BOOT_BAND above 协议启动！', () => {
+  for (const n of [7, 8, 12, 16, 20]) {
+    const L = B.bootLayout(n);
+    assert.equal(L.length, n, `${n}`);
+    for (const s of L) {
+      assert.ok(s.h >= 40 && s.h <= 127, `${n}: card height ${s.h}`);
+      assert.ok(s.y >= B.BOOT_BAND[0] && s.y + s.h <= B.BOOT_BAND[1], `${n}: inside the band (${s.y}+${s.h})`);
+    }
+    for (let i = 2; i < n; i++) assert.ok(L[i].y - L[i - 2].y >= L[i].h, `${n}: rows apart`);
+    assert.deepEqual([...new Set(L.map((s) => s.side))].sort(), ['l', 'r']);
+  }
+  assert.equal(B.bootLayout(30).length, B.BOOT_MAX);
+});

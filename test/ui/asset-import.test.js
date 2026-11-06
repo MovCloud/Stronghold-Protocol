@@ -8,14 +8,15 @@ import { rewriteManifest } from '../../server/http/assetViews.js';
 import { siteCsp, SIM_WORKER_CSP } from '../../server/http/csp.js';
 import { createAssetDownload } from '../../public/js/assetDownload.js';
 import {
-  IMPORTED_ASSET_CACHE, IMPORTED_ASSET_CACHE_PREFIX, IMPORTED_ASSET_PATH, IMPORTED_INDEX_URL,
-  addImportedPaths, askPersistStorage, countImportedFiles, importSupport, listImportedPaths, pruneImportedPaths, shouldServeImportedAsset,
+  IMPORTED_ASSET_CACHE, IMPORTED_ASSET_CACHE_PREFIX, IMPORTED_ASSET_PATH, IMPORTED_INDEX_URL, MATERIAL_CACHE_PREFIX, assetWorkerUrl,
+  addImportedPaths, askPersistStorage, clearImportedAssets, countImportedFiles, importSupport, listImportedPaths, pruneImportedPaths, shouldServeImportedAsset,
   storagePersisted,
 } from '../../public/js/assetCache.js';
 import {
   cacheUrlsFor, crc32, createAssetImport, detectAssetPrefix, importedKeepSet, modelHashOf, normalizePackPath,
   openZip, plainRel, planFromManifests, pruneImportedAssets, sha256Hex16,
 } from '../../public/js/assetPack.js';
+import { markPackInstalled, markPackMissing, onPackInstalled, packStateOf, resetPackState } from '../../public/js/resourcePacks.js';
 
 const enc = new TextEncoder();
 const bytesOf = (text) => enc.encode(text);
@@ -515,7 +516,7 @@ test('the worker answers only hashed asset GET, and its copy matches the module'
   assert.ok(sw.includes(`const IMPORTED_ASSET_CACHE = '${IMPORTED_ASSET_CACHE}';`));
   assert.ok(sw.includes(`const IMPORTED_ASSET_CACHE_PREFIX = '${IMPORTED_ASSET_CACHE_PREFIX}';`));
   assert.ok(sw.includes(`const IMPORTED_ASSET_PATH = ${IMPORTED_ASSET_PATH};`));
-  assert.equal(sw.includes('.put('), false);
+  // registered without a material profile: nothing is ever written (the sandbox's put throws)
 
   const origin = 'http://127.0.0.1:9';
   const deleted = [];
@@ -554,6 +555,12 @@ test('the worker answers only hashed asset GET, and its copy matches the module'
     URL: globalThis.URL,
     Response: globalThis.Response,
     Promise: globalThis.Promise,
+    // (fork) public/sw.js also loads the preload's rules (resource-sw.js, test/resources.test.js covers them): here they
+    // answer nothing, so this test sees the import's own behaviour
+    importScripts(url) {
+      assert.equal(url, '/resource-sw.js');
+      sandbox.self.spResources = { handleFetch: () => false, isResourcePath: () => false, changed: () => {} };
+    },
   };
   vm.runInNewContext(sw, sandbox, { filename: 'public/sw.js' });
   const install = {};
@@ -619,6 +626,274 @@ test('the worker answers only hashed asset GET, and its copy matches the module'
   assert.equal(fetched.at(-1), miss.url);
 });
 
+test('fork: with a material profile the worker keeps public art by path; another profile drops the old cache', async () => {
+  const sw = fs.readFileSync(path.resolve('public/sw.js'), 'utf8');
+  assert.ok(sw.includes(`const MATERIAL_CACHE_PREFIX = '${MATERIAL_CACHE_PREFIX}';`));
+  assert.equal(assetWorkerUrl('20261016-jinan-v030-r0'), '/sw.js?material=20261016-jinan-v030-r0');
+  assert.equal(assetWorkerUrl('bad/profile'), '/sw.js');
+  assert.equal(assetWorkerUrl(null), '/sw.js');
+  const origin = 'https://game.example';
+  const run = (material, store, fetched, deleted, { network, codeSource = null } = {}) => {
+    const listeners = {};
+    const sandbox = {
+      self: { location: { origin, href: `${origin}${assetWorkerUrl(material)}` }, addEventListener(type, fn) { listeners[type] = fn; },
+        skipWaiting: () => Promise.resolve(), clients: { claim: () => Promise.resolve() } },
+      caches: {
+        async open(name) {
+          const map = store.get(name) ?? new Map(); store.set(name, map);
+          return {
+            async match(key, options) { assert.equal(options, undefined); const hit = map.get(typeof key === 'string' ? key : key.url); return hit ? new Response(hit) : undefined; },
+            async put(key, response) { map.set(key, await response.text()); },
+            async delete(key) { return map.delete(key); },
+          };
+        },
+        async match(key, { cacheName } = {}) { // the worker must name the cache: an unnamed match would search them all
+          assert.ok(cacheName);
+          const hit = store.get(cacheName)?.get(key);
+          return hit === undefined ? undefined : new Response(hit);
+        },
+        async keys() { return [...store.keys()]; },
+        async delete(name) { deleted.push(name); return store.delete(name); },
+      },
+      fetch: async (request, init) => {
+        const url = typeof request === 'string' ? request : request.url;
+        if (url === '/code-source.json') {
+          assert.equal(init?.cache, 'no-store');
+          return codeSource ? new Response(JSON.stringify(codeSource)) : new Response('not found', { status: 404 });
+        }
+        if (url === '/material-sign') return new Response('not found', { status: 404 }); // a proxy without the batch signer
+        fetched.push([url, init?.mode ?? null]);
+        return network ? network(url) : new Response(`net:${url}`, { headers: { 'content-type': 'image/png' } });
+      },
+      URL: globalThis.URL, Response: globalThis.Response, Promise: globalThis.Promise, setTimeout, clearTimeout,
+    };
+    vm.runInNewContext(sw, sandbox, { filename: 'public/sw.js' });
+    const fire = async (url, init = {}) => {
+      let responded = null; const waits = [];
+      listeners.fetch({ request: new Request(url, init), respondWith(p) { responded = p; }, waitUntil(p) { waits.push(p); } });
+      if (!responded) return null;
+      const res = await responded; await Promise.all(waits);
+      return res;
+    };
+    const activate = async () => { let p; listeners.activate({ waitUntil(x) { p = x; } }); await p; };
+    return { fire, activate };
+  };
+  const store = new Map([['sp-material-old', new Map()], ['other-cache', new Map()]]), fetched = [], deleted = [];
+  const w = run('v030', store, fetched, deleted);
+  await w.activate();
+  assert.deepEqual(deleted, ['sp-material-old'], 'another profile is dropped, unrelated caches stay');
+  assert.equal(await (await w.fire(`${origin}/assets/char/a.png`)).text(), `net:${origin}/assets/char/a.png`);
+  assert.deepEqual(fetched.at(-1), [`${origin}/assets/char/a.png`, 'cors'], 'a miss is fetched in CORS mode');
+  assert.equal(await (await w.fire(`${origin}/assets/char/a.png`)).text(), `net:${origin}/assets/char/a.png`);
+  assert.equal(fetched.length, 1, 'the second request is a hit');
+  assert.equal(await (await w.fire(`${origin}/assets/char/b.png?sp_source=openi`)).text(), `net:${origin}/assets/char/b.png?sp_source=openi`);
+  assert.equal(await (await w.fire(`${origin}/assets/char/b.png`)).text(), `net:${origin}/assets/char/b.png?sp_source=openi`, 'the OpenI retry fills the path entry');
+  assert.equal(fetched.length, 2);
+  for (const url of [`${origin}/assets/char/a.png?Signature=x`, `${origin}/data/assets.json`, `${origin}/js/main.js`, `${origin}/assets/x.svg`,
+    `${origin}/assets/a%5cx.png`, `${origin}/assets/.hidden.png`, 'https://other.example/assets/char/a.png', `${origin}/ws`]) {
+    assert.equal(await w.fire(url), null, url);
+  }
+  assert.equal(await w.fire(`${origin}/assets/char/a.png`, { headers: { Range: 'bytes=0-1' } }), null, 'Range goes to the network');
+  // errors, HTML and no-store are not kept
+  const bad = run('v030', store, fetched, deleted, { network: (url) => url.includes('err') ? new Response('x', { status: 503 })
+    : url.includes('html') ? new Response('<html>', { headers: { 'content-type': 'text/html' } })
+      : new Response('y', { headers: { 'cache-control': 'public, no-store' } }) });
+  for (const name of ['err', 'html', 'nostore']) await bad.fire(`${origin}/assets/x/${name}.png`);
+  assert.deepEqual([...store.get('sp-material-v030').keys()].sort(), [`${origin}/assets/char/a.png`, `${origin}/assets/char/b.png`]);
+  // a worker without a profile keeps nothing and drops nothing
+  const none = run(null, store, fetched, deleted);
+  await none.activate();
+  assert.equal(await none.fire(`${origin}/assets/char/c.png`), null);
+  assert.ok(store.has('sp-material-v030'));
+});
+
+test('fork: a new profile carries the previous profile\'s art except the paths /code-source.json drops', async () => {
+  const sw = fs.readFileSync(path.resolve('public/sw.js'), 'utf8');
+  const origin = 'https://game.example';
+  const store = new Map([
+    ['sp-material-v030', new Map([[`${origin}/assets/char/a.png`, 'old-a'], [`${origin}/assets/char/b.png`, 'old-b'],
+      [`${origin}/assets/char/changed.png`, 'old-changed'], [`${origin}/assets/local/scene/m01/lm0.png`, 'old-scene']])],
+    ['sp-material-older', new Map([[`${origin}/assets/char/a.png`, 'older-a']])],
+  ]);
+  const fetched = [], deleted = [];
+  const codeSource = { version: 1, material: 'rel21',
+    materialCarry: { from: 'v030', drop: ['/assets/char/changed.png', '/assets/local/scene/'] } };
+  const worker = (opts = {}) => {
+    const listeners = {};
+    vm.runInNewContext(sw, {
+      self: { location: { origin, href: `${origin}${assetWorkerUrl('rel21')}` }, addEventListener(type, fn) { listeners[type] = fn; },
+        skipWaiting: () => Promise.resolve(), clients: { claim: () => Promise.resolve() } },
+      caches: {
+        async open(name) {
+          const map = store.get(name) ?? new Map(); store.set(name, map);
+          return {
+            async match(key) { const hit = map.get(key); return hit === undefined ? undefined : new Response(hit); },
+            async put(key, response) { map.set(key, await response.text()); },
+            async delete(key) { return map.delete(key); },
+          };
+        },
+        async match(key, { cacheName } = {}) { const hit = store.get(cacheName)?.get(key); return hit === undefined ? undefined : new Response(hit); },
+        async keys() { return [...store.keys()]; },
+        async delete(name) { deleted.push(name); return store.delete(name); },
+      },
+      fetch: async (url, init) => {
+        if (url === '/code-source.json') return new Response(JSON.stringify(opts.codeSource ?? codeSource));
+        if (url === '/material-sign') return new Response('<html>', { headers: { 'content-type': 'text/html' } });
+        fetched.push(url);
+        return new Response(`net:${url}`, { headers: { 'content-type': 'image/png' } });
+      },
+      URL: globalThis.URL, Response: globalThis.Response, Promise: globalThis.Promise, setTimeout, clearTimeout,
+    }, { filename: 'public/sw.js' });
+    return {
+      activate: async () => { let p; listeners.activate({ waitUntil(x) { p = x; } }); await p; },
+      fire: async (url) => {
+        let responded = null; const waits = [];
+        listeners.fetch({ request: new Request(url), respondWith(p) { responded = p; }, waitUntil(p) { waits.push(p); } });
+        const res = await responded; await Promise.all(waits);
+        return res.text();
+      },
+    };
+  };
+  const w = worker();
+  await w.activate();
+  assert.deepEqual(deleted, ['sp-material-older'], 'the carried profile stays, any other is dropped');
+  assert.equal(await w.fire(`${origin}/assets/char/a.png`), 'old-a');
+  assert.equal(fetched.length, 0, 'an unchanged file is not requested again');
+  assert.equal(store.get('sp-material-rel21').get(`${origin}/assets/char/a.png`), 'old-a', 'moved into the new cache');
+  assert.equal(store.get('sp-material-v030').has(`${origin}/assets/char/a.png`), false, 'and out of the old one');
+  assert.equal(await w.fire(`${origin}/assets/char/changed.png`), `net:${origin}/assets/char/changed.png`, 'a dropped path');
+  assert.equal(await w.fire(`${origin}/assets/local/scene/m01/lm0.png`), `net:${origin}/assets/local/scene/m01/lm0.png`, 'a dropped directory');
+  assert.equal(await w.fire(`${origin}/assets/char/new.png`), `net:${origin}/assets/char/new.png`);
+  assert.equal(fetched.length, 3);
+
+  // a restarted worker (no activate) reads the carry-over it activated with
+  assert.equal(await worker().fire(`${origin}/assets/char/b.png`), 'old-b');
+  assert.equal(fetched.length, 3);
+
+  // a /code-source.json for another profile, or none, carries nothing
+  for (const other of [{ ...codeSource, material: 'rel22' }, { version: 1, material: 'rel21' }]) {
+    store.set('sp-material-v030', new Map([[`${origin}/assets/char/c.png`, 'old-c']]));
+    deleted.length = 0;
+    const again = worker({ codeSource: other });
+    await again.activate();
+    assert.deepEqual(deleted, ['sp-material-v030']);
+    assert.equal(await again.fire(`${origin}/assets/char/c.png`), `net:${origin}/assets/char/c.png`);
+  }
+});
+
+test('fork: a miss is signed in batches through /material-sign and downloaded from the CDN; anything else uses the plain path', async () => {
+  const sw = fs.readFileSync(path.resolve('public/sw.js'), 'utf8');
+  const origin = 'https://game.example';
+  const cdn = (p) => `https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/aa/bb/${Buffer.from(p).toString('hex')}?auth_key=1`;
+  const worker = ({ sign, cdnAnswer, plainType = 'image/png' } = {}) => {
+    const store = new Map(), signs = [], fetched = [], listeners = {};
+    const clock = { now: 1_000_000 };
+    vm.runInNewContext(sw, {
+      self: { location: { origin, href: `${origin}${assetWorkerUrl('rel21')}` }, addEventListener(type, fn) { listeners[type] = fn; },
+        skipWaiting: () => Promise.resolve(), clients: { claim: () => Promise.resolve() } },
+      caches: {
+        async open(name) {
+          const map = store.get(name) ?? new Map(); store.set(name, map);
+          return {
+            async match(key) { const hit = map.get(key); return hit === undefined ? undefined : new Response(hit); },
+            async put(key, response) { map.set(key, await response.text()); },
+            async delete(key) { return map.delete(key); },
+          };
+        },
+        async match() { return undefined; },
+        async keys() { return [...store.keys()]; },
+        async delete(name) { return store.delete(name); },
+      },
+      fetch: async (url, init) => {
+        if (url === '/code-source.json') return new Response('not found', { status: 404 });
+        if (url === '/material-sign') {
+          assert.equal(init.method, 'POST');
+          assert.equal(init.credentials, 'same-origin');
+          const { paths } = JSON.parse(init.body);
+          signs.push(paths);
+          if (sign) return sign(paths);
+          const urls = {};
+          for (const p of paths) if (!p.includes('nosign')) urls[p] = [cdn(p), 600];
+          return new Response(JSON.stringify({ urls }), { headers: { 'content-type': 'application/json' } });
+        }
+        fetched.push([url, init?.credentials ?? null]);
+        if (url.startsWith('https://cdn-lfs')) {
+          const p = Buffer.from(url.split('/').at(-1).split('?')[0], 'hex').toString();
+          return cdnAnswer ? cdnAnswer(p) : new Response(`cdn:${p}`, { headers: { 'content-type': 'image/png' } });
+        }
+        return new Response(`net:${url}`, { headers: { 'content-type': plainType } });
+      },
+      Date: { now: () => clock.now },
+      URL: globalThis.URL, Response: globalThis.Response, Promise: globalThis.Promise, setTimeout, clearTimeout,
+    }, { filename: 'public/sw.js' });
+    const fire = async (url) => {
+      let responded = null; const waits = [];
+      listeners.fetch({ request: new Request(url), respondWith(p) { responded = p; }, waitUntil(p) { waits.push(p); } });
+      const res = await responded; await Promise.all(waits);
+      return res.text();
+    };
+    return { fire, store, signs, fetched, clock };
+  };
+
+  const w = worker();
+  const burst = ['/assets/char/a.png', '/assets/char/b.png', '/media/voice/c'];
+  assert.deepEqual(await Promise.all(burst.map((p) => w.fire(origin + p))), burst.map((p) => `cdn:${p}`));
+  assert.deepEqual(w.signs, [burst], 'one sign request for the burst');
+  assert.deepEqual(w.fetched, burst.map((p) => [cdn(p), 'omit']), 'the files come straight from the CDN, without cookies');
+  assert.deepEqual([...w.store.get('sp-material-rel21').keys()].sort(), burst.map((p) => origin + p).sort(), 'and are kept by path');
+  assert.deepEqual(await Promise.all(burst.map((p) => w.fire(origin + p))), burst.map((p) => `cdn:${p}`));
+  assert.equal(w.signs.length, 1); assert.equal(w.fetched.length, 3, 'hits need neither');
+
+  // left out of the answer: the plain path (the proxy's redirect), as before
+  assert.equal(await w.fire(`${origin}/assets/nosign/x.png`), `net:${origin}/assets/nosign/x.png`);
+  // the OpenI retry is never signed
+  const before = w.signs.length;
+  assert.equal(await w.fire(`${origin}/assets/char/d.png?sp_source=openi`), `net:${origin}/assets/char/d.png?sp_source=openi`);
+  assert.equal(w.signs.length, before);
+
+  // at most 64 paths per request
+  const many = Array.from({ length: 70 }, (_, i) => `/assets/many/${i}.png`);
+  await Promise.all(many.map((p) => w.fire(origin + p)));
+  assert.deepEqual(w.signs.slice(-2).map((b) => b.length), [64, 6]);
+
+  // a signed URL is reused until 60 s before the stated expiry, then signed again; a refused download falls back
+  let status = 200;
+  const e = worker({ cdnAnswer: (p) => status === 200
+    ? new Response(`cdn:${p}`, { headers: { 'content-type': 'text/html' } }) // not kept: the next request misses again
+    : new Response('denied', { status }), plainType: 'text/html' });
+  await e.fire(`${origin}/assets/x/e.png`);
+  e.clock.now += 539_000;
+  await e.fire(`${origin}/assets/x/e.png`);
+  assert.equal(e.signs.length, 1, 'still valid: no new sign request');
+  e.clock.now += 2_000;
+  await e.fire(`${origin}/assets/x/e.png`);
+  assert.equal(e.signs.length, 2, 'past expiry - 60 s: signed again');
+  status = 403;
+  assert.equal(await e.fire(`${origin}/assets/x/e.png`), `net:${origin}/assets/x/e.png`, 'a refused CDN download uses the plain path');
+  status = 200;
+  await e.fire(`${origin}/assets/x/e.png`);
+  assert.deepEqual(e.signs.at(-1), ['/assets/x/e.png'], 'the refused URL was forgotten: signed again');
+
+  // no endpoint (404), a gate page or an answer for another host: plain paths; a missing endpoint is not asked again for 10 min
+  for (const sign of [() => new Response('not found', { status: 404 }), () => new Response('<html>', { headers: { 'content-type': 'text/html' } })]) {
+    const off = worker({ sign });
+    assert.equal(await off.fire(`${origin}/assets/x/g.png`), `net:${origin}/assets/x/g.png`);
+    assert.equal(await off.fire(`${origin}/assets/x/h.png`), `net:${origin}/assets/x/h.png`);
+    assert.equal(off.signs.length, 1);
+    off.clock.now += 601_000;
+    await off.fire(`${origin}/assets/x/i.png`);
+    assert.equal(off.signs.length, 2);
+  }
+  const evil = worker({ sign: (paths) => new Response(JSON.stringify({ urls: Object.fromEntries(paths.map((p) => [p, [`https://evil.example${p}`, 600]])) }),
+    { headers: { 'content-type': 'application/json' } }) });
+  assert.equal(await evil.fire(`${origin}/assets/x/j.png`), `net:${origin}/assets/x/j.png`, 'only the provider CDN is accepted');
+  const busy = worker({ sign: () => new Response('busy', { status: 503 }) });
+  await busy.fire(`${origin}/assets/x/k.png`);
+  busy.clock.now += 31_000;
+  await busy.fire(`${origin}/assets/x/l.png`);
+  assert.equal(busy.signs.length, 2, 'a failing signer is retried after 30 s');
+});
+
 test('site CSP keeps worker-src self and blob, and the sim worker policy does not gain the asset worker', () => {
   const csp = siteCsp(path.resolve('public'));
   const worker = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith('worker-src '));
@@ -628,8 +903,9 @@ test('site CSP keeps worker-src self and blob, and the sim worker policy does no
   assert.equal(tokens.some((token) => token === '*' || token.startsWith('http:') || token.startsWith('https:')), false);
   assert.equal(SIM_WORKER_CSP.includes('worker-src'), false);
   assert.equal(SIM_WORKER_CSP.includes('/sw.js'), false);
-  assert.equal(importSupport({ serviceWorker: {} }, false).reason, 'insecure');
-  assert.equal(importSupport({}, true).ok, false);
+  assert.equal(importSupport({}, false, { indexedDB: { open() {} } }).ok, true);
+  assert.equal(importSupport({}, true, { caches: { open() {} } }).ok, true);
+  assert.equal(importSupport({}, false, {}).reason, 'unsupported');
 });
 
 test('mergeLocalManifests: the effects manifest\'s groups join the local ones for the import plan (DESIGN §33)', async () => {
@@ -831,6 +1107,56 @@ test('清理旧版本素材 keeps what the current manifests name, the audio ali
   assert.deepEqual(mem.assets().sort(), [keepMp3, keepPng, keepMedia].sort());
   assert.deepEqual([...await listImportedPaths(mem.caches)].sort(), [keepMp3, keepMedia, keepPng].sort(), 'the index lists what remains');
   assert.deepEqual(await pruneImportedPaths(keep, mem.caches), { removed: 0, removedFiles: 0, kept: 3 }, 'a second run finds nothing');
+});
+
+test('清理旧版本素材 tells the pack table only the roots whose bytes actually went (resourcePacks.js)', async () => {
+  const mem = memoryCache();
+  const cache = await mem.caches.open(IMPORTED_ASSET_CACHE);
+  const keep = '/assets/~1111111111111111/char/a.png', stale = '/assets/~0000000000000000/char/a.png';
+  const listedButAbsent = '/assets/~4444444444444444/char/a.png';
+  await cache.put(keep, new Response('x'));
+  await cache.put(stale, new Response('x'));
+  await addImportedPaths(cache, [keep, stale, listedButAbsent]);
+  markPackInstalled([keep, stale]);
+  const seen = [];
+  const off = onPackInstalled((roots) => seen.push(roots));
+  assert.deepEqual(await pruneImportedPaths(new Set([keep]), mem.caches), { removed: 1, removedFiles: 1, kept: 1 },
+    'the listed-but-absent path leaves the index without counting as a deletion');
+  assert.deepEqual(seen, [['/assets/~0000000000000000']],
+    'the kept pack still claims its install, the absent one had nothing to delete, so only the root that lost bytes is told');
+  assert.equal(packStateOf(stale), 'unknown', 'the table stops claiming a pack it can no longer serve');
+  assert.equal(packStateOf(keep), 'ok', 'a pack that was kept is not revoked');
+  // resolve() still answers 'imported' for an imported path (the caches key on the URL), so for these roots the
+  // table's job is the listener purge; what markPackRemoved reopens is the one-warning gate, so a root that was
+  // pruned can be proven absent again by the next load that spends a request on it.
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    assert.equal(markPackMissing(stale), true, 'the one-warning went with the state, so this root can warn again');
+    assert.equal(markPackMissing(stale), false, 'and warns once, as ever');
+  } finally { console.warn = original; }
+  assert.equal(warnings.length, 1);
+  off();
+  resetPackState();
+});
+
+test('清除已导入的素材 tells the pack table the roots before the cache goes', async () => {
+  const mem = memoryCache();
+  const cache = await mem.caches.open(IMPORTED_ASSET_CACHE);
+  const a = '/assets/~1111111111111111/char/a.png', f = '/fonts/~2222222222222222/a.woff2', audio = '/media/~2222222222222222/bgm/x';
+  for (const u of [a, f, audio]) await cache.put(u, new Response('x'));
+  await addImportedPaths(cache, [a, f, audio]);
+  markPackInstalled([a, f]);
+  const seen = [];
+  const off = onPackInstalled((roots) => seen.push(roots));
+  assert.equal(await clearImportedAssets(mem.caches), true);
+  assert.deepEqual(seen, [['/assets/~1111111111111111', '/fonts']],
+    'the font root is /fonts as a whole, the audio alias has no pack root, so the purge hook hears only what the table knew');
+  assert.equal(packStateOf(a), 'unknown');
+  assert.equal(packStateOf(f), 'unknown');
+  off();
+  resetPackState();
 });
 
 test('清理旧版本素材 deletes nothing when a served manifest cannot be read', async () => {

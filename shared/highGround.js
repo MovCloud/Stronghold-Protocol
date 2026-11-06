@@ -1,3 +1,4 @@
+import { N_ } from './i18n.js';
 // shared/highGround.js — which MELEE chess may stand on a 高台 (a ranged deploy tile).
 //
 // The owner's decision of 2026-10-05, reversing the one of 2026-10-04 (elite 歌蕾蒂娅 with HOK-Y only): follow PRTS. A
@@ -12,7 +13,7 @@
 // is not read. The battle keeps position MELEE: on a 高台 the unit attacks and blocks nothing.
 
 /** The trait line that lets a MELEE chess stand on a ranged (高台) tile. */
-export const PLACE_ON_RANGED = '可以放置于远程位'; // i18n-ignore: matched against the data's trait text
+export const PLACE_ON_RANGED = N_('可以放置于远程位'); // matched against the data's trait text
 
 /**
  * The record's trait text without a module ('' when it has none).

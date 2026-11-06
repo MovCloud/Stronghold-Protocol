@@ -1,63 +1,121 @@
-// One bounded simulation pool for every room's rehearsal work.
-//
-// The WebSocket, the Match object and the board stay on the main thread in this phase; what moves is the layout
-// rehearsal of a bot prep, whose candidates are whole simulated battles (0.2–1 s of CPU per bot late in a match, the
-// stall the maintainer asked about). Every room submits into the SAME pool: a pool per room (or the "pinned lane" of an
-// earlier revision of this file, which assigned rooms to lanes but then handed all of them the same pool) would
-// multiply the thread count and overfill the process, which is exactly what the pool exists to prevent.
-// Overload is refused (POOL_FULL from the pool) instead of starting another thread — the caller then runs the same
-// candidates on the main thread, so a busy pool costs latency, never correctness.
+// Adapted from xinhai-ai/Stronghold-Protocol commit 40d4505f (GPL-3.0-or-later); see docs/development/PERFORMANCE.md.
+// Room-pinned simulation lanes (opt-in SP_ROOM_WORKERS): every lane is a full SimulationPool and a room key always
+// lands on the same lane, so a room's battle / rehearsal tasks queue behind their own room, not the whole server.
 import { SimulationPool, workerSettings } from './pool.js';
 
+const integer = (value, fallback, min, max) => {
+  if (value == null || String(value).trim() === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+};
+
+/**
+ * One lane of the room worker pool.
+ * @typedef {{ id: number, rooms: Set<string>, pool: import('./pool.js').SimulationPool }} Lane
+ */
+
+/**
+ * A group of SimulationPool lanes that pins each room's simulation tasks to one lane. The WebSocket and the Match
+ * object stay on the main thread; only the CPU work is placed. Disabled unless server/index.js is told otherwise
+ * (SP_ROOM_WORKERS / opts.roomWorkers): a plain SimulationPool serves every room from one shared queue.
+ */
 export class RoomWorkerPool {
-  constructor({ data, totalWorkers = 1, maxQueue = 256, timeoutMs = 120000, workerUrl } = {}) {
-    if (!Number.isInteger(totalWorkers) || totalWorkers < 1 || totalWorkers > 32) {
-      throw new RangeError('room worker total must be 1..32');
+  /**
+   * @param {{ data?: object, lanes?: number, totalWorkers?: number, maxQueue?: number, timeoutMs?: number,
+   *           workerUrl?: URL }} [opts]
+   *   `lanes` is the number of independent queues (the room → lane pinning); `totalWorkers` is the thread budget
+   *   shared by the lanes; the rest go to every lane's SimulationPool unchanged. `workerUrl` is this fork's
+   *   SimulationPool test seam (upstream hardcodes the real simulation worker).
+   */
+  constructor({ data, lanes = 1, totalWorkers = 1, maxQueue = 256, timeoutMs = 120000, workerUrl } = {}) {
+    if (!Number.isInteger(lanes) || lanes < 1 || lanes > 32) throw new RangeError('room worker lanes must be 1..32');
+    if (!Number.isInteger(totalWorkers) || totalWorkers < lanes || totalWorkers > 32) {
+      throw new RangeError('room worker total must be between lanes and 32');
     }
-    this.pool = new SimulationPool({ data, size: totalWorkers, maxQueue, timeoutMs, ...(workerUrl ? { workerUrl } : {}) });
-    /** The rooms (or standalone match keys) currently holding work here — bookkeeping for stats(), never a scheduling hint. */
-    this.rooms = new Set();
+    /** @type {Lane[]} */
+    this.lanes = Array.from({ length: lanes }, (_, i) => ({
+      id: i,
+      rooms: new Set(),
+      pool: new SimulationPool({
+        data,
+        size: Math.max(1, Math.ceil((totalWorkers - i) / lanes)),
+        maxQueue,
+        timeoutMs,
+        workerUrl,
+      }),
+    }));
+    /** @type {Map<string, number>} */
+    this.assignments = new Map();
     this.closed = false;
   }
 
-  /**
-   * Note that a room is using this pool. It returns the one pool every room submits into; the key is kept for stats()
-   * only, because the pool schedules tasks by priority and arrival, not by room.
-   */
+  /** Pin a room or standalone match key to the least-loaded lane. @returns {import('./pool.js').SimulationPool} */
   assign(key) {
-    this.rooms.add(String(key || ''));
-    return this.pool;
+    const id = String(key || '');
+    const existing = this.assignments.get(id);
+    if (existing != null) return this.lanes[existing].pool;
+    const lane = this.lanes.reduce((best, current) => current.rooms.size < best.rooms.size ? current : best, this.lanes[0]);
+    lane.rooms.add(id);
+    this.assignments.set(id, lane.id);
+    return lane.pool;
   }
 
-  /** Submit through the same object startServer passes to Match. */
-  submit(type, payload, options) { return this.pool.submit(type, payload, options); }
+  /**
+   * Submit through the lane the key is pinned to. A key here is what makes the pinning real: without one the task goes
+   * to the default lane and nothing is recorded, so a caller that only submits never grows the room count.
+   */
+  submit(type, payload, { priority = 0, onProgress = null, key = null } = {}) {
+    return (key ? this.assign(key) : this.lanes[0].pool).submit(type, payload, { priority, onProgress });
+  }
 
-  /** How many keys a room's tasks can be told apart by: the pool itself does not. */
-  has(key) { return this.rooms.has(String(key || '')); }
+  /** Is this key pinned to a lane? */
+  has(key) {
+    return this.assignments.has(String(key || ''));
+  }
 
+  /** Forget a room's lane so its next match may be placed again (release is a no-op for unknown keys). */
   release(key) {
-    this.rooms.delete(String(key || ''));
+    const id = String(key || '');
+    const laneId = this.assignments.get(id);
+    if (laneId == null) return;
+    this.assignments.delete(id);
+    this.lanes[laneId]?.rooms.delete(id);
   }
 
+  /** Aggregate pool stats (`kind: 'room-lanes'`) plus one entry per lane, for /healthz `workers`. */
   stats() {
-    return { kind: 'room-pool', ...this.pool.stats(), rooms: this.rooms.size };
+    const lanes = this.lanes.map((lane) => ({ id: lane.id, rooms: lane.rooms.size, ...lane.pool.stats() }));
+    const sum = (field) => lanes.reduce((n, item) => n + (Number(item[field]) || 0), 0);
+    return {
+      kind: 'room-lanes',
+      rooms: this.assignments.size,
+      size: sum('size'), threads: sum('threads'), busy: sum('busy'), queued: sum('queued'),
+      maxQueue: sum('maxQueue'), timeoutMs: Math.max(...lanes.map((s) => s.timeoutMs)),
+      submitted: sum('submitted'), completed: sum('completed'), failed: sum('failed'),
+      cancelled: sum('cancelled'), rejected: sum('rejected'), queueMs: sum('queueMs'), computeMs: sum('computeMs'),
+      avgComputeMs: sum('completed') ? sum('computeMs') / sum('completed') : 0,
+      memory: lanes.flatMap((lane) => lane.memory || []),
+      lanes,
+    };
   }
 
+  /** Stop every lane's threads. */
   async close() {
     if (this.closed) return;
     this.closed = true;
-    await this.pool.close();
+    await Promise.all(this.lanes.map((lane) => lane.pool.close()));
   }
 }
 
 /**
- * The pool a server should run with, or null when the workers are switched off: the callers then keep doing the work on
- * the main thread, exactly as before the pool existed. Opt-in, like the pool itself — an unset SP_WORKERS starts nothing.
- * @param {{ data?: object, env?: NodeJS.ProcessEnv, workerUrl?: URL }} [opts]
- * @returns {RoomWorkerPool | null}
+ * Build the room pool from the environment. `SP_WORKERS` is the total thread budget the lanes share — the fork's
+ * CPU-derived count when it is unset, so a pool is built unless the operator says the explicit 0. `SP_ROOM_WORKERS`
+ * is the number of lanes and stays 1 unless the operator opts in, which is the single shared queue upstream uses.
  */
-export function createRoomWorkerPool({ data, env = process.env, workerUrl } = {}) {
+export function createRoomWorkerPool({ data, env = process.env, workerUrl, lanes = null } = {}) {
   const { size, maxQueue, timeoutMs } = workerSettings(env);
   if (size === 0) return null;
-  return new RoomWorkerPool({ data, totalWorkers: size, maxQueue, timeoutMs, workerUrl });
+  const laneCount = Math.min(Number.isInteger(lanes) ? lanes : integer(env.SP_ROOM_WORKERS, 1, 1, 32), size);
+  return new RoomWorkerPool({ data, lanes: laneCount, totalWorkers: size, maxQueue, timeoutMs,
+    ...(workerUrl ? { workerUrl } : {}) });
 }

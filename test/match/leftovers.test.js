@@ -146,10 +146,11 @@ test('protocol: g.pause { on } and g.equip replaceUid (optional)', () => {
   assert.notEqual(validateC2S({ t: 'g.equip', itemUid: 1, targetUid: 2, replaceUid: 0 }), null);
 });
 
-test('solo pause: co-op never pauses; solo only while a battle runs; m.public.paused', () => {
+test('the pause is a request: co-op opens a vote, solo is the one-voter case; m.public.paused', () => {
   const co = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans: 2, seed: 5150, fake: true, clientCombat: true, clients: false, instant: false }).start();
   assert.ok(co.drive(() => co.m.phase === PHASE.COMBAT));
-  assert.equal(co.m.handle('p_0', { t: 'g.pause', on: true }).error, ERR.WRONG_PHASE);
+  assert.deepEqual(co.m.handle('p_0', { t: 'g.pause', on: true }), { ok: true }, 'the request opens a vote');
+  assert.equal(co.m.paused, false, 'nothing is frozen before the room agrees');
   assert.equal(pub(co).paused, false);
   co.m.dispose();
 
@@ -157,8 +158,8 @@ test('solo pause: co-op never pauses; solo only while a battle runs; m.public.pa
   const m = h.m;
   assert.equal(pub(h).paused, false, 'always present');
   assert.ok(h.drive(() => m.phase === PHASE.PREP, { ready: false }));
-  assert.equal(m.handle('p_0', { t: 'g.pause', on: true }).error, ERR.WRONG_PHASE, 'prep is untimed in solo: nothing to pause');
-  assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: false }), { ok: true });
+  assert.equal(m.handle('p_0', { t: 'g.pause', on: true }).error, ERR.WRONG_PHASE, 'a control needs a running battle');
+  assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: false }), { ok: true }, 'a resume with nothing paused is a no-op');
   assert.equal(m.paused, false);
   m.dispose();
 });
@@ -173,6 +174,7 @@ test('solo pause: the field clock, the result deadline and the HUD countdown sta
   const due0 = f.startAt + Math.round((f.spec.timeLimit / m.gameSpeed) * 1000) + RESULT_GRACE_MS;
   h.sched.advance(2000);
   assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: true }), { ok: true });
+  h.sched.advance(300); // the per-player request guard (matchControl.js)
   assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: true }), { ok: true }, 'idempotent');
   assert.equal(pub(h).paused, true);
   const el = m._fieldElapsed(f);
@@ -187,13 +189,13 @@ test('solo pause: the field clock, the result deadline and the HUD countdown sta
   assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: false }), { ok: true });
   const p = pub(h);
   assert.equal(p.paused, false);
-  assert.equal(p.deadline, deadline0 + PAUSE, 'the countdown resumes where it stopped');
+  assert.equal(p.deadline, deadline0 + PAUSE + 300, 'the countdown resumes where it stopped (the 300 ms of the guard window counts too)');
   assert.ok(Math.abs(m._fieldElapsed(f) - el) < 1e-9);
-  h.sched.advance(due0 + PAUSE - h.sched.now() - 50);
+  h.sched.advance(due0 + PAUSE + 300 - h.sched.now() - 50);
   assert.equal(f.mode, 'client', 'the result deadline moved by the pause');
   h.sched.advance(100);
   assert.equal(f.mode, 'server', 'then the silent client is taken over');
-  assert.equal(m.pausedMs, PAUSE);
+  assert.equal(m.pausedMs, PAUSE + 300);
   assert.equal(m.errorCount, 0);
   m.dispose();
 });

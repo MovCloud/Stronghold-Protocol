@@ -1,6 +1,7 @@
 // ui/gameLogic/settings.js — settings defaults and sanitising. Re-exported from ../gameLogic.js.
 
 import { VOICE_LANGS, sanitizeVoiceOverrides } from '../../voicePrefs.js';
+import { sanitizeBgmChoice } from '../../bgmChoice.js';
 export { VOICE_LANGS } from '../../voicePrefs.js';
 
 import { clamp, isObj } from './shared.js';
@@ -10,10 +11,11 @@ import { DEFAULT_HOTKEYS, sanitizeHotkeys } from './shortcuts.js';
 // ---- settings ------------------------------------------------------------------------------------------------------
 
 /**
- * The operator voice dubs (settings 语音语言): 'cn' 中文 (`audio.voice`, the default), 'jp' 日本語 (`audio.voiceJp`),
- * 'en' English (`audio.voiceEn`) and 'kr' 한국어 (`audio.voiceKr`), each falling back to the Chinese line it lacks
- * (public/js/audio.js voiceLine). Not tied to the interface language. `voiceNative` is the 本土语言 switch: an
- * operator who has `audio.voiceNative` speaks that dub unless their own override says otherwise.
+ * The listener's voice preference, mirrored from the shared language control (ui/languageSettings.js): 'cn' 中文
+ * (`audio.voice`, the default), 'jp' 日本語 (`audio.voiceJp`), 'en' English (`audio.voiceEn`) and 'kr' 한국어
+ * (`audio.voiceKr`), each falling back to the Chinese line it lacks (public/js/audio.js voiceLine). Not tied to the
+ * interface language. `voiceNative` is the 本土语言 switch: an operator who has `audio.voiceNative` speaks that dub
+ * unless their own override says otherwise.
  */
 
 
@@ -26,8 +28,10 @@ export const TEXT_SIZES = Object.freeze(['sm', 'md', 'lg', 'xl']);
 
 /** keys: the in-match shortcuts' key map (ui/gameLogic/shortcuts.js; settings → 快捷键). voiceLang: VOICE_LANGS.
  *  voiceNative: the 本土语言 switch (default off). textSize: TEXT_SIZES (css/theme.css `--t`, applied by ui/settings.js
- *  applyTextSize). ammoEnergyCount: 设置「显示弹药与能量数量」 — the rounds left / the magazine under an ammo skill's
- *  bar and a 秘术师's stored attack energies as stored/cap (render/units.js). One switch for the old 「弹药数量」
+ *  applyTextSize). 界面大小 is the global `--sp-ui` (ui/screenFit.js applyFit, `sp.pref.screenFit.ui`) and is not a
+ *  stored setting here.
+ *  ammoEnergyCount: 设置「显示弹药与能量
+ *  数量」 — the rounds left / the magazine under an ammo skill's bar and a 秘术师's stored attack energies as stored/cap (render/units.js). One switch for the old 「弹药数量」
  *  (`ammoCount`, PR #552) and 「秘术师能量」 (`mysticEnergy`, PR #636); off by default: the official HUD has neither
  *  number. A profile that still has either old key `true` migrates to on; those keys are not written back.
  *  [ASSUMED] a stored boolean `ammoEnergyCount` wins over the old keys, so turning the merged switch off stays off.
@@ -38,14 +42,27 @@ export const TEXT_SIZES = Object.freeze(['sm', 'md', 'lg', 'xl']);
  *  (GitHub #602, PR #646). Default on (the 0.3.0 behaviour). Off: the pickup changes neither the shop's fold nor the
  *  camera. [ASSUMED] the label; only an explicit false turns it off (a missing or junk value stays on).
  *  officialFx: 设置「官方特效」 (0.3.0, render/vfx): 'auto' (完整 on a desktop, 精简 on a touch device — render/vfx/tier.js),
- *  'off', 'lite' (精简), 'full' (完整); only shown when effects were extracted from the local client.
- *  otherSkins: 设置「显示其他玩家的皮肤」 (docs/SKINS.md), ON by default — draw the appearance another player chose instead
- *  of the operator's own model. A pure client preference (never sent): off, only this player's own pieces wear a skin.
+ *  'off', 'lite' (精简), 'full' (完整); only shown when effects were extracted from the local client. The default is the
+ *  mainline's 'auto' (the merged build follows the mainline baseline for shared keys); a fork that wants 完整 on every
+ *  device carries its own default in its plugin.
+ *  bgmPrep / bgmCombat: the 休整期 / 作战 BGM picked in the lobby's ♫ panel (bgmChoice.js; 'official' = the mode's own
+ *  music).
+ *  otherSkins: 设置「显示其他玩家的皮肤」 (ported from upstream 0.3.1 onto this fork's catalogue skins, shared/skins.js),
+ *  ON by default — draw the appearance another player chose instead of the operator's own model. A pure client
+ *  preference (never sent): off, only this player's own pieces wear a skin.
+ *  boardView: 设置「棋盘样式」 — '3d' (官方贴图: the three.js official board scene, the owner-verified default) or
+ *  '2d' (3D: the procedural metal tiles on the same camera, the mobile performance option; the owner does not want a
+ *  flat / reframed view). A pure client preference (never
+ *  sent); both styles draw the skeletal models (a unit whose model is missing falls back to the avatar diamond).
+ *  The removed 'auto' / 'board' (the unofficial PNG board art) migrate to '3d'. A URL `?board=`
+ *  only fills in when the caller passes no setting at all (render/app/view.js boardPreference).
  */
-export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceNative: false, voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, officialDamageNumbers: false, ammoEnergyCount: false, fullscreenWakeLock: false, bondTimers: false, combatMetrics: false, prepDeployFold: true, quality: 'high', officialFx: 'auto', otherSkins: true, textSize: 'sm', keys: DEFAULT_HOTKEYS });
+export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceNative: false, voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, officialDamageNumbers: false, ammoEnergyCount: false, fullscreenWakeLock: false, bondTimers: false, combatMetrics: false, prepDeployFold: true, quality: 'high', officialFx: 'auto', otherSkins: true, textSize: 'sm', keys: DEFAULT_HOTKEYS, bgmPrep: 'official', bgmCombat: 'official', boardView: '3d' });
 const QUALITIES = ['high', 'medium', 'low'];
 /** The values of 设置「官方特效」 (render/vfx/tier.js OFFICIAL_FX). Display order in the dialog is low / medium / high. */
 export const OFFICIAL_FX_MODES = Object.freeze(['auto', 'off', 'lite', 'full']);
+/** The values of 设置「棋盘样式」 (boardView). Display order in the dialog is 官方贴图 / 3D. */
+export const BOARD_VIEWS = Object.freeze(['3d', '2d']);
 
 /**
  * The merged 显示弹药与能量数量 switch. A stored boolean wins. Otherwise on when either retired key was the boolean
@@ -62,7 +79,7 @@ function ammoEnergyCountOf(r) {
  * Sanitize persisted settings. Retired keys `ammoCount` and `mysticEnergy` are read here and never returned.
  * @param {any} raw
  * @returns {{ bgm: number, sfx: number, voice: number, voiceLang: 'cn'|'jp'|'en'|'kr', voiceNative: boolean, voiceOverrides: Record<string, string>, muted: boolean, damageNumbers: boolean, officialDamageNumbers: boolean, ammoEnergyCount: boolean, fullscreenWakeLock: boolean, bondTimers: boolean, combatMetrics: boolean, prepDeployFold: boolean, quality: 'high'|'medium'|'low', officialFx: 'auto'|'off'|'lite'|'full', otherSkins: boolean,
- *   textSize: 'sm'|'md'|'lg'|'xl', keys: Record<'buy'|'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready', string> }}
+ *   textSize: 'sm'|'md'|'lg'|'xl', keys: Record<'buy'|'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready', string>, bgmPrep: string, bgmCombat: string, boardView: '3d'|'2d' }}
  */
 export function sanitizeSettings(raw) {
   const r = isObj(raw) ? raw : {};
@@ -87,5 +104,8 @@ export function sanitizeSettings(raw) {
     otherSkins: r.otherSkins !== false,
     textSize: TEXT_SIZES.includes(r.textSize) ? r.textSize : DEFAULT_SETTINGS.textSize,
     keys: sanitizeHotkeys(r.keys),
+    bgmPrep: sanitizeBgmChoice(r.bgmPrep),
+    bgmCombat: sanitizeBgmChoice(r.bgmCombat),
+    boardView: r.boardView === '2d' ? '2d' : '3d',
   };
 }

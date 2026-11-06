@@ -68,9 +68,10 @@ describe('作战统计 on short touch screens: the HUD proportion', () => {
   });
 
   test('desktop and tablet keep the ported sizes', () => {
-    assert.match(CSS, /\.combat-metrics \{\n(?:.*\n)*?\s*width: min\(max\(5\.2rem, 340px\)/,
+    // the base rule is one line in this fork's game.css, so match inside the block instead of line by line
+    assert.match(CSS, /\.combat-metrics \{[^}]*width: min\(max\(5\.2rem, 340px\)/,
       'the base card is still 340 px');
-    assert.match(CSS, /\.combat-metrics \{\n(?:.*\n)*?\s*font-size: max\(calc\(\.14 \* var\(--t\)\), 12px\);/,
+    assert.match(CSS, /\.combat-metrics \{[^}]*font-size: max\(calc\(\.14 \* var\(--t\)\), 12px\);/,
       'the base body text is still 12 px');
     assert.match(CSS, /\.combat-metrics__row > \.uthumb \{ width: max\(\.42rem, 30px\); height: max\(\.42rem, 30px\); \}/,
       'the base thumb is still 30 px');

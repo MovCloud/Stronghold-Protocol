@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // tools/balance.mjs — difficulty MEASUREMENT: how a COMPETENT player's board fares against the official waves of every
-// round (docs/BALANCE.md has the method, the curves' sources and the tables). Since research 08 the game uses the
+// round (docs/development/BALANCE.md has the method, the curves' sources and the tables). Since research 08 the game uses the
 // official numbers only (waves, counts, stat table, leader pool); this tool reports, it no longer tunes anything.
 //
 // For every mode (solo / multi) × difficulty × round r it builds representative boards for round r, samples many
 // matches (stage, factions, bans, boss and lineups all vary with the seed), simulates the real wave of that round with
 // the real Battle and FULL content (kits, talents, bonds incl. layers, IN_BATTLE garrisons, items, bands, tokens) and
 // reports the leak distribution and clear time. Boss rounds (R14 / solo 标准 R9) and the Hidden Core (R15) run the
-// real Final Assault fields (pairs, `_s` template for a lone player, shared boss HP pool = bloodPoint × the players alive
-// at the fight's start (solo × 1; DESIGN §25.13.4) — GameData.bossPoolHp —, team LP, overtime drain) and report the pool damage by 150 s, the kill time and the team LP spent.
+// real Final Assault fields (pairs, `_s` template for a lone player, shared boss HP pool = bloodPoint × alive / 4
+// (co-op with the configured aliveScaling default true; count AI, not spectators, once at each boss start; explicit
+// false keeps bloodPoint; solo ×0.25 [ASSUMED]) — GameData.bossPoolHp —, team LP, overtime drain) and report the pool damage by 150 s, the kill time and the team LP spent.
 //
 // The competent board of round r (curves below, profile-scaled): shop level, deployed units, elites (精锐), equipment,
 // 2–3 active bonds built around a core bond (3 members early, 6 from R11 when the pool allows it) and the layers those
@@ -34,7 +35,7 @@
 //   --profile         curve multiplier for elites, items and layers (weak 0.6, competent 1, strong 1.4, or a number;
 //                     a bond's layers stop at BOND_LAYER_CAP, 999)
 //   --tuning off      ignore data/tuning.json (it only holds title rules now: no effect on the numbers)
-//   --legacy-time     read the combat limits as game seconds (the reading before the fix of docs/BALANCE.md §2.1)
+//   --legacy-time     read the combat limits as game seconds (the reading before the fix of docs/development/BALANCE.md §2.1)
 //   --boss-lp N       team LP per alive player entering the Final Assault (default 15)
 //   --bots N          also run N bot matches per mode × difficulty (tools/matchrun.mjs logic, 4 AI in multi, the
 //                     match's default bot rehearsal) and print rounds survived / wins
@@ -61,7 +62,7 @@ import { TICK } from '../server/sim/constants.js';
 export const DIFFS = ['FUNNY', 'NORMAL', 'HARD', 'ABYSS'];
 export const DIFF_NAMES = { FUNNY: '标准', NORMAL: '险境', HARD: '绝境', ABYSS: '终极' };
 
-// ---- the competent-player model (index = round; see the header and docs/BALANCE.md §1.1) --------------------------
+// ---- the competent-player model (index = round; see the header and docs/development/BALANCE.md §1.1) --------------------------
 export const CURVES = Object.freeze({
   //            R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
   level:       [1, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 6, 6, 6, 6],
@@ -177,7 +178,7 @@ export function planBoard(m, r, rng, { profile = 1, spawns = null } = {}) {
   let core = null;
   const coreTarget = Math.min(n, curve('coreCount', r));
   if (coreTarget > 0) {
-    const cores = gd.bondIds.filter((b) => gd.bond(b).isCore && !gd.modeInactiveBonds.has(b) && members(b).length >= 3);
+    const cores = gd.bondIds.filter((b) => gd.bond(b).isCore && members(b).length >= 3);
     core = cores.length ? rng.weighted(cores, (b) => members(b).length) : null;
     if (core) {
       planned.add(core);
@@ -188,7 +189,7 @@ export function planBoard(m, r, rng, { profile = 1, spawns = null } = {}) {
   // 2. add-on bonds (their first threshold; the second one late when it exists)
   const addons = [];
   for (let k = 0; k < curve('addons', r); k++) {
-    const cands = BATTLE_ADDONS.filter((b) => gd.bond(b) && !gd.modeInactiveBonds.has(b) && !addons.includes(b) && members(b).length >= 2);
+    const cands = BATTLE_ADDONS.filter((b) => gd.bond(b) && !addons.includes(b) && members(b).length >= 2);
     if (!cands.length) break;
     const b = rng.weighted(cands, (x) => 1 + 3 * count(x));
     addons.push(b);
@@ -378,7 +379,7 @@ export function runBoss({ data, mode, difficulty, round, seed, profile = 1, boss
     }
   }
   const alive = m.alivePlayers();
-  // the match's own pool rule (bloodPoint × the players alive, solo × 1 — DESIGN §25.13.4)
+  // The match's pool rule (co-op × alive / 4 at this boss start by default; explicit false: full; solo ×0.25).
   const pool = new SharedBossPool(bossPoolHp(gd, id, alive.length));
   let teamLp = alive.reduce((s, p) => s + p.lp, 0);
   const teamLp0 = teamLp;
@@ -584,7 +585,7 @@ async function main() {
   const full = getData({ log: QUIET_LOG });
   ENEMY_NAME = (k) => (full.enemies && full.enemies[k] ? full.enemies[k].name : k);
   let data = opt.tuning === 'off' ? withoutTuning(full) : full;
-  // --legacy-time: combat limits read as game seconds (the pre-fix reading, docs/BALANCE.md §2.1)
+  // --legacy-time: combat limits read as game seconds (the pre-fix reading, docs/development/BALANCE.md §2.1)
   if (opt['legacy-time']) data = Object.freeze({ ...data, config: { ...data.config, combatTimeScale: 1 } });
   const modes = opt.mode === 'all' ? ['solo', 'multi'] : [opt.mode === 'solo' ? 'solo' : 'multi'];
   const dArg = String(opt.difficulty || 'NORMAL').toUpperCase();

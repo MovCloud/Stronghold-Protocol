@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_3_02-ayer.js — 断崖 (char_294_ayer) kit, tier 3.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-3 kits: ../shared/tier3.js; kit contract and rules: ../README.md.
 
 import {
@@ -52,7 +53,7 @@ export default {
         },
       }),
       talents: [{ install(battle, unit) {
-        aura(battle, unit, { key: 'talent:ayer_aspd', side: 'ally', tiles: () => gridKeys(tGrid, unit), filter: (a) => a.kind === 'op', mods: { aspd: num(t0.attack_speed) } });
+        aura(battle, unit, { key: 'talent:ayer_aspd', side: 'ally', tiles: () => gridKeys(tGrid, unit), filter: (a) => nativeOperator(a), mods: { aspd: num(t0.attack_speed) } });
       } }],
     };
     if (skillGrid) kit.skill.targeting = { rangeGrid: skillGrid };

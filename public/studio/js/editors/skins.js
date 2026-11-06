@@ -2,7 +2,7 @@ import { useState } from '../../../vendor/hooks.module.js';
 import { html, Button, Modal } from '../../../js/ui/components.js';
 import { t } from '../../../../shared/i18n.js';
 import { availableSkins } from '../../../js/ui/skins.js';
-import { SkinPreview } from '../../../js/ui/skinPicker.js';
+import { SkinPreview } from '../../../js/ui/pluginSkinPicker.js';
 import { presentationOptions, skinTarget } from '../presentation.js';
 import { PLUGIN_SUFFIX } from '../preview/layers.js';
 import { slotLabel } from '../labels.js';

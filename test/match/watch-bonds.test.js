@@ -1,6 +1,6 @@
 // The data behind the watched player's bond strip (DESIGN §20.15, user report after playtest #6): what the server
 // sends of every player's bonds and what the browser's battle runner adds live.
-//   * m.public players[].bonds = every bond with members, layers or an active tier — the player's own m.private list
+//   * m.public players[].bonds = every bond with members or an active tier — the player's own m.private list
 //     without the per-bond extras the client reads from bonds.json (thresholds / countsHand); nothing else (but `harmony`
 //     on an entry whose count holds 调和's +1, DESIGN §21.26: test/match/feedback1-gaps.test.js) — and nothing at all for
 //     an eliminated player (nobody can watch them).
@@ -20,7 +20,7 @@ import { createBattleRunner } from '../../public/js/battle/runner.js';
 import { createStore, initialState } from '../../public/js/store.js';
 import * as specMod from '../../server/sim/spec.js';
 import { DataSource } from '../../server/sim/simdata.js';
-import { DATA, makeMatch, checkInvariants, legalTileFor } from './harness.js';
+import { DATA, makeMatch, checkInvariants, legalTileFor, give } from './harness.js';
 import { FakeBattle } from './fakeBattle.js';
 import { ownerBoard } from '../../public/js/ui/watchBonds.js';
 import { bondMembers, diyGetter, diyRecordFor, memberHeadCount } from '../../public/js/ui/gameLogic.js';
@@ -28,15 +28,41 @@ import { bondMembers, diyGetter, diyRecordFor, memberHeadCount } from '../../pub
 const row = (h, pid) => h.m.publicView().players.find((p) => p.playerId === pid);
 const entry = (list, id) => (list || []).find((b) => b.bondId === id) || null;
 
-test('m.public players[].bonds: every bond with members, layers or a tier — the m.private list minus thresholds / countsHand', () => {
+/** Field a chess carrying a member of a bond (the strip lists bonds with members; layers alone stay off it). `give`
+ *  puts the piece on the board directly — no acquire talent may add layers and skew the gains under test. */
+function fieldCarrier(h, pid, chessId) {
+  const ps = h.ps(pid);
+  const t = legalTileFor(h.m, ps, chessId);
+  assert.ok(t, `a legal tile for ${chessId}`);
+  give(h.m, ps, chessId, 'board', t);
+  ps.recompute();
+}
+
+/** Record 华法琳-style starting-layer bonuses (onLayers reason 'band'): a fielded member lets the band add layers. */
+function bandStartingLayers(h) {
+  const got = new Map();
+  const dispatch = h.m.dispatch.bind(h.m);
+  h.m.dispatch = (ps, hook, ev, opts) => {
+    if (hook === 'onLayers' && ev.reason === 'band') {
+      const k = `${ps.playerId}:${ev.bondId}`;
+      got.set(k, (got.get(k) || 0) + (ev.to - ev.from));
+    }
+    return dispatch(ps, hook, ev, opts);
+  };
+  return (pid, bondId) => got.get(`${pid}:${bondId}`) || 0;
+}
+
+test('m.public players[].bonds: every bond with members or a tier — the m.private list minus thresholds / countsHand', () => {
   const h = makeMatch({ mode: 'coop', humans: 2, seed: 91, fake: true }).start();
   h.toPrep(1);
   const ps = h.ps('p_1');
-  ps.layers.sargonShip = 7; // layers, no member on the board: the own strip shows it (grey) — so does the teammate's
+  fieldCarrier(h, 'p_1', 'chess_char_1_01_a'); // lateranoShip / swiftShip members
+  ps.layers.sargonShip = 7; // layers, no member: the strip drops it (owner report 2026-10-25: selling the only member left a 0/3 disc)
   ps.recompute();
   const pub = row(h, 'p_1').bonds;
   const priv = ps.privateView().bonds;
-  assert.deepEqual(entry(pub, 'sargonShip'), { bondId: 'sargonShip', count: 0, active: false, tier: 0, layers: 7 });
+  assert.equal(entry(pub, 'sargonShip'), null, 'layers alone do not keep the disc');
+  assert.ok(entry(pub, 'lateranoShip'), 'a member does');
   assert.deepEqual(pub.map((b) => b.bondId), priv.map((b) => b.bondId), 'the same bonds, the same order');
   for (const b of pub) assert.deepEqual(Object.keys(b).sort(), ['active', 'bondId', 'count', 'layers', 'tier'], `${b.bondId}: only what the strip needs`);
   assert.ok(priv.every((b) => Array.isArray(b.thresholds) && typeof b.countsHand === 'boolean'), 'm.private keeps its extras');
@@ -49,7 +75,14 @@ test('m.public players[].bonds of an eliminated player: [] (nobody can watch the
   const ps = h.ps('p_1');
   ps.layers.sargonShip = 7;
   ps.recompute();
-  assert.ok(entry(row(h, 'p_1').bonds, 'sargonShip'), 'alive: the layers-only bond is sent');
+  assert.equal(entry(row(h, 'p_1').bonds, 'sargonShip'), null, 'alive: layers alone are not sent either');
+  const a = h.ps('p_0');
+  fieldCarrier(h, 'p_0', 'chess_char_1_03_a'); // a 炎 member: the list needs one
+  a.layers.yanShip = 5;
+  a.recompute();
+  const own = entry(row(h, 'p_0').bonds, 'yanShip');
+  assert.equal(own?.count, 1, 'a living teammate keeps the list');
+  assert.equal(own?.layers, 5);
   ps.eliminate(1);
   ps.layers.yanShip = 40; // layers survive the elimination (computeBonds still lists them) …
   ps.pendingLayerGains = { sargonShip: 3 };
@@ -57,10 +90,6 @@ test('m.public players[].bonds of an eliminated player: [] (nobody can watch the
   assert.ok(ps.bondsView().sargonShip.layers > 0, '… the state still has them');
   assert.deepEqual(row(h, 'p_1').bonds, [], 'm.public: nothing for an eliminated player');
   assert.equal(row(h, 'p_1').alive, false);
-  const a = h.ps('p_0');
-  a.layers.yanShip = 5;
-  a.recompute();
-  assert.equal(entry(row(h, 'p_0').bonds, 'yanShip')?.layers, 5, 'a living teammate keeps the list');
   h.m.dispose();
 });
 
@@ -78,30 +107,34 @@ test('bondsWithGains: adds a result\'s layerGains like settle() (floored, ≤ 99
   assert.equal(bondsWithGains({ yanShip: { ...bonds.yanShip, layers: 999 } }, { yanShip: 5 }).yanShip.layers, 999, 'at the cap: nothing');
 });
 
-test('after COMBAT the views carry the battle\'s gains until SETTLE makes them persistent (once); the state is untouched meanwhile', () => {
+test('COMBAT results reconcile into persistent layers before SETTLE; views and settlement never double the gains', () => {
   const h = makeMatch({
     mode: 'coop', humans: 2, seed: 92, fake: true,
     script: (b) => (b.round === 1 ? { layerGains: { p_0: { yanShip: 50 }, p_1: { sargonShip: 12 } } } : {}),
   }).start();
   const m = h.m;
+  const band = bandStartingLayers(h); // 华法琳 starts the fight with layers: a fielded member lets the band add 2
   h.toPrep(1);
   const [a, b] = [h.ps('p_0'), h.ps('p_1')];
+  fieldCarrier(h, 'p_0', 'chess_char_1_03_a'); // a 炎 member, a 萨尔贡 member: the strip lists bonds with members
+  fieldCarrier(h, 'p_1', 'chess_char_1_12_a');
   a.layers.yanShip = 980;
   a.recompute();
   // the COMBAT_END pause: every result is in, nothing settled yet
   h.drive(() => m.phase === PHASE.COMBAT && m.lastResults.size === 2);
   assert.equal(m.phase, PHASE.COMBAT);
-  assert.deepEqual([a.layers.yanShip, b.layers.sargonShip || 0], [980, 0], 'nothing persistent yet');
-  assert.equal(a.bonds.yanShip.layers, 980, 'the computed state is untouched (rules read it)');
+  const sargon = band('p_1', 'sargonShip') + 12; // the band's start bonus + the combat's gain
+  assert.deepEqual([a.layers.yanShip, b.layers.sargonShip || 0], [BOND_LAYER_CAP, sargon], 'both counts already retained');
+  assert.equal(a.bonds.yanShip.layers, BOND_LAYER_CAP, 'rules and views read the same live count');
   assert.equal(entry(a.privateView().bonds, 'yanShip').layers, BOND_LAYER_CAP, 'm.private: 980 + 50 shows 999');
   assert.equal(entry(row(h, 'p_0').bonds, 'yanShip').layers, BOND_LAYER_CAP, 'm.public: the same');
-  assert.equal(entry(row(h, 'p_1').bonds, 'sargonShip').layers, 12, 'a teammate\'s gain shows in his public row');
+  assert.equal(entry(row(h, 'p_1').bonds, 'sargonShip').layers, sargon, 'a teammate\'s gain shows in his public row');
   checkInvariants(m);
   h.drive(() => m.phase === PHASE.SETTLE || m.phase === PHASE.PREP);
-  assert.deepEqual([a.layers.yanShip, b.layers.sargonShip], [BOND_LAYER_CAP, 12], 'settled once');
+  assert.deepEqual([a.layers.yanShip, b.layers.sargonShip], [BOND_LAYER_CAP, sargon], 'settled once');
   assert.deepEqual([a.pendingLayerGains, b.pendingLayerGains], [null, null]);
-  assert.equal(entry(row(h, 'p_1').bonds, 'sargonShip').layers, 12, 'not added twice');
-  assert.equal(entry(b.privateView().bonds, 'sargonShip').layers, 12);
+  assert.equal(entry(row(h, 'p_1').bonds, 'sargonShip').layers, sargon, 'not added twice');
+  assert.equal(entry(b.privateView().bonds, 'sargonShip').layers, sargon);
   checkInvariants(m);
   m.dispose();
 });
@@ -113,15 +146,18 @@ test('the 联防 phase keeps showing the gains (a teammate watching the helper s
     script: (b) => (b.round === 1 && b.kind === 'normal' ? { layerGains: { p_0: { yanShip: 9 } }, leaks: { p_1: 2 } } : {}),
   }).start();
   const m = h.m;
+  const band = bandStartingLayers(h); // the band's start bonus (the carrier enables it)
   h.toPrep(1);
+  fieldCarrier(h, 'p_0', 'chess_char_1_03_a'); // a 炎 member: the gained layers stay on the strip
   h.drive(() => m.phase === PHASE.UNITE || m.phase === PHASE.SETTLE);
+  const yan = band('p_0', 'yanShip') + 9;
   assert.equal(m.phase, PHASE.UNITE, 'p_1 leaked, p_0 was perfect: 联防');
-  assert.equal(h.ps('p_0').layers.yanShip || 0, 0, 'not settled during 联防');
-  assert.equal(entry(row(h, 'p_0').bonds, 'yanShip').layers, 9, 'the helper\'s public row shows his battle\'s count');
-  assert.equal(entry(h.ps('p_0').privateView().bonds, 'yanShip').layers, 9, 'and his own strip');
+  assert.equal(h.ps('p_0').layers.yanShip, yan, 'retained before 联防, not merely displayed');
+  assert.equal(entry(row(h, 'p_0').bonds, 'yanShip').layers, yan, 'the helper\'s public row shows his battle\'s count');
+  assert.equal(entry(h.ps('p_0').privateView().bonds, 'yanShip').layers, yan, 'and his own strip');
   h.drive(() => m.phase === PHASE.PREP && m.round === 2);
-  assert.equal(h.ps('p_0').layers.yanShip, 9);
-  assert.equal(entry(row(h, 'p_0').bonds, 'yanShip').layers, 9);
+  assert.equal(h.ps('p_0').layers.yanShip, yan);
+  assert.equal(entry(row(h, 'p_0').bonds, 'yanShip').layers, yan);
   m.dispose();
 });
 
@@ -135,6 +171,8 @@ test('the 联防 field fights with the layers the helper\'s own combat reached (
   const m = h.m;
   h.toPrep(1);
   const a = h.ps('p_0');
+  fieldCarrier(h, 'p_0', 'chess_char_1_05_a'); // 不屈 / 炎 members: the strip shows the reached layers
+  fieldCarrier(h, 'p_0', 'chess_char_1_03_a');
   a.layers.indomShip = 230;
   a.layers.yanShip = 995;
   a.recompute();
@@ -147,7 +185,7 @@ test('the 联防 field fights with the layers the helper\'s own combat reached (
   assert.equal(u.bonds.indomShip.layers, 250, '联防: 230 + the 20 reached in the own combat');
   assert.equal(u.bonds.yanShip.layers, BOND_LAYER_CAP, '995 + 9 is capped at 999, as the settlement caps it');
   assert.equal(u.bonds.indomShip.layers, entry(a.privateView().bonds, 'indomShip').layers, 'the count the strip shows');
-  assert.deepEqual([a.layers.indomShip, a.bonds.indomShip.layers], [230, 230], 'nothing persistent yet');
+  assert.deepEqual([a.layers.indomShip, a.bonds.indomShip.layers], [250, 250], 'persistent and computed states already agree');
   h.drive(() => m.phase === PHASE.COMBAT && m.round === 2);
   assert.deepEqual([a.layers.indomShip, a.layers.yanShip], [250, BOND_LAYER_CAP], 'settled once (not 270)');
   assert.equal(input('normal', 2).bonds.indomShip.layers, 250, 'the next combat starts from 250');
@@ -365,4 +403,18 @@ for (const elite of [false, true]) test(`runner: watched ${elite ? 'elite' : 'no
   r.net.emit('b.start', start);
   await r.settle();
   assertHuang(ownerBoard(r.store.get().match.field, 'p_1', r.runner.ownerOps('p_1')));
+});
+
+test("m.public players[].boardOps: the operators on a seat's field for the 盟约 flyout column — lean, per seat", () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, seed: 93, fake: true }).start();
+  h.toPrep(1);
+  fieldCarrier(h, 'p_1', 'chess_char_1_01_a');
+  // the same operator the scouted board shows (a 补位 body included), in board order
+  const boardUnits = h.m.prepFieldMeta(h.ps('p_1')).units.filter((u) => u.area === 'board' && u.kind === 'op');
+  const ops = row(h, 'p_1').boardOps;
+  assert.deepEqual(ops.map((o) => o.id), boardUnits.map((u) => u.avatar), 'the chess id the thumbnail draws; no loadout / skin work');
+  assert.deepEqual(ops.map((o) => !!o.golden), boardUnits.map((u) => !!u.golden), 'the elite bit the golden ring draws');
+  assert.ok(ops.every((o) => Object.keys(o).every((k) => k === 'id' || k === 'golden')), 'lean entries only');
+  const other = h.m.publicView().players.find((p) => p.playerId !== 'p_1');
+  assert.deepEqual(other.boardOps, [], 'a seat at a time: another player has its own board');
 });

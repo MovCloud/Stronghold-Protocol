@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateC2S, C2S } from '../../shared/protocol.js';
-import { ERR, EMOTES } from '../../shared/constants.js';
+import { ERR, EMOTES, MAX_SEATS, MATCH_CONTROL_ACTIONS } from '../../shared/constants.js';
 import { createRng } from '../../server/sim/rng.js';
 import { DATA, makeMatch, checkInvariants } from './harness.js';
 
@@ -13,6 +13,7 @@ const BANDS = Object.keys(DATA.bands);
 const ONLY_SEED = process.env.MATCH_FUZZ_SEED === undefined ? null : Number(process.env.MATCH_FUZZ_SEED);
 assert.ok(ONLY_SEED === null || (Number.isInteger(ONLY_SEED) && ONLY_SEED >= 1 && ONLY_SEED <= 0xffffffff),
   'MATCH_FUZZ_SEED must be an integer between 1 and 4294967295');
+const BONDS = Object.keys(DATA.bonds);
 
 function randomIntent(rng, m, ps) {
   const t = rng.pick(GAME);
@@ -30,8 +31,11 @@ function randomIntent(rng, m, ps) {
     case 'g.test': return { t, cmd: 'funds', args: { amount: rng.int(100000) } };
     case 'g.infoReady': return { t, setupRevision: m.setupRevision ?? 0 };
     case 'g.rerollVote': return { t, voteId: m.setupVote?.id ?? 1 + rng.int(10), agree: rng() < 0.5 };
+    case 'g.kickVote': return { t, targetId: rng.pick([...m.players.keys(), 'unknown']) };
+    case 'g.kickBallot': return { t, voteId: m.kickVote?.id ?? 1 + rng.int(10), agree: rng() < 0.5 };
     case 'g.band': return { t, bandId: rng() < 0.8 ? rng.pick(BANDS) : rng.pick(['constructor', '__proto__', 'band_x', 'a'.repeat(64)]) };
     case 'g.buy': return { t, slot: rng.int(16) };
+    case 'g.pickAny': return { t, chessId: rng.pick(Object.keys(DATA.chess)) };
     case 'g.sell': case 'g.destroy': return { t, uid: uid() };
     case 'g.move': return { t, uid: uid(), to: to() };
     case 'g.equip': return { t, itemUid: uid(), targetUid: uid() };
@@ -39,10 +43,19 @@ function randomIntent(rng, m, ps) {
     case 'g.art': return { t, itemUid: uid(), row: rng.int(19), col: rng.int(21) };
     case 'g.reward': case 'g.choice': return { t, idx: rng.int(6) };
     case 'g.ready': return { t, ready: rng() < 0.4 };
+    case 'g.revive': return {
+      t, playerId: rng.pick([...m.players.keys(), 'unknown']), round: Math.max(1, m.round + (rng() < 0.3 ? 1 : 0)),
+      matchId: rng() < 0.8 ? m.battlePrefix : 'stale-match',
+    };
     case 'g.emote': return { t, id: rng.pick(EMOTES) };
+    case 'g.bondPlan': return rng() < 0.2 ? { t } : { t, bondId: rng() < 0.7 ? rng.pick(BONDS) : rng.pick(['constructor', '__proto__', 'bond_x']) };
     case 'g.watch': return { t, fieldId: rng.pick(['n:p_0', 'n:p_1', 'n:ai_0', 'u', 'b1', 'b2', 'zz', '']) };
+    // the on-demand bond read (WS compression round 2, step ③): a known player most of the time, a stranger sometimes
+    case 'g.bonds': return { t, playerId: rng() < 0.8 && m.players.size ? rng.pick([...m.players.keys()]) : 'nobody' };
     case 'g.autoplay': return { t, on: rng() < 0.05 };
     case 'g.pause': return { t, on: rng() < 0.5 };
+    case 'g.matchControl': return { t, action: rng.pick(MATCH_CONTROL_ACTIONS) };
+    case 'g.matchControlBallot': return { t, voteId: m.matchControl?.id ?? 1 + rng.int(10), agree: rng() < 0.5 };
     // the plugin interaction windows (PLUGIN API v2, docs/PLUGINS.md §10b): random ids and slots — no window of a
     // vanilla match is ever open, so every one of them is a refusal, which is exactly what the fuzz run checks
     case 'g.offer': case 'g.offerRefresh': return { t, pluginId: 'demo', seq: rng.int(1000), offerId: rng.pick(['early-pick', 'x', 'a'.repeat(64)]), idx: rng.int(6) };
@@ -55,7 +68,7 @@ function fuzzOne(seed, { fake, rules }, context = {}) {
   const mode = rng() < 0.3 ? 'solo' : 'coop';
   const difficulty = rng.pick(['FUNNY', 'NORMAL', 'HARD', 'ABYSS']);
   const humans = mode === 'solo' ? 1 : 1 + rng.int(3);
-  const bots = mode === 'solo' ? 0 : rng.int(3);
+  const bots = mode === 'solo' ? 0 : Math.min(rng.int(3), MAX_SEATS - humans); // ordinary room fixtures cannot exceed four total seats
   Object.assign(context, { mode, difficulty, humans, bots });
   const h = makeMatch({ mode, difficulty, humans, bots, seed, fake, rules, captureFrames: false, checkFrames: true, script: () => ({ duration: 2 + rng.int(6), leaks: {} }) });
   const m = h.m;
@@ -86,8 +99,11 @@ function fuzzOne(seed, { fake, rules }, context = {}) {
     }
     if (step % 20 === 0) checkInvariants(m);
   }
-  // finish the match: everyone left on AI 托管
-  for (const ps of m.players.values()) if (!ps.isBot && !ps.left) m.handle(ps.playerId, { t: 'g.autoplay', on: true });
+  // Reconnect remaining humans before finishing: unattended matches intentionally suspend now.
+  for (const ps of m.players.values()) if (!ps.isBot && !ps.left) {
+    m.onReconnect(ps.playerId);
+    m.handle(ps.playerId, { t: 'g.autoplay', on: true });
+  }
   h.drive(() => h.ended != null);
   assert.ok(h.ended, `seed ${seed}: match did not end (${m.phase} R${m.round})`);
   assert.equal(h.endedCount, 1);
@@ -131,7 +147,7 @@ test('every generated game intent has a valid protocol shape, including unequip'
       pick: (list) => list === GAME ? type : rng.pick(list),
       int: (n) => rng.int(n),
     });
-    const msg = randomIntent(forced, {}, null);
+    const msg = randomIntent(forced, { players: new Map([['p_0', null]]), round: 3, battlePrefix: 'm1' }, null); // the fork's 投票移出 / 复活 read the match
     assert.equal(msg.t, type);
     assert.equal(validateC2S(msg), null, JSON.stringify(msg));
   }

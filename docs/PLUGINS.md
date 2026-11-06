@@ -94,13 +94,13 @@ What this version does with each class:
 | `cosmetic` | art, models (Spine 3.8), audio (fonts and theme colours later) | **loaded** (P1a, §9) — a room's host switches it on for the room, a player for themself; the files its overlay names served at `/p/<id>/<hash8>/<path>` |
 | `content` | data patches and new records: numbers, economy, modes, waves, operators, enemies | **loaded** (P1b, §10; P1c, §11) — a room's host switches it on for the room: a content set of its own, unofficial matches; the set's files served at `/cs/<cs16>/…` |
 | `script` | code the battle or the match runs | **off by default** — valid lock in sandbox mode; owner pin and player consent in trusted modes (§13) |
-| `ui` | an interface widget: an html page in a sandboxed frame | **loaded** (P4, §14) — a player switches it on for this browser; its frame files served at `/p/<id>/<hash8>/<path>` with a frame CSP |
+| `ui` | an interface widget: an html page in a sandboxed frame | **loaded** (P4, §14) — a player switches it on for this browser; its frame files served at `/p/<id>/<hash8>/<path>` with the host iframe sandbox |
 | `trusted` | page or server code with full trust | **off by default** — trusted/trusted-force only; pinning, address gates and room consent (§13) |
 
 Nothing of a plugin folder is served except the files a `lang` manifest names, the files a loaded `cosmetic`
 plugin's overlay names, and the frame files of a loaded `ui` plugin (`.html`, `.js`, `.css`, `.png` under its
 `entry.client`, §14) — never `plugin.json`, the lock file, a document or any other file of the folder. A ui plugin's
-`/p/` responses carry a frame Content-Security-Policy; cosmetic art does not. Content-set snapshots are separate:
+`/p/` responses do not carry CSP; the host mounts UI plugins in sandboxed iframes. Content-set snapshots are separate:
 `/cs/<cs16>/` serves checked data/descriptors and, for native trusted sets, only the retained sim/meta/client script
 entry bytes (§13). It never serves arbitrary files from plugin folders.
 
@@ -138,7 +138,7 @@ classes and the content sets running at once — §11 and `docs/DEPLOY.md`.
 | `name`, `description` | a text in `sourceLang` or `{ "<lang>": "…" }`; `englishName` a text |
 | `version` | semver, required |
 | `app` | the game versions it is made for — `>=0.3.0 <0.4.0`, `0.3.x`, `^0.3.0` … (a pre-release counts as its release); required but for `lang`. Outside it: `compatible: false` and a warning (P1 refuses a gameplay plugin by default) |
-| `api` | the plugin API level, within `shared/constants.js` `PLUGIN_API` (`{ current: 2, min: 1 }`); required but for `lang`. A manifest that uses a part of level 2 (today `offers`, §10b) states `"api": 2` |
+| `api` | the plugin API level, within `shared/constants.js` `PLUGIN_API` (`{ current: 2, min: 1 }`); required but for `lang`. A manifest that uses a part of level 2 (today `offers` §10b and `emotes` §10c) states `"api": 2` |
 | `class` | §2; every part the manifest names must belong to it |
 | `scope` | `room` (the host's choice for the whole room), `personal` (the player's own setting), `server` (trusted code only), as the class allows — `cosmetic`: room and/or personal; `content`, `script`: room; `ui`, `lang`: personal; `trusted`: server or room |
 | `authors`, `credits`, `license`, `homepage` (http/https), `sourceLang` (default `zh`) | free text |
@@ -146,7 +146,7 @@ classes and the content sets running at once — §11 and `docs/DEPLOY.md`.
 | `loadAfter`, `loadBefore`, `priority` | ordering hints (lists of ids; an integer within ±1000, default 0) |
 | `settings` | ≤ 32 settings: `boolean`, `integer` / `number` (`min` and `max` required, `step`), `enum` (`options`) — no free text; `default` (else `false`, `min`, the first option), `label` |
 | `permissions` | what the plugin does (§4); every part needs one, every permission must fit the class |
-| parts | `assets`, `theme` (cosmetic+) · `data`, `operators`, `enemies`, `modes`, `stages`, `dsl`, `offers` (content+) — a path, a list of paths or (`assets`, `theme`) the object inline · `i18n` `{ "<lang>": path }` (content+) |
+| parts | `assets`, `theme` (cosmetic+) · `data`, `operators`, `enemies`, `modes`, `stages`, `dsl`, `offers` (content+) — a path, a list of paths or (`assets`, `theme`) the object inline · `i18n` `{ "<lang>": path }` (content+) · `emotes` (cosmetic, content) one file always named `emotes.json` (§10c) |
 | `entry` | `{ "sim", "meta" }` (script, `.js`) · `{ "client" }` (ui, `.html`) · `{ "server" }` (trusted, `.js`) |
 | `lang`, `files` … | the `lang` class only: manifest 1's language fields and `files: { ui, data }` (§7) |
 
@@ -1091,6 +1091,47 @@ both declaration and source bytes are hashed. Plugins without offers gain no new
 offer plugin never changes the vanilla composition. Shared engine/protocol code edits still change the build-wide
 vanilla code identity, as required by §9's hash contract.
 
+## 10c. Emote pages — 表情包组 as a plugin page
+
+Plugin API 2 (`current: 2`, `min: 1`): the `emotes` part contributes **one page of the emote wheel**. It is data only —
+no plugin code runs, and the wheel itself stays in the core (`public/js/ui/emotes.js`): a plugin has no interface slot
+for it (`shared/plugins/manifest.js UI_SLOT_IDS`), so a plugin can contribute a page of data and no widget. The part
+belongs to `cosmetic` and `content`, scope `room` or `personal`, and needs no permission (`needs: []`, like `i18n`).
+
+**One 表情包组 = one page**, the same shape as the core wheel: 6 pages of 6 cells (3×2, `shared/constants.js`
+`EMOTE_THEMES`). A plugin declares exactly one file, always named `emotes.json`, of 1–6 emotes. The pager counts
+`page / total`, where total is the core pages plus the pages of the plugins the room has installed.
+
+```json
+{ "version": 1, "name": "表情套组：Ciallo", "sortId": 100003,
+  "emotes": [{ "id": "emote_ciallo_murasame", "sortId": 20001, "picId": "pic_ciallo_murasame_battle",
+               "label": "丛雨 Ciallo" }] }
+```
+
+| Field | Rule |
+|---|---|
+| `version` | `1` |
+| `name` | the page title, 1–64 characters |
+| `sortId` | positive integer within 1,000,000, the range of the official theme table |
+| `emotes` | 1–6 items, the cells of one page, ordered by `sortId` |
+| `emotes[].id` | `emote_<pluginId>_<slug>` (`shared/plugins/dataUtils.js recordId`): namespaced with the plugin id, so a page can never shadow an official emote. `shared/protocol.js` accepts the official 36 plus this shape |
+| `emotes[].picId` | `A-Za-z0-9_`, ≤ 64 characters; the art is the plugin's `assets` part under `ui['emoticon/<pluginId>/<picId>']` |
+| `emotes[].label` | 1–64 characters, the bubble text |
+| `emotes[].sortId` | positive integer, the cell order |
+
+**How the client learns that a page exists**: the visual set's file table (`overlays[].files`, path → SHA-256,
+`shared/plugins/visual.js VisualOverlay`). A page is not art, so it is not in the asset manifest; the client fetches it
+hash-pinned at `/p/<pluginId>/<hash8>/emotes.json` (`public/js/ui/emotePages.js`). A room with no emote plugin lists
+nothing and asks for nothing.
+
+**Fallback** (the maintainer's decision): when a message carries an emote the client has no picture for, the bubble
+shows the page's title instead, so the player still sees which 表情包组 it is (`public/js/ui/emotes.js EmoteBubble`). A
+page whose file cannot be read keeps its title as well.
+
+**Not done here**: a cosmetic plugin cannot carry a language pack (`PARTS.i18n` does not list `cosmetic`), so page
+titles and labels are literal author text; bot teammates do not answer a plugin emote (`server/match/botEmotes.js`
+maps only the official ids).
+
 ## 12. DSL
 
 A plugin describes a skill, a talent or a small prep effect in JSON (P2). No plugin code runs. The vocabulary, the
@@ -1237,8 +1278,7 @@ runtime SDK, then Node imports the verified source natively. Browsers use the de
 SDK alias linked to `/shared/plugins/sdk.js`; trusted page source unchanged), served verbatim at
 `/cs/<cs16>/scripts/<id>/<entry>` with JavaScript MIME. The page verifies these exact response bytes before native
 import at that same address; simulation Workers receive the checked snapshot and only perform module imports.
-Execution mode and browser source bytes are covered by `@script`. Site CSP keeps script-src self plus importmap
-hashes, without data:, blob: or unsafe-eval; only the simulation Worker permits SES eval. The browser fetches these descriptors only after
+Execution mode and browser source bytes are covered by `@script`. This branch does not send CSP response headers. The browser fetches these descriptors only after
 its own consent. An unconsenting spectator still loads data and reads server results/snapshots, but never receives a
 script execution payload or becomes battle authority [ASSUMED]. Server bot fights, takeovers and SP_VERIFY use the
 same registered extensions in the set's child; script sets always use a process even with SP_MATCH_HOST=worker.
@@ -1306,7 +1346,7 @@ Residual risks: SES/V8 bugs, deliberate desync, browser-process memory exhaustio
 a Worker escape. Node 22 permissions do not restrict network and are not a malicious-code security boundary; an
 escape can probe the server's network or read its allowed install tree and targets of links inside it.
 Do not put links pointing outside inside the installation root; use a network namespace/container to restrict network. Prefer a low-privilege account/container
-with outbound-network and OS resource limits. Chrome regression coverage includes CSP and sandbox behavior;
+with outbound-network and OS resource limits. Sandbox regression suites are available; removed CSP guarantees are not part of this branch.
 Firefox and Safari have not had dedicated sandbox verification. See [DESIGN §32.11](history/0.3.0.md#3211-p3b--worker-simulation-ses-and-csp)
 and [deployment](DEPLOY.md).
 
@@ -1330,14 +1370,10 @@ still shows. The generated Forge skeleton and `plugins/_template/ui/` set `color
 reason. The iframe points straight at that plugin's own
 `/p/<id>/<hash8>/<entry>`. Its first load is the entry, and any later load destroys the frame: the host then clears
 `ready` and posts nothing more. `postMessage` to `"null"` cannot tell those documents
-apart. Files at `/p/` for a ui plugin, and not cosmetic art, are sent with
-`Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; sandbox allow-scripts; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`
-(`UI_FRAME_CSP`), on 200, 206 and 304. The `sandbox` directive is what still applies when that URL is opened at the
-top level; a `<meta>` sandbox does nothing. The header has no `allow-same-origin`. [ASSUMED] `'self'` may not match
-the opaque origin, so an inline script runs and a separate script file may not; that is not repaired by granting the
-iframe the page's origin. [ASSUMED] A snapshot or a private view already posted can leave in the URL of the
-navigation that exits the entry. Later posts stop; that does not recall the copy. `navigate-to` was not measured and
-is not the fix. The rest of the site uses the separate P3b policy (§13).
+apart. This branch sends no CSP on `/p/` responses. The mounted iframe still has an opaque origin, but a direct top-level
+open is not protected by the iframe sandbox and runs with the site's origin. Only install trusted UI plugin files;
+no Worker network blocking or top-level opaque-origin isolation is claimed. A snapshot already posted may leave in a
+navigation URL; stopping later posts does not revoke that copy.
 
 **The feed** is postMessage API v1 (`shared/plugins/ui.js`, `schemas/ui.schema.json`). The host sends the player's
 visible `m.public` (a subset), the player's own `m.private` (a subset), throttled events and snapshots of the battle
@@ -1703,7 +1739,7 @@ GET without the body):
 | `PUT …/manifest` · `POST …/meta` · `POST …/sections` | plugin.json as a whole; the basic fields `{ fields, lang }`; the sections the page shows |
 | `POST …/slot` · `…/ref` · `…/clear` · `…/fix` | files for a slot `{ at, files: [{ name, data (base64), role? }] }`; a reference `{ at, ref }`; a slot emptied `{ at }`; a one-click fix `{ code, at?, file?, params? }` |
 | `POST …/pack` · `GET …/zip` · `GET …/preview` | the lock and the check; the zip (a download, packs nothing); the temporary composition |
-| `GET …/f/<hash8>/<path>`, `…/files/<path>` · `PUT` / `DELETE …/files/<path>` | a file of the folder (a draft's too) — of the types the studio writes only, sandboxed (`Content-Security-Policy: default-src 'none'; sandbox`); write or remove one |
+| `GET …/f/<hash8>/<path>`, `…/files/<path>` · `PUT` / `DELETE …/files/<path>` | a file of the folder (a draft's too) — of the types the studio writes only, without CSP (type allowlists and nosniff remain); write or remove one |
 | `GET /studio/api/trial-options` · `POST /studio/api/trial` | scenarios; a checked child-process battle comparison (key required) |
 | `POST /studio/api/console/options` · `POST /studio/api/console/build` | test console defaults / combat choice support; validate a scene and build its browser BattleSpec (both keyed; 512 KiB body limit) |
 | `POST …/authoring` · `POST /studio/api/validate-dsl` | wizard save with revision; structural DSL validation |
@@ -1796,7 +1832,7 @@ lacks). The table below is generated from it (`node tools/plugin.mjs errors --wr
 | The plugin is not listed (skipped); the start log and check say why | `PLUGIN_ORDER_HINTS` | A load-order hint (loadAfter / loadBefore / priority) is not right: {where} | loadAfter and loadBefore are lists of plugin ids (never one in both, never the plugin itself); priority is an integer within ±1000, default 0. |
 | The plugin is not listed (skipped); the start log and check say why | `PLUGIN_SETTING` | A setting is not right: {where} | Each setting is { "type": … }: boolean, integer / number (with min and max), enum (with options); its default within them; at most 32, no free text. |
 | The plugin works, with a note in the check | `PLUGIN_SETTING_FIELD` | A setting has a field it does not know, “{where}”; it is ignored | A setting knows type, default, min, max, step, options and label only. |
-| The plugin is not listed (skipped); the start log and check say why | `PLUGIN_PART_CLASS` | “{where}” is not something a {class} plugin carries | A cosmetic plugin carries "assets" and "theme" only, a ui plugin "entry.client" and "slots"; numbers and new operators belong to a content plugin. |
+| The plugin is not listed (skipped); the start log and check say why | `PLUGIN_PART_CLASS` | “{where}” is not something a {class} plugin carries | A cosmetic plugin carries "assets", "theme" and "emotes" (one page of the emote wheel), a ui plugin "entry.client" and "slots"; numbers and new operators belong to a content plugin. |
 | The plugin is not listed (skipped); the start log and check say why | `PLUGIN_PART_SHAPE` | “{where}” is not written the right way | Write the path of a .json file of the plugin folder (or a list of them); "assets" and "theme" may also be the { … } object itself. |
 | The plugin is not listed (skipped); the start log and check say why | `PLUGIN_ASSET_FILE` | The file of “{where}” is not right: not a path inside the plugin folder, or not the kind of file this place takes | Write a path inside the plugin folder such as art/avatar.png. Pictures are .png .jpg .webp, sounds .mp3 .ogg, models .skel with .atlas (pages .png). |
 | The plugin is not listed (skipped); the start log and check say why | `PLUGIN_THEME_URL` | “{where}” names a URL | A theme variable is a colour, a time or an easing — never a URL, var() or another expression. |
@@ -2350,7 +2386,7 @@ the panel), `test/ui/plugins-audio.test.js` (a plugin sound without its extensio
 shows on another player's page, a personal plugin on its own page only; a server without plugins is never asked for its
 catalogue; a personal plugin switched during a match changes the piece already on the board). P4:
 `test/plugins/ui.test.js` (message shape and rate, storage quota, slots, a ui manifest accepted or refused, the `/p/`
-CSP, a ui plugin leaving `cs` alone) and `test/ui/ui-plugins.e2e.test.js` (`SP_E2E=1`: the example widget in its slot,
+response headers, a ui plugin leaving `cs` alone) and `test/ui/ui-plugins.e2e.test.js` (`SP_E2E=1`: the example widget in its slot,
 a battle event, a match intent rejected). P1c: `test/lobby-plugins.test.js` (a content plugin's set: served, checked,
 played in its match host; requirements switched on, conflicts, incompatible plugins, another player, a running match,
 un-readying, `room.setMode`, the `room.contentReady` gate, loadouts checked against the room's data, the policy file,

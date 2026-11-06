@@ -36,26 +36,23 @@ test('选择模拟协议 in a portrait window keeps the .5rem the chosen card sl
   const lobby = css('public/css/screens/lobby.css');
   assert.match(lobby, /\.proto-list \{[^}]*padding: \.07rem \.06rem \.07rem \.5rem;/);
   assert.match(lobby, /\.pcard\.is-on \{ transform: translateX\(-\.44rem\);/);
-  const portrait = block(lobby, '@media (max-aspect-ratio: 1/1) {');
+  // this repo's 机变 codex has its own portrait block, so anchor on the protocol one
+  const portrait = block(lobby, '@media (max-aspect-ratio: 1/1) {\n  .proto-body');
   assert.doesNotMatch(portrait, /\.proto-list[^{]*\{[^}]*padding-left/);
   assert.match(portrait, /\.proto-foot \{ padding-left: \.1rem; \}/);
 });
 
-test('short screens: the empty key field takes the placeholder\'s size; 同盟模拟\'s line above its entry keeps 「1–4 名博士」', () => {
+test('short screens: the empty key field takes the placeholder\'s size; the entries carry no detail line (2026-11-05)', () => {
   const lobby = css('public/css/screens/lobby.css');
   const short = lobby.slice(lobby.indexOf('@media (max-height: 520px) {'));
   const ph = /\.ally-key input::placeholder \{ font-size: (clamp\([^;]+\)); \}/.exec(short)?.[1];
   assert.ok(ph, 'the placeholder\'s size');
   assert.ok(short.includes(`.ally-key input:placeholder-shown { font-size: ${ph}; }`), 'the empty field at the same size');
-  assert.match(lobby, /\.hub-entry__short \{ display: none; \}/);
-  assert.match(short, /\.hub-entry__long \{ display: none; \}\s*\.hub-entry__short \{ display: inline; \}/);
+  // the owner removed the line above each entry (the button's name says enough, and 「允许扩展人数」 made it wrong):
+  // no long / short pair and no short-screen swap left over
+  assert.doesNotMatch(lobby, /\.hub-entry__(?:long|short|group)/);
   const js = readFileSync(path.join(ROOT, 'public/js/screens/lobby.js'), 'utf8');
-  assert.match(js, /pointShort: N_\('1–\{n\} 名博士'\)/);
-  assert.match(js, /<span class="hub-entry__long">\$\{t\(card\.points\[0\], card\.pointParams\)\}<\/span><span class="hub-entry__short">\$\{t\(card\.pointShort, card\.pointParams\)\}<\/span>/);
-  for (const lang of ['en', 'ja', 'ko', 'zh-TW']) {
-    const pack = JSON.parse(readFileSync(path.join(ROOT, `public/i18n/${lang}.json`), 'utf8'));
-    assert.match(pack['1–{n} 名博士'], /\{n\}/, lang);
-  }
+  assert.doesNotMatch(js, /pointShort|pointParams|hub-entry__group/);
 });
 
 test('text-fit: ellipsis exceptions stay scoped; only player names may break inside a word', () => {

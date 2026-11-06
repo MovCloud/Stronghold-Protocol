@@ -1,3 +1,4 @@
+import { powi } from '../detmath.js';
 // server/sim/battle/economy.js — Battle methods: DP, IN_BATTLE bond layer gains (capped by layerGainRoom) and bounty
 // coins.
 // Installed on Battle.prototype by server/sim/Battle.js (a method container: never instantiated; `this` is the battle).
@@ -24,12 +25,31 @@ export class BattleEconomy {
     const pp = this._pp(playerId);
     if (!pp) return 0;
     const ps = this.getPlayer(playerId);
+    const uncap = !!(this.rm && this.rm.rmBonds && this.rm.rmBonds.layerCap === 0);
+    // 无限火力 精锐叠层乘区（milestones.eliteLayerMul）：目标盟约成员里每有 1 名精锐（金色）干员，本次叠层 ×1.5
+    // （封顶 eliteLayerCap 档；里程碑配置缺失时不生效）。计数=该玩家在场成员中 bond 的金色干员。
+    let amount = this.rm ? Math.floor(n) : n;
+    if (this.rm && this.rm.rmBonds && this.rm.rmBonds.rmMilestones) {
+      const ms = this.rm.rmBonds.rmMilestones;
+      const mul = Number(ms.eliteLayerMul) || 0;
+      const capT = Number(ms.eliteLayerCap) || 0;
+      if (mul > 1 && capT > 0 && ps) {
+        let elites = 0;
+        const want = Array.isArray(ps.units) ? ps.units : [];
+        for (const u of want) {
+          if (!u || u.side !== 'ally' || !u.def) continue;
+          const bonds = Array.isArray(u.def.bonds) ? u.def.bonds : [];
+          if (u.def.isGolden && bonds.includes(bondId)) elites++;
+        }
+        if (elites > 0) amount = Math.floor(n * powi(mul, Math.min(elites, Math.floor(capT))));
+      }
+    }
     const live = ps && ps.bonds[bondId] ? (ps.bonds[bondId].layers ?? 0) : (pp.layerGains[bondId] ?? 0);
-    if (!(layerGainRoom(live, Infinity) > 0)) return 0;
+    if (!uncap && !(layerGainRoom(live, Infinity) > 0)) return 0;
     const source = opts.source ?? null;
-    const ctx = { playerId, bondId, n, reason, source, tile: Array.isArray(opts.tile) ? opts.tile : this._sourceTile(source) };
+    const ctx = { playerId, bondId, n: amount, reason, source, tile: Array.isArray(opts.tile) ? opts.tile : this._sourceTile(source) };
     if (this._hooks.layerGain) { this.emit('layerGain', ctx); if (!(ctx.n > 0) || !Number.isFinite(ctx.n)) return 0; }
-    const add = layerGainRoom(live, ctx.n);
+    const add = uncap ? Math.max(0, Math.floor(ctx.n)) : layerGainRoom(live, ctx.n);
     if (!(add > 0)) return 0;
     pp.layerGains[bondId] = (pp.layerGains[bondId] ?? 0) + add;
     if (ps && ps.bonds[bondId]) ps.bonds[bondId].layers = (ps.bonds[bondId].layers ?? 0) + add;
@@ -72,6 +92,20 @@ export class BattleEconomy {
     if (!pp || !(n > 0) || !Number.isFinite(n)) return 0;
     pp.coins += n;
     this._ev(['bounty', playerId, n]);
+    return n;
+  }
+
+  /**
+   * 赏金 → 存款 (2V2 商人「坎诺特」, user 2026-10-17): a kill bounty the OPPONENT PLACED (`unit.bounty.bank`) is never
+   * gold — it goes to its killer's 坎诺特 account (`pp.bank`, reported as the battle result's per-player `bank`). Only
+   * the 认钱 path (withdrawing at 坎诺特 in prep) turns it into funds; the match adds it to the player's bank at
+   * settle. The official 悬赏 card bounties carry no `bank` flag and keep paying `addCoins` (gold) as before.
+   */
+  addBank(playerId, n) {
+    const pp = this._pp(playerId);
+    if (!pp || !(n > 0) || !Number.isFinite(n)) return 0;
+    pp.bank = Math.max(0, Number(pp.bank) || 0) + n;
+    this._ev(['bank', playerId, n]);
     return n;
   }
 }

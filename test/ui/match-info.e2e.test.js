@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { settled } from '../e2e/client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -63,12 +64,12 @@ describe('GitHub #8 and #484: 本局信息 in the strategy draft (real server, h
     await srv?.close();
   });
 
-  /** One player: its own Chrome with one always-visible page, past the title screen, in the lobby. */
+  /** One player: its own Chrome with one always-visible page, in the lobby. */
   async function player(name, { phone = null } = {}) {
     const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ARGS, protocolTimeout: 90000 });
     browsers.push(browser);
     const [first] = await browser.pages();
-    const page = first || await browser.newPage();
+    const page = first || await browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
     if (phone) await page.emulate({ viewport: phone, userAgent: ANDROID_UA });
     else await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
     const problems = [];
@@ -212,6 +213,7 @@ describe('GitHub #8 and #484: 本局信息 in the strategy draft (real server, h
     if (!announcedTypes.length) assert.equal(brief.emptyFactions, '本局没有特训敌人');
     await shot(page, 'solo-briefing');
 
+    await settled(page, '.brief-go'); // (a click during its entrance falls through)
     await press(p, '.brief__foot .btn--primary', '准备就绪');
     await waitSt(page, (s) => s.phase === 'BAND_DRAFT', 'band draft');
     await page.waitForSelector('[data-testid="match-info-open"]', { visible: true, timeout: 10000 });
@@ -407,7 +409,7 @@ describe('GitHub #8 and #484: 本局信息 in the strategy draft (real server, h
     for (const p of [a, b]) briefs.set(p, await readInfo(p.page, '.brief__main'));
     const want = await truth(a.page);
     assert.deepEqual(want.off, [], '绝境 switches no bond off');
-    assert.equal(want.greyed.length, 7, '3 core + 4 add-on bonds drawn');
+    assert.equal(want.greyed.length, 8, '4 core + 4 add-on bonds drawn');
     for (const [p, info] of briefs) {
       assert.deepEqual(greyedOf(info), want.greyed, `${p.name}: briefing greyed`);
       assert.deepEqual(info.banned, want.names, `${p.name}: briefing banned`);
@@ -419,7 +421,7 @@ describe('GitHub #8 and #484: 本局信息 in the strategy draft (real server, h
     assert.deepEqual(briefs.get(a).factions.map(f => f.type), announcedTypes);
     assert.ok(briefs.get(a).factions.every(f => f.name && f.desc), 'every special enemy type has its name and description');
     await shot(b.page, 'coop-phone-briefing-844');
-    for (const p of [a, b]) await press(p, '.brief__foot .btn--primary', '准备就绪');
+    for (const p of [a, b]) { await settled(p.page, '.brief-go'); await press(p, '.brief__foot .btn--primary', '准备就绪'); }
     for (const p of [a, b]) await waitSt(p.page, (s) => s.phase === 'BAND_DRAFT' && !!s.turn, `${p.name}: band draft`);
 
     const turn = (await st(a.page)).turn;

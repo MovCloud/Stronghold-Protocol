@@ -50,6 +50,14 @@ export function hotkeyLabel(code) {
 }
 
 /**
+ * The label of the key a map's action is bound to (a map-shaped view over {@link hotkeyLabel}): the underframe strip's
+ * key hints read the persisted shortcut store (ui/settings.js shortcutsStore), so a hint renders as one lookup.
+ * @param {Record<string, string>|null|undefined} shortcuts the player's key map
+ * @param {'buy'|'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'} action
+ */
+export const shortcutLabel = (shortcuts, action) => hotkeyLabel(shortcuts?.[action] || DEFAULT_HOTKEYS[action]);
+
+/**
  * Sanitize a persisted key map: each action keeps a saved key that may be a shortcut, else gets its default; a map in
  * which two saved actions would share a key is bad data — the defaults instead. Legacy maps receive an unused buy key.
  * @param {any} raw
@@ -153,13 +161,34 @@ export function captureHotkey(e) {
  * @returns {'buy'|'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'|'escape'|null}
  */
 export function shortcutFor(e, keys = DEFAULT_HOTKEYS) {
-  if (!e || e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (!e || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return null;
   const t = e.target;
   const tag = t && typeof t.tagName === 'string' ? t.tagName.toUpperCase() : '';
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return null;
   if (e.key === 'Escape') return 'escape';
   if (e.repeat) return null;
   return actionForKey(e, keys);
+}
+
+/** Where a piece entry sits (placement context): `b:row,col` on the board, `hand:i` / `temp:i` on the bench. */
+export const pieceSpot = (e) => (!e ? null : e.area === 'board' ? `b:${e.row},${e.col}` : `${e.area}:${e.idx}`);
+
+/**
+ * Feedback #11 (「卡顿时连续摁会售出其他干员」): after a hotkey sale the server refills the freed bench slot from 临时区
+ * (round.js recompute → the rightmost free hand slot, i.e. the one just sold), so a second X with the mouse still on that
+ * slot sells the newcomer. A sale by hotkey is stale while the pointer has not moved (`slop` CSS px) from where the last
+ * hotkey sale was made on the same spot; moving the mouse, or another spot, sells as before.
+ * @param {{ spot: string, x: number, y: number } | null} last @param {string|null} spot @param {{ x: number, y: number }} at
+ */
+export function staleHotkeySale(last, spot, at, slop = 3) {
+  return !!last && !!spot && last.spot === spot && Math.abs(at.x - last.x) <= slop && Math.abs(at.y - last.y) <= slop;
+}
+
+/** Selection shortcuts operate on own operators only; item destruction and summon moves stay on their buttons. */
+export function selectionShortcutAllowed(act, { editable = false, dragging = false, facing = false, busy = false, entry = null } = {}) {
+  if (!editable || dragging || facing || busy || entry?.piece?.kind !== 'chess') return false;
+  if (act === 'retreat') return entry.area === 'board';
+  return act === 'sell' && ['board', 'hand', 'temp'].includes(entry.area);
 }
 
 /**

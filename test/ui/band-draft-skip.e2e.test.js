@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { settled } from '../e2e/client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out/band-draft-skip');
@@ -62,7 +63,7 @@ describe('strategy skip eligibility (real server, normal browser operations)', {
   }
   async function player(name, suffix = '') {
     const context = await browser.createBrowserContext();
-    const page = await context.newPage();
+    const page = await context.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); if (localStorage.getItem('sp.pref.room.findMates') == null) localStorage.setItem('sp.pref.room.findMates', 'false'); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids; 搜寻队友 off so the host gets 开始模拟
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
     const errors = [];
     const frames = [];
@@ -76,10 +77,9 @@ describe('strategy skip eligibility (real server, normal browser operations)', {
     cdp.on('Network.webSocketFrameReceived', ({ response }) => {
       try { const m = JSON.parse(response.payloadData); if (m.t === 'error') frames.push({ direction: 'received', message: m }); } catch { /* non-JSON */ }
     });
+    // no title screen (2026-10-15): boot connects with the remembered callsign
+    await page.evaluateOnNewDocument((n) => { try { localStorage.setItem('sp.name', n); } catch { /* none */ } }, name);
     await page.goto(base + '/' + suffix, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.title-login input');
-    await page.type('.title-login input', name);
-    await click(page, '.title-login button', '开始');
     await page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online');
     return { context, page, errors, frames };
   }
@@ -100,6 +100,7 @@ describe('strategy skip eligibility (real server, normal browser operations)', {
     if ((await state(host)).phase !== 'INFO_CHECK') await click(host, '.room-bar__right button', '开始模拟');
     for (const c of clients) {
       await c.page.waitForSelector('.brief__foot .btn--primary');
+      await settled(c.page, '.brief-go'); // (a click during its entrance falls through)
       await click(c.page, '.brief__foot .btn--primary', '准备就绪');
     }
     await host.waitForFunction(() => globalThis.__SP__.store.get().match.public?.phase === 'BAND_DRAFT');

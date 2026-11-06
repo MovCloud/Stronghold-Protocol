@@ -1,9 +1,9 @@
 import { readFxManifest as readPluginManifest } from '../plugins/fxAssets.js';
 // server/studio/index.js — the plugin studio 插件工作台 (DESIGN §32.9, docs/PLUGINS.md §15; the 0.3.0 plan's interface C5):
 // a page in the browser where someone who does not write code makes, previews and packs a cosmetic plugin, and an API
-// that experienced authors and AI agents can use the same way. Only for this machine and the local network
-// (server/studio/gate.js: a request from anywhere else gets the 404 of a page that does not exist); every file it touches
-// is inside plugins/<id>/ (server/studio/files.js).
+// that experienced authors and AI agents can use the same way. This machine and the local network with the key
+// (server/studio/gate.js), and an owner signed in at /admin/ from anywhere; a request from anyone else gets the 404 of a
+// page that does not exist. Every file it touches is inside plugins/<id>/ (server/studio/files.js).
 //
 //   GET  /studio/                       the page (public/studio/index.html and its modules under /studio/)
 //   GET  /studio/api/info               the version, the templates, the target kinds, the limits, the hot reload
@@ -270,7 +270,7 @@ export function suggestId({ name = '', target = null, template = '' }, taken) {
  *   lobby: the rooms (its autoApplyPlugins is set to the studio's rule; their plugin sets tell which plugins are in use);
  *   sessions: the session registry (a token the page names → its player)
  */
-export function createStudio({ publicDir, pluginsDir, dataDir, registry, lobby = null, sessions = null, log = noopLog, mode = studioMode(), watch, trialSpawn, fetch: fetchImpl = globalThis.fetch }) {
+export function createStudio({ publicDir, pluginsDir, dataDir, registry, lobby = null, sessions = null, log = noopLog, mode = studioMode(), watch, trialSpawn, fetch: fetchImpl = globalThis.fetch, isAdmin = null }) {
   const pageDir = path.join(path.resolve(publicDir), 'studio');
   // the key every change carries (key.js; X-SP-Studio) — read or made when first needed (the boot banner, a studio
   // request: a server that only runs tests or never shows its banner writes no key file); none when the studio is off
@@ -283,14 +283,22 @@ export function createStudio({ publicDir, pluginsDir, dataDir, registry, lobby =
   /** Does a request carry the studio's key? @param {import('node:http').IncomingMessage} req */
   const keyed = (req) => { const k = keyOf(); return !!k && sameKey(req.headers?.['x-sp-studio'], k.key); };
   /**
+   * Does a request carry the console's login (server/playerAdmin.js, the owner's own account)? The page is opened from
+   * /admin/ and the owner's session may stand in for both the address gate and the key, so the studio works from any
+   * address the console is reachable at. The session cookie is SameSite=Strict and the change still passes
+   * isStudioChange (Origin/Host, X-SP-Studio), so another site cannot borrow it. The key stays for authors' tools.
+   * @param {import('node:http').IncomingMessage} req
+   */
+  const consoleOk = (req) => { try { return !!(isAdmin && isAdmin(req)); } catch { return false; } };
+  /**
    * May this request change something? Not the studio's own (no X-SP-Studio, another origin: gate.js) → false, and the
-   * request gets the 404 page; the header without the key → PLUGIN_STUDIO_KEY (the page asks for the key).
+   * request gets the 404 page; the header without the key and without a console login → PLUGIN_STUDIO_KEY.
    * @param {import('node:http').IncomingMessage} req
    */
   const mayChange = (req) => {
     if (!isStudioChange(req)) return false;
-    if (!keyed(req)) throw new StudioError('PLUGIN_STUDIO_KEY', 403, {});
-    return true;
+    if (keyed(req) || consoleOk(req)) return true;
+    throw new StudioError('PLUGIN_STUDIO_KEY', 403, {});
   };
   const files = createPluginFiles(pluginsDir);
   const targets = createTargetIndex(dataDir);
@@ -1051,12 +1059,17 @@ export function createStudio({ publicDir, pluginsDir, dataDir, registry, lobby =
   async function handle(req, res, rawPath, query) {
     const notFound = () => sendError(req, res, 404, '页面不存在 · Not found', rawPath.length <= 200 ? rawPath : ''); // i18n-ignore (the bilingual 404 page of server/http/common.js)
     const gate = studioAllowed(req, { mode });
-    if (!gate.ok) { notFound(); return; }
+    // the console's owner may open the studio from any address it reaches the server at (consoleOk above); SP_STUDIO=off
+    // still wins — an owner who switched the studio off gets the 404 either way
+    const console = mode !== 'off' && consoleOk(req);
+    if (!gate.ok && !console) {
+      notFound(); return;
+    }
     // only the exact spelling (another case, doubled slashes or percent-encoding of the prefix: a 404, see isStudioPath)
     if (rawPath !== '/studio' && !rawPath.startsWith(STUDIO_URL)) { notFound(); return; }
-    // the studio in use: a request with its key (the page's, an author's tools) — never a mere visit or a page of another
-    // site, which cannot send the header (activate)
-    if (keyed(req)) activate();
+    // the studio in use: a request with its key (the page's, an author's tools) or the console's session — never a mere
+    // visit or a page of another site, which cannot send the header (activate)
+    if (keyed(req) || console) activate();
     // never inside a frame of another page (its buttons change files)
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");

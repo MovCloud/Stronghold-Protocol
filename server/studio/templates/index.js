@@ -38,6 +38,7 @@ import offers from './offers.js';
 import rules from './rules.js';
 import theme from './theme.js';
 import notices from './notices.js';
+import emotes from './emotes.js';
 import fx from './fx.js';
 import skins from './skins.js';
 import { readStudioData } from '../gameData.js';
@@ -55,7 +56,7 @@ import { readmeOf } from './readme.js';
  */
 
 /** @type {readonly StudioTemplate[]} every template, in the studio's order */
-export const TEMPLATES = Object.freeze([art, spine, voice, audio, numbers, operator, dsl, meta, mode, ui, script, bond, item, trait, offers, rules, theme, notices, fx, skins]);
+export const TEMPLATES = Object.freeze([art, spine, voice, audio, numbers, operator, dsl, meta, mode, ui, script, bond, item, trait, offers, rules, theme, notices, emotes, fx, skins]);
 
 /** The template of an id, or null. @param {unknown} id */
 export const templateById = (id) => TEMPLATES.find((t) => t.id === id) || null;

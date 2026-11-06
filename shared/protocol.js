@@ -1,7 +1,14 @@
 // Normative message catalogue (DESIGN §8). Used by server (validation) and client (building requests).
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
-import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, EMOTES, GEO } from './constants.js';
+import { DIFFICULTIES, MAX_DRAFT_CARDS, MAX_SEATS, NAME_MAX_LEN, ROOM_CAPACITIES, ROOM_CODE_LEN, EMOTES, GEO, MATCH_CONTROL_ACTIONS, PLAYBACK } from './constants.js';
+import { isAssetCacheReadiness } from './assetCache.js';
+import { MAX_PLAYER_CAPACITY } from './playerCapacity.js';
+import { isExperimental } from './experimental.js';
+
+/** Public response-pressure hint; never carries raw host/process diagnostics. */
+export const SERVER_LOAD_STATES = Object.freeze(['unknown', 'normal', 'busy', 'overloaded']);
+export const normalizeServerLoad = value => typeof value === 'string' && SERVER_LOAD_STATES.includes(value) ? value : 'unknown';
 import { isDroppableChess } from './standIn.js';
 import { diySlotIds, validateDiyPicks } from './diy.js';
 import { cultivatedStats, isPotential, isCultivate, POTENTIAL_DEFAULT, CULTIVATE_DEFAULT, hasPotentialData } from './potential.js';
@@ -9,6 +16,7 @@ import { isContentHash } from './plugins/identity.js';
 import { isPluginId } from './plugins/manifest.js';
 import { isTestCommand } from './testMode.js';
 import { PLUGIN_OFFER_SLOTS } from './plugins/limits.js';
+import { isPluginEmoteId } from './plugins/emoteCatalog.js';
 
 // ---- tiny validators -------------------------------------------------------
 const isInt = (v, lo = -Infinity, hi = Infinity) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -16,10 +24,18 @@ const isStr = (v, max = 64) => typeof v === 'string' && v.length <= max;
 const isBool = (v) => typeof v === 'boolean';
 const isId = (v) => typeof v === 'string' && v.length > 0 && v.length <= 64 && /^[A-Za-z0-9_\-.:]+$/.test(v);
 const isUid = (v) => isInt(v, 1, 2 ** 31);
+/**
+ * A stored 预选盟约 plan (room.bondPlan / session.bondPlan): an explicit null ("no plan") or a bond id (data/bonds.json
+ * key, the same shape isId already guards elsewhere in the wire contract). [ASSUMED] The merged-repo feature exists in no
+ * fork; this is the minimal predicate its lobby/protocol wiring tests read.
+ */
+export const isBondPlanId = (v) => v === null || isId(v);
 const isNum = (v, lo = -Infinity, hi = Infinity) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 const isPlain = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 const optional = (check) => (v) => v === undefined || check(v);
 const nullable = (check) => (v) => v === null || v === undefined || check(v);
+/** A lobby directory room id (lobby.join / lobby.spectate): the server-generated UUIDv4 room identity. */
+const isRoomId = (v) => isStr(v, 36) && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
 /** A plain object with at most `max` own keys, every key passing `key` and every value passing `val`. */
 const isMap = (v, max, key, val) => {
   if (!isPlain(v)) return false;
@@ -32,6 +48,19 @@ const isList = (v, max, item) => Array.isArray(v) && v.length <= max && v.every(
 const isScalar = (v) => isStr(v, 64) || isNum(v) || isBool(v);
 /** An official version id (shared/versions.js: the activity id, `@<sub-version>` for a sub-version) — structural only; the lobby answers VERSION_UNKNOWN for one this server does not enable (DESIGN §35.23). */
 export const isVersionId = (v) => typeof v === 'string' && v.length <= 40 && /^[a-z0-9]{1,32}(?:@[A-Za-z0-9_]{1,16})?$/.test(v);
+
+/** Safe game-process measurements only; 100% CPU is one core, including Worker usage. */
+export function normalizeLoadDetails(value) {
+  if (!isPlain(value) || !isInt(value.windowMs, 1, 300_000) || !isInt(value.ageMs, 0, 30_000)) return null;
+  const rounded = (n, max, scale = 10) => isNum(n, 0, max) ? Math.round(n * scale) / scale : null;
+  return {
+    windowMs: value.windowMs, ageMs: value.ageMs,
+    cpuPercent: rounded(value.cpuPercent, 100_000),
+    rssMiB: rounded(value.rssMiB, 16_777_216, 1), heapMiB: rounded(value.heapMiB, 16_777_216, 1),
+    eluPercent: rounded(value.eluPercent, 100),
+    p95Ms: rounded(value.p95Ms, 300_000), p99Ms: rounded(value.p99Ms, 300_000),
+  };
+}
 
 // ---- client-side combat (DESIGN §14): b.progress / b.result payloads -------------------------------------------
 
@@ -149,6 +178,7 @@ export function loadoutOptions(base, golden = null) {
  */
 export function checkLoadout(entries, getChess) {
   if (!isLoadoutEntries(entries)) return { error: 'BAD_MSG', detail: 'bad loadout entries' };
+  /** @type {Record<string, { skill: number, module: string|null }>} */
   const out = {};
   for (const id of Object.keys(entries)) {
     const e = entries[id];
@@ -250,6 +280,7 @@ export function charPotentialChanges(data, charId) {
 export function checkLoadoutOps(ops, isOperator, changesWithPotential = null) {
   if (ops == null) return { ok: true, ops: {} };
   if (!isLoadoutOps(ops)) return { error: 'BAD_MSG', detail: 'bad operator settings' };
+  /** @type {Record<string, { potential: number, cultivate: number }>} */
   const out = {};
   for (const id of Object.keys(ops)) {
     if (typeof isOperator !== 'function' || !isOperator(id)) return { error: 'BAD_TARGET', detail: `unknown operator ${id}` };
@@ -286,8 +317,17 @@ export const SKIN_LIMITS = Object.freeze({
   // operator map. A larger map is refused whole, the way an over-long loadout is.
   entries: 256, idLen: 64, charIdLen: 64,
 });
-/** A skinId. NOT `isId`: that allows only `[A-Za-z0-9_\-.:]`, while a skin key carries `@` and `#` (`char_002_amiya@winter#1`). The same character class as shared/plugins/visual.js `isSkinKey`. */
-export const isSkinId = (v) => typeof v === 'string' && v.length > 0 && v.length <= SKIN_LIMITS.idLen && /^[A-Za-z0-9_][A-Za-z0-9_@#+.\-]*$/.test(v);
+/**
+ * A skinId. NOT `isId`: that allows only `[A-Za-z0-9_\-.:]`, while a skin key carries `@` and `#`
+ * (`char_002_amiya@winter#1`). The character class is shared/plugins/visual.js `isSkinKey` plus the skin registry's
+ * global key (public/js/skinRegistry.js `globalSkinKey`): `<pluginId>/<skinId>` — at most one `/`, each side a skin
+ * key, the whole value still inside `idLen`. An overlay-written key never contains `/`, so the two namespaces cannot
+ * reach each other; the `/` exists only for a registry entry, and with nothing registered the wire sees exactly the
+ * keys it saw before. Without this the registry's key could never leave the browser, so a plugin skin would be
+ * visible only to its own player.
+ */
+export const isSkinId = (v) => typeof v === 'string' && v.length > 0 && v.length <= SKIN_LIMITS.idLen
+  && /^[A-Za-z0-9_][A-Za-z0-9_@#+.\-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_@#+.\-]*)?$/.test(v);
 /**
  * An operator charId. Official ids are `char_<digits>_<token>` (character_table / data/chess.json: `char_498_inside`,
  * `char_1012_skadi2`, `char_4145_ulpia`, `char_616_pithst`). A plugin operator is `char_x_<id>`
@@ -337,6 +377,7 @@ export function operatorCharIds(data) {
  */
 export function checkSkinSelection(skins, hasOperator) {
   if (!isSkinSelection(skins)) return { error: 'BAD_MSG', detail: 'bad skin selection' };
+  /** @type {Record<string, string>} */
   const out = {};
   let dropped = 0;
   for (const id of Object.keys(skins)) {
@@ -424,7 +465,7 @@ export function checkDiyPicks(picks, { data, kitted = null } = { data: null }) {
   return { ok: true, picks: kept, dropped };
 }
 
-// ---- unit stats (user playtest #4 item 7): m.unitStats units and the browser battle's live stats ---------------------
+// ---- unit stats (user playtest #4 item 7): m.unitStats units and live battle detail DTOs ----------------------------
 
 const fin = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const round1 = (v) => Math.round(v * 10) / 10;
@@ -446,25 +487,26 @@ const statView = (x) => ({
  * or the last ones the sim computed) next to its own numbers — `unit.base` with its 练度 multiplier (`unit.cultMul`,
  * 0.2.2: part of the operator's own numbers, as on the record cards; no buffs) — max HP, ATK, DEF, RES, attack interval
  * (s), block, move speed — rounded for display (the sim keeps floats), plus the current HP. The shape of the
- * `m.unitStats` units (Match.unitStats: what the board's units start their next battle with) and of the browser
- * runner's live battle stats (public/js/battle/runner.js unitStats). An ally with a range also carries `range`: the grid
+ * `m.unitStats` units (Match.unitStats: what the board's units start their next battle with), the browser runner's frozen
+ * opening stats, and server-streamed `m.field.unitStats` (first-tick cache, filtered to the current field metadata).
+ * Periodic b.snap frames carry no panel DTOs. An ally with a range carries `range`: the grid
  * (`[dRow, dCol]`, facing RIGHT) it attacks with now — a running skill's range, rangeExtend included, not a kit's
  * target-selection grid (the sim's `unit.liveRangeGrid`, Battle._refreshRange; community report E1 after 0.1.0: 烛煌
  * S3's 4-11 never reached the card). `dir`: the unit's facing now (UP / RIGHT / DOWN / LEFT; UnitInfo.dir is the facing
  * at send time and the snapshot tuples carry none) — the detail card's range overlay rotates by it (GitHub PR #281).
- * @param {{ id?: number, uid?: number|null, defId?: string, hp?: number, alive?: boolean, base?: any, liveRangeGrid?: any, dir?: string } | null} u
+ * @param {{ id?: number, uid?: number|null, defId?: string, hp?: number, alive?: boolean, base?: any, liveRangeGrid?: any, dir?: string, cultMul?: { atk: number, def: number, hp: number }, side?: string } | null} u
  * @param {any} [s] aggregated stats (missing ⇒ the base)
  * @returns {{ id: number|null, uid: number|null, defId: string|null, hp: number, alive: boolean, maxHp: number, atk: number,
  *   def: number, res: number, interval: number|null, blockCnt: number, moveSpeed: number,
  *   base: { maxHp: number, atk: number, def: number, res: number, interval: number|null, blockCnt: number, moveSpeed: number },
- *   range?: Array<[number, number]>, dir?: string }}
+ *   range?: Array<[number, number]>, dir?: string, silenced: boolean }}
  */
 export function unitStatsEntry(u, s = null) {
   const own = u && u.base && typeof u.base === 'object' ? u.base : {};
   const base = u && u.cultMul ? cultivatedStats(own, u.cultMul) : own;
   const cur = s && typeof s === 'object' ? s : base;
   const range = u?.side !== 'enemy' && Array.isArray(u?.liveRangeGrid)
-    ? u.liveRangeGrid.filter((p) => Array.isArray(p) && Number.isInteger(p[0]) && Number.isInteger(p[1])).map((p) => [p[0], p[1]])
+    ? u.liveRangeGrid.filter((p) => Array.isArray(p) && Number.isInteger(p[0]) && Number.isInteger(p[1])).map((p) => /** @type {[number, number]} */ ([p[0], p[1]]))
     : null;
   return {
     id: Number.isInteger(u?.id) ? u.id : null,
@@ -485,6 +527,23 @@ export function unitStatsEntry(u, s = null) {
 export const DIRS = Object.freeze(['UP', 'RIGHT', 'DOWN', 'LEFT']);
 const isDir = (v) => DIRS.includes(v);
 
+// ---- display card (fork lobby, 2026-10-14): room.card { charId?, avatar?, bg?, trophies?, look?, avatarLook? } ----------
+
+/**
+ * `room.card`: the player's display card, shown to the room on its seat (room.state seats[].card) — `charId`: the card's
+ * portrait operator, `avatar`: the operator whose official avatar stands for the player ('' clears either; the server
+ * also requires a real operator of its game data), `bg`: a namecard background id
+ * ('' clears; format only, the client maps ids to art), `trophies`: a self-reported cumulative trophy count (0 clears;
+ * cosmetic only, never used by a match). `look` / `avatarLook` (GitHub feedback #9 / #24): the art of the portrait / the
+ * avatar operator — '' its 精二 art (as before), 'e1' its 精一 art, or a skin id of that operator (the server checks it
+ * belongs to it: shared/skins.js skinFor). `bg` may be `skin:<skin id>`, the skin's full illustration.
+ * A field the message leaves out keeps its stored value.
+ */
+export const CARD_LIMITS = Object.freeze({ idLength: 48, trophies: 1_000_000 });
+const isCardCharId = (v) => v === '' || (isStr(v, CARD_LIMITS.idLength) && /^char_[0-9a-z_]+$/.test(v));
+const isCardLook = (v) => v === '' || v === 'e1' || (isStr(v, CARD_LIMITS.idLength) && /^char_[0-9a-z_]+$/.test(v));
+const isCardBg = (v) => v === '' || (isStr(v, CARD_LIMITS.idLength) && /^[a-z0-9][a-z0-9_:\-\/]*$/i.test(v));
+
 const target = (v) => {
   if (!v || typeof v !== 'object') return false;
   if (v.area === 'board') return isInt(v.row, 0, GEO.ROWS - 1) && isInt(v.col, 0, GEO.COLS - 1);
@@ -492,31 +551,55 @@ const target = (v) => {
   return false;
 };
 
-/** @type {Record<string, Record<string, (v:any)=>boolean> & { $optional?: string[] }>} */
+/** @type {Record<string, { [field: string]: ((v:any)=>boolean) | string[], $optional?: string[] }>} */
 export const C2S = {
   // session & lobby
-  // `delta`: the client speaks the state-delta transport (shared/stateDelta.js) and wants m.public / m.private as
-  // `m.state` frames. Omitted by every client that cannot decode them — those keep receiving the plain frames, and a
-  // server that does not know the field ignores it (it is only read after a full validateC2S pass).
+  // owner: the 服主 key (server/ownerFile.js) — verified on every hello, answered by welcome.owner: true; never echoed or logged.
+  // The fork's matchmakingVersion / playerCapacityVersion / owner / stateDelta extensions validate in C2S_FORK below.
+  // `wire`: this client speaks the compact wire (shared/wireCodec.js) and is a published v1 position, so it stays here.
+  // The state-delta transport keeps the fork's name `stateDelta` (server/stateTransport.js, the cluster relay): a
+  // client that cannot decode `m.state` frames omits it and keeps receiving the plain m.public / m.private frames,
+  // and a server that does not know the field ignores it (it is only read after a full validateC2S pass).
   hello: { name: (v) => isStr(v, NAME_MAX_LEN) && v.trim().length > 0, token: (v) => v == null || isStr(v, 64), version: (v) => v == null || isInt(v, 0, 1e6),
-    noReplace: isBool, claimAt: (v) => isNum(v, 0, Number.MAX_SAFE_INTEGER), delta: (v) => v == null || isInt(v, 0, 1e6),
-    $optional: ['token', 'version', 'noReplace', 'claimAt', 'delta'] },
+    noReplace: isBool, claimAt: (v) => isNum(v, 0, Number.MAX_SAFE_INTEGER), wire: (v) => isInt(v, 0, 1e6),
+    $optional: ['token', 'version', 'noReplace', 'claimAt', 'wire'] },
+  // full: this ping wants the whole cluster load summary in its pong (server/net.js CLUSTER_LOAD_EVERY_MS);
+  // the fork extension field validates in C2S_FORK below
   ping: { c: (v) => typeof v === 'number' && Number.isFinite(v) },
+  // Lightweight directory subscription; only the opened list carries one bounded page of room summaries.
+  'lobby.watch': { on: isBool, list: isBool, page: (v) => isInt(v, 0, 1e6), $optional: ['list', 'page'] },
+  // Quick-match request (SiderLock's room API): validation shape only — the mainline lobby has no
+  // matchmaking producer yet and answers BAD_MSG once the emergency gate is not the responder.
+  'lobby.quickMatch': { capacity: (v) => ROOM_CAPACITIES.includes(v), assetCache: isAssetCacheReadiness, $optional: ['capacity', 'assetCache'] },
+  // Post-v1 types use the readable JSON fallback; public identities never expose hidden invitation codes.
+  'lobby.join': { roomId: isRoomId,
+    assetCache: isAssetCacheReadiness, $optional: ['assetCache'] },
+  'lobby.spectate': { roomId: isRoomId,
+    assetCache: isAssetCacheReadiness, $optional: ['assetCache'] },
   // test: only the literal true (DESIGN §34.8). Omit it for a normal room — `false` is a bad field, so a
   // string cannot sneak in as "not a test". The server still refuses it unless SP_TEST_MODE is on.
+  // The fork's `experimental` option validates in C2S_FORK below. `capacity` is the fork's 20 人房 option and a
+  // published v1 position (shared/wireSchema.js id 36); `version` and `soloUnlimited` are the upstream additions.
   // difficulty: may be left out — the room starts at the server's default (server/lobby.js DEFAULT_DIFFICULTY) and the
   // host changes it in the room (room.setDifficulty), as in the event's 联合模拟; a value given must be a difficulty.
   // soloUnlimited: the timed-solo opt-out 「不限时」 (DESIGN §35.23.10). Optional, and only the literal boolean —
   // the server applies `true` solely to a solo room of a version whose solo is timed, and ignores it otherwise, so a
   // default create stays the message it was.
-  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), test: (v) => v === true, version: isVersionId, soloUnlimited: isBool, $optional: ['test', 'difficulty', 'version', 'soloUnlimited'] },
-  'room.join': { $optional: ['testAck'], testAck: (v) => v === true, code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
+  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), capacity: (v) => ROOM_CAPACITIES.includes(v),
+    test: (v) => v === true, version: isVersionId, soloUnlimited: isBool, assetCache: isAssetCacheReadiness,
+    $optional: ['capacity', 'assetCache', 'test', 'difficulty', 'version', 'soloUnlimited'] },
+  'room.join': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), assetCache: isAssetCacheReadiness,
+    testAck: (v) => v === true, $optional: ['assetCache', 'testAck'] },
   'room.leave': {},
   'room.ready': { ready: isBool },
   'room.setDifficulty': { difficulty: (v) => DIFFICULTIES.includes(v) },
+  'room.setCapacity': { capacity: (v) => ROOM_CAPACITIES.includes(v) },
+  'room.setMatchmaking': { allowed: isBool },
   // the co-op room option 「AI 队友最后选择」 (GitHub #338; host, before the match): the strategy and 机变 drafts order every
   // human seat before every AI seat (server/match/match/phases.js humansFirst); room.state.aiPicksLast
   'room.setAiPicksLast': { on: isBool },
+  // the room rule 「全局默认速度」 (host, before the match): 1× or 2× — every match and every round starts at it; room.state.speed
+  'room.setSpeed': { speed: (v) => v === PLAYBACK.NORMAL || v === PLAYBACK.FAST },
   // 「不限时」 (DESIGN §35.23.10; host, before the match, a solo room of a version whose solo is timed): the match's
   // preparation and 机变 stay untimed (Match opts.soloUnlimited). Off by default; room.state omits the key unless it is on.
   'room.setSoloUnlimited': { on: isBool },
@@ -526,10 +609,13 @@ export const C2S = {
   'room.aiRequest': { botId: isId },
   'room.aiVote': { voteId: (v) => typeof v === 'string' && v.length <= 16, approve: isBool },
   'room.addBot': {},
-  'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1) },
+  'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1), playerId: isId, $optional: ['playerId'] },
+  // Waiting-room host handover to a connected human (SiderLock port, server/lobby.js transferHost): the target is
+  // re-checked server-side, so the wire carries only its playerId
+  'room.transferHost': { playerId: isId },
   // the host removes another human before the match (server/lobby.js kick; community report #17); playerId = the one the
   // host confirmed — a seat that changed hands meanwhile is refused
-  'room.kick': { seat: (v) => isInt(v, 0, MAX_SEATS - 1), playerId: isId },
+  'room.kick': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1), playerId: isId },
   'room.start': {},
   'room.rerollSetup': { setupRevision: (v) => isInt(v, 0, 2 ** 31) },
   'room.cancelReroll': { voteId: (v) => isInt(v, 1, 2 ** 31) },
@@ -553,10 +639,12 @@ export const C2S = {
   // 自选编队 (0.2.0 DIY): the player's DIY slot picks; stored per session / seat like room.ownership (a match takes the
   // picks its seat had when it started; during a match they are stored for the next one: ROOM_STARTED)
   'room.diy': { picks: isDiyPicks },
+  // the display card (CARD_LIMITS above; server/lobby.js setCard — a fork feature) validates in C2S_FORK below.
   // spectator seats (remake feature, community report #26; MAX_SPECTATORS): take one of a co-op room's spectator seats —
   // in its lobby or while its match runs — never a player seat; the host frees one by playerId (the spectator gets
   // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat.
-  'room.spectate': { $optional: ['testAck'], testAck: (v) => v === true, code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
+  'room.spectate': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), assetCache: isAssetCacheReadiness,
+    testAck: (v) => v === true, $optional: ['assetCache', 'testAck'] },
   'room.removeSpectator': { playerId: isId },
   // the room's plugins (DESIGN §32, P1a; host, before the match — like a difficulty change it un-readies the others):
   // the plugins of this server the room switches on, in any order (the server closes the set over their requirements
@@ -598,14 +686,17 @@ export const C2S = {
   // unequip (DESIGN §34.15): one equipped item back to the hand, else the visible temp window. Official rooms refuse it.
   'g.unequip': { itemUid: isUid },
   'g.reward': { idx: (v) => isInt(v, 0, 5) },
-  'g.choice': { idx: (v) => isInt(v, 0, 5), choiceId: isId, $optional: ['choiceId'] },
+  'g.choice': { idx: (v) => isInt(v, 0, MAX_DRAFT_CARDS - 1), choiceId: isId, $optional: ['choiceId'] },
   // a plugin interaction window (PLUGIN API v2, docs/PLUGINS.md §10b): offerId is the window's declared id, idx the
   // slot picked; g.offerRefresh redraws one slot (the window's own `refresh.perSlot` bounds how often). The host
   // applies the window's declared effect primitive — a plugin never receives these messages itself.
   'g.offer': { offerId: isId, pluginId: isId, seq: (v) => isInt(v, 0, 1000000), cardId: optional(isId), idx: (v) => isInt(v, 0, PLUGIN_OFFER_SLOTS - 1) },
   'g.offerRefresh': { offerId: isId, pluginId: isId, seq: (v) => isInt(v, 0, 1000000), cardId: optional(isId), idx: (v) => isInt(v, 0, PLUGIN_OFFER_SLOTS - 1) },
   'g.ready': { ready: isBool },
-  'g.emote': { id: (v) => EMOTES.includes(v) },
+  // An emote id: one of the 36 official ones, or a plugin page's namespaced id (shared/plugins/emoteCatalog.js). The
+  // shape is all this checks — the match does not track which cosmetic plugins a room has, so it cannot know whether the
+  // id belongs to an installed page; an id of that shape is display-only and can never name an official emote.
+  'g.emote': { id: (v) => EMOTES.includes(v) || isPluginEmoteId(v) },
   // playerId: the player tapped in the team panel (a 联防 / boss pair field shows two) — what an eliminated viewer or a
   // spectator seat follows from then on (Match.watchPref; community report of 2026-10-06, item 56)
   'g.watch': { fieldId: (v) => isStr(v, 32), playerId: isId, $optional: ['playerId'] },
@@ -617,6 +708,9 @@ export const C2S = {
   // the push m.unitStats { seq, round, units: [unitStatsEntry] }; `seq` is echoed so the client keeps the newest answer
   'g.unitStats': { seq: (v) => isInt(v, 0, 2 ** 31), $optional: ['seq'] },
   'g.leave': {},
+  // optional multi-wave 联防 (uniteWaves.js, SiderLock port): a connected manual human votes to skip the remaining
+  // waves of the running 联防. voteId echoes views.unite.skipVote.id so a stale vote cannot land on the next wave.
+  'g.uniteSkipVote': { voteId: isId, $optional: ['voteId'] },
   // host test commands (DESIGN §34.8 phase 2). The server applies them only in a test match. `args` is checked
   // again by shared/testMode.js parseTestArgs (ids, bounds). Unknown keys inside args fail there, not here.
   'g.test': { cmd: isTestCommand, args: (v) => v === undefined || (isPlain(v) && Object.keys(v).length <= 8), $optional: ['args'] },
@@ -633,7 +727,7 @@ export const C2S = {
     resolved: (v) => isInt(v, 0, 1e5),
     leaks: (v) => isNum(v, 0, 1e6), bossDmg: (v) => isNum(v, 0, BIG),
     by: (v) => isMap(v, RESULT_LIMITS.players, isId, (x) => isNum(x, 0, BIG)), done: isBool,
-    left: (v) => isMap(v, RESULT_LIMITS.players, isId, (x) => isInt(x, 0, 1e5)),
+    left: (v) => isMap(v, MAX_PLAYER_CAPACITY, isId, (x) => isInt(x, 0, 1e5)),
     leaksBy: (v) => isMap(v, RESULT_LIMITS.players, isId, (x) => isNum(x, 0, 1e6)),
     $optional: ['resolved', 'leaks', 'bossDmg', 'by', 'done', 'left', 'leaksBy'],
   },
@@ -641,6 +735,8 @@ export const C2S = {
   // with gameplay plugins (P1c, DESIGN §32.6) the match refuses a result without it or with another one (and runs the
   // battle itself); a vanilla room's browser sends none
   'b.result': { battleId: isId, result: isBattleResult, cs: isContentHash, $optional: ['cs'] },
+  // A result too large for the socket (or beyond the result list caps) is re-simulated by the server instead.
+  'b.yield': { battleId: isId },
   // A delegated bot layout rehearsal (DESIGN §14): the match's current host answers the candidates it was handed with
   // the S2C 'b.rehearsal' frame. `choice` is the index of the candidate its browser picked, in the order the task sent
   // them — a malicious or buggy client can only name one of the server's own candidate layouts, never a layout or a
@@ -659,17 +755,73 @@ export const C2S = {
   'state.resync': {},
 };
 
+// Fork-only message validators and fork extension fields on published types (the merged forks' queue matchmaking,
+// display card, kick votes, local replicas, experimental options…). They stay OUT of the published v1 registry
+// above on purpose: test/wire-codec.test.js pins Object.keys(C2S) to the v1 catalog plus its declared JSON
+// fallback, and pins every published spec key to a wire position or a declared v1 extension. isC2SType /
+// validateC2S treat these exactly like C2S entries; for a type present in both, the fork fields merge on top of
+// the published spec (never reordering or renumbering a published position).
+export const C2S_FORK = {
+  hello: { matchmakingVersion: isId, playerCapacityVersion: isId, owner: (v) => isStr(v, 128), stateDelta: (v) => isInt(v, 0, 1e6),
+    $optional: ['matchmakingVersion', 'playerCapacityVersion', 'owner', 'stateDelta'] },
+  ping: { full: isBool, $optional: ['full'] },
+  'room.create': { experimental: isExperimental, $optional: ['experimental'] },
+  'room.setExperimental': { experimental: isExperimental },
+  'room.list': { subscribe: isBool, $optional: ['subscribe'] },
+  'room.voteRevival': { enable: isBool },
+  'queue.join': { difficulty: (v) => DIFFICULTIES.includes(v), party: isBool, experimental: () => false, $optional: ['party', 'experimental'] },
+  'queue.cancel': { ticketId: isId },
+  // Older clients may send a boolean vote, but it has no authority over room-owned rules.
+  'queue.accept': { ticketId: isId, offerId: isId, revivalVote: isBool, experimental: () => false, $optional: ['revivalVote', 'experimental'] },
+  // the strategy an AI seat takes in the strategy draft (host, co-op, before the match; server/lobby.js setBotBand): a
+  // band id, absent / null = the AI picks by itself; room.state seats[].band
+  'room.setBotBand': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1), bandId: nullable(isId), $optional: ['bandId'] },
+  // the display card (CARD_LIMITS above; server/lobby.js setCard): stored per session, copied to the player's seat
+  'room.card': { charId: isCardCharId, avatar: isCardCharId, bg: isCardBg, trophies: (v) => isInt(v, 0, CARD_LIMITS.trophies),
+    look: isCardLook, avatarLook: isCardLook, $optional: ['charId', 'avatar', 'bg', 'trophies', 'look', 'avatarLook'] },
+  // 投票移出 (server/match/match/kickVote.js): propose removing an offline teammate under AI takeover (SP_DRAFT / PREP),
+  // and answer the open vote (m.public kickVote.id); the proposer's agree:false withdraws it
+  'g.kickVote': { targetId: isId },
+  'g.kickBallot': { voteId: (v) => isInt(v, 1, 2 ** 31), agree: isBool },
+  // 比赛控制 (server/match/match/matchControl.js): propose the pause / fast-forward toggle / one-shot 跳过, and answer
+  // the open vote (m.public matchControl.id). Every action is a request the connected humans must all agree to; when
+  // the match has no other connected human the server applies it directly. The answer is the same shape as a kick
+  // ballot, and the proposer's agree:false withdraws it.
+  'g.matchControl': { action: (v) => MATCH_CONTROL_ACTIONS.includes(v) },
+  'g.matchControlBallot': { voteId: (v) => isInt(v, 1, 2 ** 31), agree: isBool },
+  // the core bond (盟约) the player means to build (a remake feature, display only): from INFO_CHECK until round 1's
+  // battle starts; every teammate and spectator sees it as m.public players[].bondPlan; absent / null clears it
+  'g.bondPlan': { bondId: nullable(isId), $optional: ['bondId'] },
+  'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
+  // server-run combat, local display replicas (DESIGN §14): `local` — this browser runs its own normal / 联防 fields
+  // from the b.start spec instead of being streamed them; `battleId` + `stream: true` — its replica diverged from a
+  // b.sync digest (`tick`) or cannot keep up: the server streams that field to it from then on
+  'g.sim': {
+    local: isBool, battleId: isId, stream: (v) => v === true, tick: (v) => isInt(v, 0, 1e7),
+    $optional: ['local', 'battleId', 'stream', 'tick'],
+  },
+};
+
+/** Whether `t` is a client message type: the published v1 registry or a fork extension (validated identically). */
+export function isC2SType(t) {
+  return typeof t === 'string' && (Object.hasOwn(C2S, t) || Object.hasOwn(C2S_FORK, t));
+}
+
 // Server → client message types (documentation + client dispatch table keys).
 export const S2C = [
   'welcome', 'ok', 'error', 'pong',
+  'announcement.notice', // explicit server-owner command; publication alone never sends this push
+  'lobby.state',
   'room.state', 'room.closed',
   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
+  // Post-v1 JSON fallback; repeated in welcome.emergency and match public freeze extensions.
+  'm.emergency',
   // m.layer { playerId, bondId, add } — own live prep layer gain; ephemeral, never replayed on resync.
   'm.layer',
   // m.unitStats { seq, round, units: [unitStatsEntry] } — the answer to g.unitStats (the requester only)
   'm.unitStats',
-  // client-side combat (DESIGN §14): b.start { battleId, fieldId, kind, spec, authoritative, startAt, serverNow, elapsed,
-  // speed, watch? } · b.pool { hp, max, teamLp, acked: { [fieldId]: cumulative boss damage counted } } ·
+  // client-side combat (DESIGN §14): b.start { battleId, fieldId, kind, spec, authoritative, startAt, serverNow,
+  // elapsed, speed, watch? } · b.pool { hp, max, teamLp, acked: { [fieldId]: cumulative boss damage counted } } ·
   // b.end { battleId, fieldId, reason }
   'b.start', 'b.pool', 'b.end',
   // a delegated bot layout rehearsal (DESIGN §14): b.rehearsal { taskId, playerId, cap, specs } — the host's browser
@@ -681,21 +833,53 @@ export const S2C = [
   'b.snap', 'b.ev',
 ];
 
+// Fork-only server → client types (queue/presence matchmaking, state deltas, the damage ledger, local display
+// replicas, the AFK rule): the same kind of contract as S2C but outside the published v1 list that
+// test/wire-codec.test.js pins. server/match/host/ipc.js relays these like S2C m.*/b.* frames.
+export const S2C_FORK = [
+  // Aggregate online identities and the requester's own matchmaking ticket (never other queue members).
+  // queue.state is a complete snapshot. Optional waitingCount exists only while queued. Lifecycle/hello snapshots
+  // are immediate; count-only changes coalesce at ~1s. Absent count means unknown.
+  // presence.state { online, seq, serverNow, maintenance? } — `maintenance: true` while the limits file's switch is
+  // on (server/onlineLimit.js): room.create / room.start / queue.join answer MAINTENANCE; omitted when off.
+  'presence.state', 'queue.state',
+  // m.state — m.public / m.private on a socket whose hello said stateDelta: 1 (shared/stateDelta.js):
+  // { kind, seq, full } or { kind, seq, base, patch }; the browser decodes it back before dispatch
+  'm.state',
+  // the AFK rule (挂机移出, server/match/Match.js afkRemoveRounds): m.removed { reason: 'afk', rounds } — to the
+  // removed player, who is then out of the room as after g.leave · m.notice { kind: 'afkRemoved', playerId, name,
+  // rounds } — to everyone else in the match (players and spectator seats)
+  'm.removed', 'm.notice',
+  // server-run combat, local display replicas: b.sync { battleId, tick, h, done? } — the Worker battle's state
+  // digest right after step `tick`; `done`: the step that finished it · b.ext { battleId, i, to, hp, end? } — a
+  // boss / hidden replica's shared-pool record from entry `i`
+  'b.sync', 'b.ext',
+  // Complete public round ledger (server combat): m.damage { matchId, round, phase, status, owners }.
+  // Client-authoritative combat sends available:false with owners:[] instead of trusting submitted operator stats.
+  'm.damage',
+  // Low-frequency absolute field scores: b.damage { fieldId, kind, round, gt, owners } (same owner rows as m.damage).
+  'b.damage',
+];
+
 /**
  * Validate a decoded client message. Returns `null` when valid, otherwise a short reason string.
  * Extra unknown fields are ignored (not copied by handlers).
  */
 export function validateC2S(msg) {
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return 'not an object';
-  const spec = typeof msg.t === 'string' && Object.hasOwn(C2S, msg.t) ? C2S[msg.t] : null;
-  if (!spec) return `unknown type ${String(msg.t).slice(0, 32)}`;
+  const t = typeof msg.t === 'string' ? msg.t : null;
+  const main = t !== null && Object.hasOwn(C2S, t) ? C2S[t] : null;
+  const fork = t !== null && Object.hasOwn(C2S_FORK, t) ? C2S_FORK[t] : null;
+  if (!main && !fork) return `unknown type ${String(msg.t).slice(0, 32)}`;
+  // A fork extension's fields merge on top of the published spec; $optional concatenates (the sets are disjoint).
+  const spec = main && fork ? { ...main, ...fork, $optional: [...(main.$optional || []), ...(fork.$optional || [])] } : main || fork;
   if (msg.rid != null && !isInt(msg.rid, 0, 2 ** 31)) return 'bad rid';
   const optional = spec.$optional || [];
   for (const [k, check] of Object.entries(spec)) {
     if (k === '$optional') continue;
     const v = msg[k];
     if (v === undefined && optional.includes(k)) continue;
-    if (!check(v)) return `bad field ${k}`;
+    if (!(/** @type {(v:any)=>boolean} */ (check))(v)) return `bad field ${k}`;
   }
   return null;
 }

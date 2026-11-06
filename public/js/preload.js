@@ -1,0 +1,239 @@
+// Compare cloud file digests with local Cache Storage before importing the game shell.
+import { RESOURCE_INDEX_URL, selectResourceFiles } from '../../shared/resource-plan.js';
+export { ASSET_MANIFEST_URL, LOCAL_MANIFEST_URL, DATA_URLS, buildPreloadPlan, collectAssetUrls, collectLocalUrls } from '../../shared/resource-plan.js';
+
+export function validateResourceIndex(index) {
+  if (index?.version !== 2 || !/^[a-f0-9]{64}$/.test(index.hash) || !Array.isArray(index.files) || !index.files.length) {
+    throw new Error('云端资源清单无效');
+  }
+  // The optional CDN origin the server offers for asset downloads (SP_ASSET_BASE): the worker tries it first and
+  // falls back to this server (public/sw.js download), so a broken origin degrades instead of failing.
+  if (index.base != null && (typeof index.base !== 'string' || !/^https?:\/\/[a-z0-9.-]+(?::\d+)?$/.test(index.base)
+    || /[@?#]/.test(index.base))) {
+    throw new Error('云端资源清单的加速源无效');
+  }
+  const paths = new Set();
+  let bytes = 0;
+  for (const file of index.files) {
+    if (!file || typeof file.url !== 'string' || !/^\/(?:data|assets|fonts)\//.test(file.url)
+      || /[\\\0?#]/.test(file.url) || file.url.split('/').slice(1).some((part) => !part || part.startsWith('.'))
+      || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0
+      || paths.has(file.url) || (file.runtime && !/^\/media\/[^?#\\]+$/.test(file.runtime))) {
+      throw new Error('云端资源清单包含无效文件');
+    }
+    paths.add(file.url);
+    bytes += file.bytes;
+  }
+  if (index.bytes !== bytes) throw new Error('云端资源清单大小不一致');
+  const startup = index.startup;
+  if (startup) {
+    const bgm = startup.bgm;
+    if (bgm && (!paths.has(bgm.loop) || !bgm.loop.startsWith('/assets/audio/')
+      || (bgm.intro && (!paths.has(bgm.intro) || !bgm.intro.startsWith('/assets/audio/'))))) {
+      throw new Error('云端启动音乐无效');
+    }
+    if (!Array.isArray(startup.fonts) || startup.fonts.some((face) => !paths.has(face?.url)
+      || !face.url.startsWith('/fonts/') || typeof face.family !== 'string' || !Number.isFinite(face.weight))) {
+      throw new Error('云端启动字体无效');
+    }
+  }
+  return index;
+}
+
+function progressText(progress, onProgress) {
+  try { onProgress?.(progress); } catch { /* UI progress is best effort */ }
+}
+
+/** The saved 资源选择 (the start page's picker): 'predownload' | 'stream', or null (ask at the next boot). */
+export const DOWNLOAD_PREF_KEY = 'sp.pref.download';
+export function readDownloadPref() {
+  try {
+    const raw = localStorage.getItem(DOWNLOAD_PREF_KEY);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return raw; }
+  } catch { return null; }
+}
+export function saveDownloadPref(value) {
+  try { localStorage.setItem(DOWNLOAD_PREF_KEY, JSON.stringify(value)); } catch { /* private browsing */ }
+}
+
+/** Fetch + validate the cloud index once: use one authoritative list for verification and download. */
+export async function fetchResourceIndex() {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 120000);
+  try {
+    const response = await fetch(RESOURCE_INDEX_URL, { cache: 'no-store', signal: abort.signal });
+    if (!response.ok) throw new Error(`云端资源清单 HTTP ${response.status}`);
+    return validateResourceIndex(await response.json());
+  } finally { clearTimeout(timer); }
+}
+
+function waitForActivation(worker) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error('本地缓存服务启动超时，请刷新重试')), 30000);
+    function finish(error) {
+      clearTimeout(timer);
+      worker.removeEventListener('statechange', check);
+      if (error) reject(error); else resolve(worker);
+    }
+    function check() {
+      if (worker.state === 'activated') finish();
+      else if (worker.state === 'redundant') finish(new Error('本地缓存服务更新失败，请刷新重试'));
+      else if (worker.state === 'installed') worker.postMessage({ type: 'SKIP_WAITING' });
+    }
+    worker.addEventListener('statechange', check);
+    check();
+  });
+}
+
+export async function inspectCachedSnapshot(index, selection = null) {
+  // Complete-download mode ignores legacy partial selections; the indexed list is always authoritative.
+  const selected = index.files;
+  const worker = await activeWorker();
+  const channel = new MessageChannel();
+  const result = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('本地资源快速校对超时')), 30000);
+    channel.port1.onmessage = (event) => {
+      const data = event.data || {};
+      if (data.type === 'LOCAL_SNAPSHOT') { clearTimeout(timer); resolve(data); }
+      if (data.type === 'ERROR') { clearTimeout(timer); reject(new Error(data.message || '本地资源快速校对失败')); }
+    };
+    worker.postMessage({ type: 'INSPECT_SNAPSHOT', index, wanted: selected.map((file) => file.url) }, [channel.port2]);
+  });
+  return { ...result, selected: selected.length, selectedBytes: selected.reduce((sum, file) => sum + file.bytes, 0) };
+}
+
+/**
+ * Streamed mode (the player chose 边玩边下载): register the index with the worker WITHOUT downloading, so its fetch
+ * handler verifies + caches every asset on demand while the game plays. The boot page stays download-free.
+ */
+export async function activateStreamIndex(index) {
+  if (!('serviceWorker' in navigator) || !('MessageChannel' in window) || !('caches' in window)) {
+    throw new Error('当前浏览器无法保存本地资源，请通过 HTTPS 或 localhost 使用最新版浏览器');
+  }
+  const worker = await activeWorker();
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => finish(reject, new Error('本地缓存服务激活超时，请刷新重试')), 30000);
+    function finish(fn, value) {
+      clearTimeout(timer);
+      channel.port1.close();
+      fn(value);
+    }
+    channel.port1.onmessage = (event) => {
+      const data = event.data || {};
+      if (data.type === 'INDEX_ACTIVE') finish(resolve, data);
+      else if (data.type === 'ERROR') finish(reject, new Error(data.message || '本地缓存服务激活失败'));
+    };
+    try { worker.postMessage({ type: 'ACTIVATE_INDEX', index }, [channel.port2]); }
+    catch (err) { finish(reject, err); }
+  });
+}
+
+async function activeWorker() {
+  const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' });
+  await registration.update();
+  const worker = registration.installing || registration.waiting || registration.active;
+  if (!worker) throw new Error('本地缓存服务未就绪');
+  await waitForActivation(worker);
+  // clients.claim() controls the current document without a mandatory reload.
+  if (navigator.serviceWorker.controller !== worker) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => finish(new Error('本地缓存服务尚未接管页面，请刷新重试')), 15000);
+      function finish(error) {
+        clearTimeout(timer);
+        navigator.serviceWorker.removeEventListener('controllerchange', check);
+        if (error) reject(error); else resolve();
+      }
+      function check() { if (navigator.serviceWorker.controller === worker) finish(); }
+      navigator.serviceWorker.addEventListener('controllerchange', check);
+      check();
+    });
+  }
+  return worker;
+}
+
+function sendBatch(worker, index, offset, onProgress, onReady, wanted = null) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const timer = setTimeout(() => finish(reject, new Error('资源批次校对超时，请刷新重试')), 120000);
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      channel.port1.close();
+      fn(value);
+    };
+    channel.port1.onmessage = (event) => {
+      const data = event.data || {};
+      if (data.type === 'RESOURCE_READY') {
+        try { onReady?.(data.url); } catch { /* optional consumers cannot block validation */ }
+      } else if (data.type === 'PROGRESS') progressText(data, onProgress);
+      else if (data.type === 'BATCH_DONE') finish(resolve, data);
+      else if (data.type === 'ERROR') finish(reject, new Error(data.message || '资源预下载失败'));
+    };
+    try { worker.postMessage({ type: 'PRELOAD_BATCH', index, offset, wanted }, [channel.port2]); }
+    catch (err) { finish(reject, err); }
+  });
+}
+
+async function sendBatches(worker, index, onProgress, onReady, wanted = null) {
+  const totals = { cached: 0, downloaded: 0, downloadedBytes: 0, checkedBytes: 0 };
+  const count = wanted ? wanted.length : index.files.length;
+  let offset = 0;
+  while (offset < count) {
+    const result = await sendBatch(worker, index, offset, (progress) => progressText({ ...progress,
+      cached: totals.cached + (progress.cached || 0), downloaded: totals.downloaded + (progress.downloaded || 0),
+      downloadedBytes: totals.downloadedBytes + (progress.downloadedBytes || 0),
+      checkedBytes: totals.checkedBytes + (progress.checkedBytes || 0) }, onProgress), onReady, wanted);
+    if (!Number.isSafeInteger(result.done) || result.done <= offset || result.done > count
+      || result.version !== index.hash || result.final !== (result.done === count)) {
+      throw new Error('资源批次结果无效，请刷新重试');
+    }
+    for (const key of Object.keys(totals)) totals[key] += result[key] || 0;
+    offset = result.done;
+  }
+  return { type: 'DONE', version: index.hash, total: count, ...totals };
+}
+
+export async function prepareAssets({ onProgress, onIndex, onResourceReady, selection = null, index: given = null } = {}) {
+  if (!('serviceWorker' in navigator) || !('MessageChannel' in window) || !('caches' in window) || !window.crypto?.subtle) {
+    throw new Error('当前浏览器无法保存本地资源，请通过 HTTPS 或 localhost 使用最新版浏览器');
+  }
+  let index = given;
+  if (!index) {
+    progressText({ phase: 'manifest' }, onProgress);
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 120000);
+    try {
+      const response = await fetch(RESOURCE_INDEX_URL, { cache: 'no-store', signal: abort.signal });
+      if (!response.ok) throw new Error(`云端资源清单 HTTP ${response.status}`);
+      index = validateResourceIndex(await response.json());
+    } finally { clearTimeout(timer); }
+  }
+  // Complete-download mode always processes the full indexed list, including audio and tutorial resources.
+  const selected = null;
+  const wanted = null;
+  progressText({ phase: 'verify', done: 0, total: wanted ? wanted.length : index.files.length, totalBytes: index.bytes }, onProgress);
+  const worker = await activeWorker();
+  const files = new Map(index.files.map((file) => [file.url, file]));
+  const ready = new Set();
+  // Read only objects verified during this boot, keyed by this cloud digest. Never fetch another copy.
+  const readResource = async (url) => {
+    if (!ready.has(url)) throw new Error('本地资源尚未校验完成');
+    const file = files.get(url);
+    const cache = await caches.open('sp-resource-objects-v2');
+    const response = await cache.match(`${location.origin}/__sp_object__/${file.sha256}${encodeURI(file.url)}`);
+    if (!response) throw new Error('本地资源已被回收，请重新校验');
+    return response;
+  };
+  try { onIndex?.(index, readResource); } catch { /* optional startup presentation */ }
+  const notifyReady = (url) => {
+    if (!files.has(url)) return;
+    ready.add(url);
+    try { Promise.resolve(onResourceReady?.(files.get(url), readResource)).catch(() => {}); } catch { /* optional consumer */ }
+  };
+  const result = await sendBatches(worker, index, onProgress, notifyReady, wanted);
+  return { ...result, mode: 'verified-cache', urls: (selected || index.files).map((file) => file.url) };
+}

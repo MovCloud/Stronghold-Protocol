@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { removeTree } from './helpers/rmtree.js';
 import {
   ASSET_PACK_README, AUTHOR_TEST_FILES, FOLDER, REFUSE, RUNTIME_RESEARCH, assetPackName, assetPackPlan, assetPackReadme, entryProblems,
   importableArt, isRefused, packageOutIsUnsafe, parseArgs, plan, playerPackageJson, rewritePlayerDoc, resolveSpecifier, scanFiles,
@@ -64,7 +65,7 @@ test('selection: runtime files in; tests, maintainer tools, other docs, dev page
     'docs/research/07-assets.json', 'CHANGELOG.md']) {
     assert.ok(keep.includes(f), `keeps ${f}`);
   }
-  assert.equal(keep.length, 36, keep.join(' '));
+  assert.equal(keep.length, 37, keep.join(' '));
   assert.equal(drop.length, 40, drop.join(' '));
   assert.ok(!keep.some((f) => drop.includes(f)));
 });
@@ -210,7 +211,7 @@ test('dry-run on a temporary checkout: the full and the lite file lists, the sum
     assert.match(lite.stdout, /^package: lite \(no game art\)/m);
     assert.deepEqual(fs.readdirSync(dir).sort(), before, 'a dry-run writes nothing');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -244,7 +245,7 @@ test('scans and guards: home paths and the account name in shipped files (art to
     assert.equal(cli.status, 1, 'a problem fails the dry-run');
     assert.match(cli.stdout, /^PROBLEMS \(1\):\n {2}public\/js\/main\.js:2 imports \.\.\/dev\/mock\.js/m);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -274,7 +275,7 @@ test('a --no-install build of the temporary checkout zips exactly the plan in on
     assert.equal(inRepo.status, 1);
     assert.match(inRepo.stderr, /refusing to write into the repository/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });
@@ -311,7 +312,7 @@ test('content packs ship: every committed pack of both layouts, never one only o
     ]);
     assert.ok(!fs.existsSync(path.join(stage, 'packs/local')), 'a pack only on this machine is not in the zip');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });
@@ -345,7 +346,7 @@ test('the stage drops dishonest npm scripts and rewrites unshipped doc links', {
     assert.equal(rewritePlayerDoc(readme, 'README.md', shipped, '9.9.9'), got);
     assert.equal(playerPackageJson(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')), shipped).scripts.test, undefined);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });
@@ -360,7 +361,7 @@ test('the personal scan reads bytes, never reports the matched text, and skips f
       ['a.bin (home-directory path)', 'c.txt (account name)']);
     assert.deepEqual(scanFiles(dir, ['a.bin', 'c.txt'], { home: false, names: [] }), [], 'node_modules: the names only');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -441,7 +442,7 @@ test('asset pack plan: the listed art with the effects and the default page; man
       ['uncommitted change: data/assets.json (the pack must match the released manifest: commit it, or --allow-dirty)']);
     assert.deepEqual(assetPackPlan(dir, { env: ENV, scan: false, allowDirty: true }).problems, []);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -463,7 +464,7 @@ test('--assets: a dry run lists the pack and writes nothing; it never combines w
     assert.equal(parseArgs(['--assets']).assets, true);
     assert.equal(parseArgs([]).assets, false, 'the normal modes are unchanged');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -556,7 +557,7 @@ test('a --assets build zips exactly the plan and README.txt in one folder, and t
       assert.ok(hit && /^\/(?:assets|fonts)\/~[0-9a-f]{16}\//.test(hit), `${f} is stored at its hashed URL`);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });
@@ -575,7 +576,7 @@ test('a --assets build of a development version needs --allow-dev', { skip: !has
     assert.equal(dev.status, 0, dev.stdout + dev.stderr);
     assert.ok(fs.existsSync(path.join(out, 'Stronghold-Protocol-v9.9.9-dev-assets.zip')));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });

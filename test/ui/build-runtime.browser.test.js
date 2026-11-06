@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { installTestLexicon } from '../helpers/moderation-fixture.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -58,6 +59,9 @@ render();
 `;
 
 function fixture() {
+  // The throwaway server has no deployment secrets. Use an independent test
+  // dictionary/key rather than copying the real .state directory into it.
+  installTestLexicon({ force: true });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-build-browser-'));
   // tools/assets: the studio's Spine / atlas parsers, which the server imports since 0.3.0; public/studio/js: the
   // studio's form models (gameplayModel.js, presentation.js), which the server's authoring imports since 0.3.1
@@ -72,7 +76,7 @@ function fixture() {
   fs.writeFileSync(path.join(root, 'public/dev/build-runtime.js'), SCRIPT);
   fs.writeFileSync(path.join(root, 'start.mjs'), `
 import { startServer } from './server/index.js';
-const srv = await startServer({ port: Number(process.env.PORT), host: '127.0.0.1', quiet: true });
+const srv = await startServer({ port: Number(process.env.PORT), host: '127.0.0.1', quiet: true, clientBuild: false });
 process.send({ port: srv.port });
 process.on('SIGTERM', async () => { await srv.close(); process.exit(0); });
 `);
@@ -81,7 +85,8 @@ process.on('SIGTERM', async () => { await srv.close(); process.exit(0); });
 
 async function start(root, port = 0) {
   const child = fork(path.join(root, 'start.mjs'), [], {
-    cwd: root, env: { ...process.env, PORT: String(port) }, silent: true,
+    // This copied install has no test/helpers: keep the parent's relative --import out of it.
+    cwd: root, execArgv: [], env: { ...process.env, PORT: String(port) }, silent: true,
   });
   let stderr = '';
   child.stderr.on('data', (buf) => { stderr += buf; });

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SimulationPool, createSimulationPool, workerSettings } from '../server/workers/pool.js';
+import { SimulationPool, createSimulationPool, defaultWorkerCount, workerSettings } from '../server/workers/pool.js';
 
 const fixture = new URL('./fixtures/pool-worker.mjs', import.meta.url);
 const fixturePool = (opts = {}) => new SimulationPool({ size: 1, workerUrl: fixture, ...opts });
@@ -17,20 +17,22 @@ async function until(pred) {
   }
 }
 
-test('worker settings are opt-in: no SP_WORKERS means no pool', () => {
-  // The pool starts threads only when the operator asked for them. Unset, empty, junk and 0 all mean "off".
-  assert.equal(workerSettings({}, 1).size, 0, 'unset starts nothing');
-  assert.equal(workerSettings({}, 32).size, 0);
-  assert.equal(workerSettings({ SP_WORKERS: '' }, 8).size, 0);
-  assert.equal(workerSettings({ SP_WORKERS: '0' }, 8).size, 0);
-  assert.equal(workerSettings({ SP_WORKERS: '-1' }, 8).size, 0, 'out of range falls back to off, not to the CPU budget');
-  assert.equal(workerSettings({ SP_WORKERS: 'junk' }, 8).size, 0);
-  assert.equal(workerSettings({ SP_WORKERS: '33' }, 32).size, 0);
+test('worker settings keep the fork CPU-derived default; only the explicit 0 means no pool', () => {
+  // This fork derives the size from the CPU count (docs/operations/DEPLOY.md): unset, empty and junk all fall back to
+  // that default. The explicit 0 is the only "off" state. (Same semantics as the fork's archived workers.test.js.)
+  assert.equal(workerSettings({}, 1).size, 1, 'unset is the CPU-derived count');
+  assert.equal(workerSettings({}, 32).size, 8);
+  assert.equal(workerSettings({}, 8).size, 6);
+  assert.equal(workerSettings({ SP_WORKERS: '' }, 8).size, 6, 'empty falls back to the CPU default');
+  assert.equal(workerSettings({ SP_WORKERS: '0' }, 8).size, 0, 'the explicit 0 is the only off state');
+  assert.equal(workerSettings({ SP_WORKERS: '-1' }, 8).size, 6, 'out of range falls back to the CPU default');
+  assert.equal(workerSettings({ SP_WORKERS: 'junk' }, 8).size, 6);
+  assert.equal(workerSettings({ SP_WORKERS: '33' }, 32).size, 8);
   assert.equal(workerSettings({ SP_WORKERS: '1' }, 8).size, 1);
   assert.equal(workerSettings({ SP_WORKERS: '8' }, 32).size, 8);
   assert.deepEqual(workerSettings({ SP_WORKERS: '3', SP_WORKER_QUEUE: '9', SP_WORKER_TIMEOUT_MS: '456' }),
     { size: 3, maxQueue: 9, timeoutMs: 456 });
-  assert.deepEqual(workerSettings({}, 8), { size: 0, maxQueue: 256, timeoutMs: 120000 }, 'the queue bounds keep their defaults');
+  assert.deepEqual(workerSettings({}, 8), { size: 6, maxQueue: 256, timeoutMs: 120000 }, 'the queue bounds keep their defaults');
 });
 
 test('bounded queue, priority, queued cancellation, and thread reuse', async (t) => {
@@ -87,12 +89,17 @@ test('crashed / timed out workers are replaced; running cancellation and shutdow
   await assert.rejects(pool.submit('burn', {}).promise, { code: 'POOL_CLOSED' });
 });
 
-test('no pool is created unless SP_WORKERS says which size', async () => {
-  // Unset, empty, junk and the explicit 0 all leave the work inline; the server behaves exactly as before the pool existed.
-  assert.equal(createSimulationPool({ data: {}, env: {} }), null, 'unset starts no pool');
-  assert.equal(createSimulationPool({ data: {}, env: { SP_WORKERS: '' } }), null);
-  assert.equal(createSimulationPool({ data: {}, env: { SP_WORKERS: 'junk' } }), null);
+test('no pool is created only when SP_WORKERS says the explicit 0', async () => {
+  // In this fork an unset, empty or junk SP_WORKERS still builds the CPU-derived pool; the explicit 0 is what leaves
+  // the work inline, so the server behaves exactly as before the pool existed.
   assert.equal(createSimulationPool({ data: {}, env: { SP_WORKERS: '0' } }), null, 'no pool, the work stays inline');
+  const derived = createSimulationPool({ data: {}, env: {}, workerUrl: fixture });
+  try {
+    assert.ok(derived instanceof SimulationPool, 'unset builds the CPU-derived pool');
+    assert.equal(derived.size, defaultWorkerCount());
+  } finally {
+    await derived.close();
+  }
   const pool = createSimulationPool({ data: {}, env: { SP_WORKERS: '1' }, workerUrl: fixture });
   try {
     assert.ok(pool instanceof SimulationPool, 'a size of 1 is an ordinary pool');

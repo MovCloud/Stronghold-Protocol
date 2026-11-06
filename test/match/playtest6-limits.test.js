@@ -44,9 +44,10 @@ test('PlayerState.addLayers: a gain stops at 999; onLayers reports the clamped c
   ps.layers.lateranoShip = 996;
   assert.equal(ps.addLayers('lateranoShip', 10), 3);
   assert.equal(ps.layers.lateranoShip, 999);
-  // what the client sees: m.private bonds and the public bond list
+  // what the client sees: layers alone (no member) are not on the bond strip (owner report 2026-10-25) — the count is
+  // still the bond view's own (asserted above)
   const priv = ps.privateView();
-  assert.equal(priv.bonds.find((b) => b.bondId === 'yanShip').layers, 999);
+  assert.equal(priv.bonds.find((b) => b.bondId === 'yanShip'), undefined);
   assert.deepEqual(collectViolations(m), []);
   m.dispose();
 });

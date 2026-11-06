@@ -1,9 +1,11 @@
 // server/match/match/prep.js — Match methods: the PREP phase — its start (deferred item merges, onPrepStart), the AI
 // seats' sliced preps (scheduleBotPrep: economy + layout, rehearsal, Ready), Ready and the deadline, and its end
-// (onPrepEnd, PlayerState.endPrep, then COMBAT or the Final Assault / Hidden Core).
+// (the AFK rule's check, the offline takeover, onPrepEnd, PlayerState.endPrep, then COMBAT or the Final Assault / Hidden
+// Core).
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { PHASE } from '../../../shared/constants.js';
+import { canUseWorkerRehearsal, rehearsalFingerprint } from '../combat/rehearsal.js';
 import { testSlice } from '../testTrace.js';
 import { DELAYS } from './common.js';
 
@@ -21,6 +23,9 @@ export class MatchPrep {
       ps.recompute();
       this.dispatch(ps, 'onPrepStart', { round: this.round });
       ps.recompute();
+      // 常规手牌区出现空位时自动移入 (GitHub #82): the deferred merges / the grants above may free hand slots
+      // AFTER a golden overflowed into temp — pull the overflow back before the prep shows it (the temp invariant).
+      if (this.random) ps._absorbTempIntoHand();
     }
     // solo / single-human matches: untimed (soloUntimed); co-op: the round's prepTime
     const secs = this.soloUntimed ? null : this.gd.prepTime(this.round);
@@ -47,33 +52,84 @@ export class MatchPrep {
    * the delegation — which is why the continuation is installed here and not with the frame.
    */
   scheduleBotPrep(ps, i = 0) {
-    const round = this.round;
-    const token = (ps._botPrepToken = (ps._botPrepToken || 0) + 1);
-    const valid = () => this.phase === PHASE.PREP && this.round === round && ps.alive && !ps.ready && ps.botControlled && ps._botPrepToken === token;
+    this._cancelBotPrep(ps);
+    const round = this.round, token = ps._botPrepToken;
     const bounded = Number.isFinite(this.botSliceMs);
     const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const warn = (message, e) => this.log.warn?.(`[match ${this.roomCode}] bot ${ps.playerId} ${message}${e ? `: ${e.message ?? e}` : ''}`);
+    const work = {
+      timer: null, gen: null, job: null, cancelled: false, fingerprint: null, wave: null,
+      verify: this.botRehearsal > 0 && canUseWorkerRehearsal(this),
+      // Identify the explicit comparison adapter before planning, not only after work.job exists.
+      legacy: typeof this.trialPool?.runTrial !== 'function' && typeof this.trialPool?.createTrial === 'function',
+      cancel: () => {
+        if (work.cancelled) return;
+        work.cancelled = true;
+        if (ps._botPrepWork === work) ps._botPrepWork = null;
+        this.cancel(work.timer); work.timer = null;
+        try { work.gen?.return(); } catch { /* cancellation can be triggered by Ready inside this generator */ }
+        work.gen = null;
+        const job = work.job; work.job = null;
+        try { Promise.resolve(job?.close?.()).catch((e) => warn('rehearsal cleanup failed', e)); }
+        catch (e) { warn('rehearsal cleanup failed', e); }
+      },
+    };
+    ps._botPrepWork = work;
+    const valid = () => !this.disposed && !this.ended && !work.cancelled && ps._botPrepWork === work &&
+      this.phase === PHASE.PREP && this.round === round && ps.alive && !ps.left && !ps.ready && ps.botControlled && ps._botPrepToken === token;
+    const fresh = () => !work.verify || work.fingerprint === null ||
+      (this.wave === work.wave && rehearsalFingerprint(this, ps) === work.fingerprint);
+    const capture = () => {
+      if (work.verify) { work.wave = this.wave; work.fingerprint = rehearsalFingerprint(this, ps); }
+    };
+    const stale = () => {
+      // Owner input changed externally. Never apply a proposal for the former holdings, nor repeat economy/RNG.
+      const job = work.job; work.job = null;
+      Promise.resolve(job?.close?.()).catch((e) => warn('rehearsal cleanup failed', e));
+      try { work.gen?.return(); } catch { /* already yielded */ }
+      work.gen = null; work.verify = false; work.fingerprint = null;
+      warn('rehearsal discarded after own inputs changed');
+      if (valid()) end(null); else work.cancel();
+    };
+    const defer = (ms, fn) => {
+      work.timer = this.later(ms, () => {
+        work.timer = null;
+        if (!valid()) { work.cancel(); return; }
+        // Preserve legacy comparison's original defer + drive/slice checks, including the planning stage.
+        // Dedicated streaming jobs only fingerprint at drive/slice entry, not twice in this callback.
+        if (work.legacy && !fresh()) { stale(); return; }
+        fn();
+      });
+    };
+    /** Only synchronous .next() owns the worker-enabled context. One-shot helpers and virtual/custom fixtures do not. */
     // Test replay ignores the wall clock and stops after the journalled step count (testSlice).
     const sliceCtl = testSlice(this);
-    /** Step a generator until done or the slice budget is used; `then(value)` once it is done (null on an error). */
     const drive = (gen, label, then) => {
-      const t0 = now();
-      let r = null;
+      if (!valid()) { work.cancel(); return; }
+      if (!fresh()) { stale(); return; }
+      const t0 = now(), owner = this._workerBotPrepOwner;
+      let r = null, failure = null;
+      work.gen = gen;
+      if (work.verify) this._workerBotPrepOwner = ps;
       try {
         do {
           r = gen.next();
           if (!r || typeof r.done !== 'boolean') throw new TypeError('Bot prep hooks must return a synchronous iterator');
           if (sliceCtl) sliceCtl.note(1);
         } while (!r.done && !(sliceCtl ? sliceCtl.wall(now() - t0, this.botSliceMs) : (bounded && now() - t0 >= this.botSliceMs))); // loop-cap: generator and the bot time slice
-      } catch (e) {
-        this.reportError(`bot ${ps.playerId}${label}`, e);
-        then(null);
-        return;
-      }
-      if (r.done) { then(r.value); return; }
-      this.later(0, () => { if (valid()) drive(gen, label, then); });
+      } catch (e) { failure = e; }
+      finally { this._workerBotPrepOwner = owner; }
+      if (!valid()) { work.cancel(); return; }
+      // Expected default/winning layout mutations are captured after OUR atomic slice. The next callback checks
+      // this signature before advancing: gifts/equip/moves between candidate collection and default placement
+      // cannot be blindly accepted by capturing a fresh signature for old inputs at the first RPC call.
+      capture();
+      if (failure) { this.reportError(`bot ${ps.playerId}${label}`, failure); work.gen = null; then(null); return; }
+      if (r.done) { work.gen = null; then(r.value); return; }
+      defer(0, () => drive(gen, label, then));
     };
     const ready = () => {
-      if (!ps.ready) {
+      if (valid()) {
         this.autoPickPersonalChoice(ps, 'random');
         ps.resolveTemp();
         ps.setReady(true);
@@ -85,24 +141,8 @@ export class MatchPrep {
       if (!gen) { ready(); return; }
       drive(gen, '', ready);
     };
-    /** The layout the finished job chose is applied in a callback of its own (bounded slices end one stage per call). */
-    const finish = (job) => {
-      if (bounded) this.later(0, () => { if (valid()) end(job); });
-      else end(job);
-    };
-    /** The rehearsal's slices, once the job simulates locally (nobody answered, or the server took it over). */
-    const runJob = (job) => {
-      const slice = () => {
-        if (!valid()) return;
-        let done = true;
-        try { done = job.run(this.botSliceMs, sliceCtl); } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
-        if (done) finish(job);
-        else this.later(0, slice);
-      };
-      // bounded slices start in a callback of their own (the economy + default layout above already used this one)
-      if (bounded) this.later(0, slice);
-      else slice();
-    };
+    // Upstream's strategy hook; the legacy base is botPrepBeginSteps, so the fork's direct call is the same path.
+    // `complete` below is the fork's (it also covers a remote job), which is why upstream's finish/runJob are not used.
     const begin = () => {
       if (!valid()) return;
       let gen;
@@ -110,42 +150,90 @@ export class MatchPrep {
       catch (e) { this.reportError(`bot ${ps.playerId}`, e); end(null); return; }
       drive(gen, '', (job) => {
         if (!job) { end(null); return; }
-        // A job is finished when it has nothing left to simulate: the server's own run over the candidates, or — with a
-        // delegated one — the host's pick, which MatchRehearsal accepts as soon as it arrives, possibly while the
-        // generator above was still placing the default layout (its `done` is already true here). Either way the layout
-        // is ready: it is applied, never simulated again, and a later local run cannot overwrite the accepted pick.
-        if (job.done) { finish(job); return; }
-        // delegated and unanswered: MatchRehearsal calls back here — `done`, the pick already in `job.best`, nothing
-        // left to simulate — or after the server took the job over, whose own slices follow; never once the prep ended.
-        // The continuation is installed here rather than when the frame went out: the generator that offered the task
-        // still places the default layout after the delegation returns (`applyPlanSteps`), so an outcome applied earlier
-        // would set the seat Ready and drop those steps — an answer that arrived in the meantime is the `done` above.
+        work.job = job;
+        const complete = () => { if (bounded || job.remote) defer(0, () => end(job)); else end(job); };
+        const slice = () => {
+          if (!valid()) { work.cancel(); return; }
+          if (!fresh()) { stale(); return; }
+          if (job.streamed && !job.inline) {
+            // Dedicated workers own their bounded internal slices. Main wakes only for low-frequency progress
+            // and completion, never once per 32 ticks. All these callbacks are new asynchronous boundaries.
+            const remaining = this.deadline ? this.deadline - this.sched.now() : 30_000;
+            if (remaining <= 0) { work.cancel(); return; }
+            const check = () => {
+              if (!valid() || (this.deadline && this.sched.now() >= this.deadline)) { work.cancel(); return false; }
+              if (!fresh()) { stale(); return false; }
+              return true;
+            };
+            job.start({ timeoutMs: Math.min(30_000, remaining),
+              onReady: () => this.guard(check), onProgress: () => this.guard(check) }).then(
+              () => this.guard(() => { if (check()) complete(); }),
+              (e) => this.guard(() => {
+                if (!check()) return;
+                // True cancellation/shutdown is not a worker fault and cannot restart a discarded search.
+                if (e.code === 'SESSION_CLOSED' || e.code === 'POOL_CLOSED') { work.cancel(); return; }
+                warn('rehearsal RPC failed; restarting all frozen candidates inline', e);
+                try { job.fallback(this.data); defer(0, slice); }
+                catch (fallbackError) { this.reportError(`bot ${ps.playerId} rehearsal fallback`, fallbackError); end(null); }
+              }));
+            return;
+          }
+          if (job.remote && !job.streamed) {
+            job.advance().then((done) => this.guard(() => {
+              if (!valid()) { work.cancel(); return; }
+              if (!fresh()) { stale(); return; }
+              if (done) complete(); else defer(0, slice);
+            }), (e) => this.guard(() => {
+              if (!valid()) { work.cancel(); return; }
+              if (!fresh()) { stale(); return; }
+              if (!job.inline) {
+                warn('rehearsal RPC failed; restarting all frozen candidates inline', e);
+                try { job.fallback(this.data); defer(0, slice); return; }
+                catch (fallbackError) { e = fallbackError; }
+              }
+              this.reportError(`bot ${ps.playerId} rehearsal fallback`, e);
+              end(null);
+            }));
+            return;
+          }
+          let done = true;
+          try { done = job.run(this.botSliceMs, sliceCtl); } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
+          if (done) complete(); else defer(0, slice);
+        };
+        // A rehearsal offered to the host's browser (SP_BOT_REHEARSAL=host, DESIGN §14): the host's pick may already be in
+        // (`done`: applied, never simulated again); still waiting, MatchRehearsal calls back once it is in or once the
+        // server took the job over, whose own slices follow. The continuation is installed here, after the generator
+        // placed the default layout, so an answer applied earlier cannot drop those steps.
+        if (job.done) { complete(); return; }
         if (job.pending) {
-          job.onSettled = () => {
-            if (!valid()) return;
-            if (job.done) finish(job);
-            else { job.takeOver(); runJob(job); }
-          };
+          job.onSettled = () => this.guard(() => {
+            if (!valid()) { work.cancel(); return; }
+            if (!fresh()) { stale(); return; }
+            if (job.done) complete();
+            else { job.takeOver(); defer(0, slice); }
+          });
           return;
         }
-        runJob(job);
+        if (bounded || job.remote) defer(0, slice); else slice();
       });
     };
-    this.later(this.scaled(DELAYS.BOT_ACTION + i * DELAYS.BOT_STAGGER), () => {
-      if (!valid()) return;
+    // Upstream's strategy hook on top of the fork's guarded defer (the legacy comparison fingerprints at the
+    // planning stage too, not only inside drive/slice).
+    defer(this.scaled(DELAYS.BOT_ACTION + i * DELAYS.BOT_STAGGER), () => {
       if (this.bot.decide?.(this, ps, { kind: 'prep', valid, complete: () => ps.ready,
-        fallback: () => this.later(0, begin) })) return;
+        fallback: () => defer(0, begin) })) return;
       begin();
     });
   }
 
   onReadyChanged(ps) {
+    if (ps.ready) this._cancelBotPrep(ps);
     this.markPublic();
-    void ps;
     this.maybeEndPrep();
   }
 
   maybeEndPrep() {
+    if (this.emergencyFrozen) return;
     if (this.phase !== PHASE.PREP || this._prepEndQueued) return;
     const allReady = () => { const alive = this.alivePlayers(); return alive.length > 0 && alive.every((p) => p.ready); };
     if (!allReady()) return;
@@ -172,6 +260,17 @@ export class MatchPrep {
 
   endPrep() {
     if (this.phase !== PHASE.PREP) return;
+    // an open 投票移出 ends with the prep (kickVote.js)
+    this.cancelKickVote('prepEnd');
+    // the round's checkpoint (snapshot.js): the finished prep, before its end changes anything — a match interrupted
+    // during this round's battle comes back here
+    this._checkpoint('prep-end');
+    // 挂机移出: an idle human is removed before this round's battle exists (it may end the match)
+    this._checkIdle();
+    if (this.ended || this.disposed || this.phase !== PHASE.PREP) return;
+    // 掉线由 AI 接管: a seat offline for OFFLINE_TAKEOVER_ROUNDS prep ends is the AI's from the next phase on
+    this._checkOffline();
+    for (const ps of this.order) this._cancelBotPrep(ps);
     // rehearsals still waiting for a host's answer die with the prep: their bots place the default layout, a late answer
     // is ignored (Match._takeOverRehearsal / MatchRehearsal) and nothing of them runs after the phase ended
     this._cancelRehearsal();

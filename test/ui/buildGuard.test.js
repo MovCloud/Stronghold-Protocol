@@ -8,9 +8,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkBuildOnce, startBuildGuard, fetchBuild, BUILD_CHECK_MS, BUILD_FETCH_TIMEOUT_MS } from '../../public/js/ui/buildGuard.js';
 
-/** A fake fetch answering /healthz with `build` (null → the frame carries none). */
+/** A fake fetch answering /client-build with `build` (null → the frame carries none). */
 const fetchOf = (build) => async (url, init) => {
-  assert.equal(url, '/healthz');
+  assert.equal(url, '/client-build');
   assert.equal(init.cache, 'no-store');
   return { ok: true, status: 200, json: async () => ({ ok: true, build }) };
 };
@@ -165,6 +165,11 @@ test('onHealth: told every /healthz body a check reads — what else the page re
   assert.equal(writes, 1, 'unchanged hints do not notify subscribers');
   onHealth({ content: { notices: true } });
   assert.deepEqual(state, { installedPlugins: 0, installedNotices: true }, 'language-only notices reach the title');
-  onHealth({});
+  onHealth({ content: {} });
   assert.deepEqual(state, { installedPlugins: 0, installedNotices: false }, 'a notice-free server clears the hint');
+  // /client-build answers only { build }: it says nothing about plugins, so what welcome gave stays
+  onHealth({ build: 'x' });
+  onHealth({});
+  assert.deepEqual(state, { installedPlugins: 0, installedNotices: false });
+  assert.equal(writes, 3, 'a body without `content` writes nothing');
 });

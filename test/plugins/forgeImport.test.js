@@ -23,6 +23,7 @@ import { createVisualSets } from '../../server/plugins/visualSet.js';
 import { buildContentSet, contentSetFiles } from '../../server/plugins/contentSet.js';
 import { PLUGIN_LIMITS } from '../../shared/plugins/manifest.js';
 import { skel, atlas, png } from '../helpers/pluginFixtures.js';
+import { link as plantLink } from '../helpers/links.js';
 import { canonicalJson } from '../../shared/plugins/identity.js';
 import { bundleForgeKits, FORGE_IMPORT_MAP, KIT_BUNDLE_BYTES, KIT_MODULES_MAX, SDK_KIT_NAMES } from '../../server/plugins/forgeKits.js';
 import { checkScript } from '../../shared/plugins/scriptCheck.js';
@@ -410,7 +411,9 @@ test('malicious zip and directory input is refused and a script in the pack is n
     const linked = path.join(parent, 'linked');
     fs.mkdirSync(linked);
     fs.writeFileSync(path.join(linked, 'pack.json'), '{"id":"rose-linked","name":"x","version":"1.0.0"}');
-    fs.symlinkSync('/tmp', path.join(linked, 'escape'));
+    const escapeTarget = path.join(parent, 'escape-target');
+    fs.mkdirSync(escapeTarget);
+    plantLink(escapeTarget, path.join(linked, 'escape')); // a junction on Windows: no symbolic-link privilege needed
     const sym = await importForge(linked, opts);
     assert.equal(sym.issues[0].code, 'PLUGIN_FORGE_ZIP');
     assert.match(sym.issues[0].detail, /symbolic link/);

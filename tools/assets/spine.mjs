@@ -11,14 +11,19 @@
 // (findLocalEnemyModels / findLocalTokenModels + localSpineMeta, read only), so
 // data/assets.json is the same with or without the extraction (ASSETS.md "Enemy aliases",
 // "Token models from the local client").
+//
+// Merge notes: token models, LOCAL_SPINE_ROLES / PREFAB_SPINE_ROLES / applyRoleFix and the
+// `writable` gate are from upstream mainline; clipExtents bookkeeping and the RIM_FIXES
+// texture painting (tools/assets/texture-fixes.mjs) are fork additions kept intact.
 
 import { readFile, readdir, writeFile, stat, rename, mkdir, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { assetUrl, safeName, urlDir } from './sources.mjs';
 import { kindOf, pngSize } from './formats.mjs';
 import { atlasInfo, normalizeAtlas } from './atlas.mjs';
-import { parseSkel } from './skel.mjs';
+import { parseSkel, clipExtents, CLIP_EXTENTS_VERSION } from './skel.mjs';
 import { resolveRoles } from './anim-roles.mjs';
+import { RIM_FIXES, applyRimFixes } from './texture-fixes.mjs';
 
 async function fileStat(p) { try { const s = await stat(p); return s.isFile() ? s : null; } catch { return null; } }
 
@@ -220,7 +225,7 @@ export function applyRoleFix(roles, fix, durations) {
  * read only: the atlas is sized in memory (extract.py already writes it so) and its `pma` line is read as it is
  * (a straight-page extraction writes none), nothing on disk changes.
  * Roles are resolved for skill index 0 (an enemy also for its numbered skill clips), like the web enemy and token models,
- * then LOCAL_SPINE_ROLES applied.
+ * then LOCAL_SPINE_ROLES applied. The skeleton's clip extents are parsed too (fork addition, as processModels does).
  * @param {string} root absolute public/assets directory
  * @param {Record<string, { dir: string, skel: string, atlas: string, pngs: string[] }>} found
  * @returns {Promise<{ meta: Record<string, LocalSpineMeta>, problems: string[] }>}
@@ -243,7 +248,8 @@ export async function localSpineMeta(root, found) {
       if (norm.missingSize.length) throw new Error(`cannot size pages ${norm.missingSize.join(',')}`);
       const info = atlasInfo(norm.text);
       if (!info.pages.length) throw new Error('atlas without pages');
-      const sk = parseSkel(await readFile(join(root, m.skel)), info.regions);
+      const bytes = await readFile(join(root, m.skel));
+      const sk = parseSkel(bytes, info.regions);
       if (!sk.animations.length) throw new Error('skeleton has no animations');
       if (sk.missingRegions?.length) problems.push(`${id}: ${sk.missingRegions.length} attachment(s) not in atlas (e.g. ${sk.missingRegions[0]})`);
       const fixed = applyRoleFix(resolveRoles(sk.animations, { skillIndices: [0], numberedSkills: id.startsWith('enemy_'), durations: sk.durations }), LOCAL_SPINE_ROLES[id], sk.durations);
@@ -252,6 +258,7 @@ export async function localSpineMeta(root, found) {
         skel: base(m.skel), atlas: base(m.atlas), textures: info.pages, pma: info.hasPma,
         anims: fixed.roles,
         animations: sk.durations, events: sk.events, hits: sk.hits, bounds: sk.bounds,
+        extents: clipExtents(bytes, norm.text),
       };
     } catch (e) {
       problems.push(`${id}: ${e.message}`);
@@ -303,6 +310,8 @@ export const loadLocalEnemySpines = loadLocalSpines;
 export async function processModels(models, { root, dl, cachePath, download = true, writable = () => true, log = console.log }) {
   const problems = [];
   const list = [...models.values()];
+  // (fork) a page that RIM_FIXES paints changes size: the downloader keeps it by its content, like an atlas
+  for (const m of list) if (RIM_FIXES[m.key]) for (const p of m.pngs) p.mutable = true;
   const available = (rel) => !dl?.verifier || dl.accepted.has(rel);
   if (download) {
     const jobs = [];
@@ -367,15 +376,28 @@ export async function processModels(models, { root, dl, cachePath, download = tr
       await writeFile(atlasAbs + '.tmp', norm.text);
       await rename(atlasAbs + '.tmp', atlasAbs);
     }
+    // (fork) art fixes painted into the pages (tools/assets/texture-fixes.mjs), again after every download
+    if (RIM_FIXES[m.key]) {
+      try {
+        const fixed = await applyRimFixes(m.key, norm.text, (p) => join(root, m.dir + safeName(p)),
+          { writable: (p) => writable(m.dir + safeName(p)), readFile, writeFile, rename });
+        if (fixed.problem) problems.push(fixed.problem);
+        if (fixed.painted) log(`[spine] ${m.key}: texture fix painted ${fixed.painted} px (${fixed.pages.join(', ')})`);
+      } catch (e) { problems.push(`${m.key}: texture fix failed (${e.message})`); }
+    }
     const atlasSt = await fileStat(atlasAbs);
     const info = atlasInfo(norm.text);
     // Parse the skeleton (cached by file size + mtime).
     const ck = `${m.skel.rel}|${skelSt.size}|${Math.floor(skelSt.mtimeMs)}|${atlasSt?.size}|${Math.floor(atlasSt?.mtimeMs ?? 0)}`;
-    let sk = cache[m.skel.rel]?.key === ck ? cache[m.skel.rel].info : null;
+    // (an entry cached before clip extents existed, or by an older clipExtents, is parsed again)
+    let sk = cache[m.skel.rel]?.key === ck && cache[m.skel.rel].info?.clipExtentsVersion === CLIP_EXTENTS_VERSION ? cache[m.skel.rel].info : null;
     if (sk) cached++;
     else {
       try {
-        sk = parseSkel(await readFile(skelAbs), info.regions);
+        const bytes = await readFile(skelAbs);
+        sk = parseSkel(bytes, info.regions);
+        sk.clipExtents = clipExtents(bytes, norm.text);
+        sk.clipExtentsVersion = CLIP_EXTENTS_VERSION;
         parsed++;
       } catch (e) {
         // A corrupt skeleton would otherwise be kept forever (its size matches the ledger):
@@ -408,6 +430,7 @@ export async function processModels(models, { root, dl, cachePath, download = tr
       events: sk.events,
       hits: sk.hits,
       bounds: sk.bounds,
+      extents: sk.clipExtents,
     });
     if (Date.now() - t0 > 0 && (parsed + cached) % 100 === 0) log(`[spine] processed ${parsed + cached}/${list.length}`);
   }

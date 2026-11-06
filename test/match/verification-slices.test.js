@@ -4,6 +4,7 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { PHASE } from '../../shared/constants.js';
 import { runHeadless, validateClientResult, RESULT_GRACE_MS } from '../../server/match/fields.js';
 import { RealScheduler } from '../../server/match/scheduler.js';
+import { FreezeScheduler } from '../../server/match/freezeScheduler.js';
 import { compactResult, createBattleFromSpec, resultDigest } from '../../server/sim/spec.js';
 import { makeMatch } from './harness.js';
 
@@ -86,7 +87,8 @@ for (const verify of ['all', 'sample']) {
       clients: false, verify, headlessSliceMs: SLICE_MS, timerScale: 0 });
     const m = h.m;
     // Install the real scheduler before start, while the harness has no queued timers.
-    const scheduler = new RealScheduler();
+    // D030: the match's scheduler is always the FreezeScheduler facade — setDeadline / _armDeadline read `gameNow`.
+    const scheduler = new FreezeScheduler(new RealScheduler(), { ownsSource: true });
     m.sched = scheduler;
     t.after(() => { m.dispose(); scheduler.dispose(); });
     const waitFor = async (predicate) => {
@@ -190,6 +192,7 @@ test('resuming a solo pause does not rearm a result deadline while verification 
   assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: true }), { ok: true });
   report(h, f, forged);
   assert.equal(f.done, false);
+  h.sched.advance(300); // the match control RATE guard: one request per player per 300 ms
   assert.deepEqual(m.handle('p_0', { t: 'g.pause', on: false }), { ok: true });
   h.sched.t += f.spec.timeLimit / m.gameSpeed * 1000 + RESULT_GRACE_MS + 1;
   h.runToPhase(PHASE.SETTLE);

@@ -9,6 +9,9 @@ import {
   findClient, resolveGameDir, windowsCandidateSuffixes, inspectClientRoot,
 } from '../tools/setup.mjs';
 
+// Windows has `python` but not always `python3` (the Store alias exits 9009); the same fallback as the other Python tests.
+const PY = ['python3', 'python'].find((bin) => spawnSync(bin, ['--version']).status === 0);
+
 function marker(ab) {
   fs.mkdirSync(path.join(ab, 'ui', 'autochess'), { recursive: true });
 }
@@ -81,7 +84,7 @@ test('#572 the next lookup prefers a remembered path that still exists', () => {
   }
 });
 
-test('#572 extract.py resolves the same install directory and the same Windows list', () => {
+test('#572 extract.py resolves the same install directory and the same Windows list', { skip: !PY && 'no python3' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp572-py-'));
   try {
     const { install, ab } = installTree(root, 'Arknights Game');
@@ -93,7 +96,7 @@ test('#572 extract.py resolves the same install directory and the same Windows l
       'rows = [resolve_game_dir(p) for p in sys.argv[2:]]',
       'print(json.dumps({"suffixes": windows_candidate_suffixes(), "rows": [str(r) if r else None for r in rows]}))',
     ].join('\n');
-    const py = spawnSync('python3', ['-c', script, path.join('tools', 'local-extract'), install, parent, ab], { encoding: 'utf8' });
+    const py = spawnSync(PY, ['-c', script, path.join('tools', 'local-extract'), install, parent, ab], { encoding: 'utf8' });
     assert.equal(py.status, 0, py.stderr || py.stdout);
     const out = JSON.parse(py.stdout);
     const suffixes = windowsCandidateSuffixes();

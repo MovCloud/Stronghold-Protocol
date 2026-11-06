@@ -40,17 +40,17 @@ describe('spectator seats (community report #26, real server)', { skip: !ENABLED
     try {
       await host.open();
       await host.enter('凯尔希');
-      const room = await host.createCoop();
+      const room = await host.createCoop('标准模拟'); // fork: the host can set the difficulty in the room
       await host.click('.seat--empty button', '添加 AI 队友');
 
-      // the lobby's 观战 entry
+      // the lobby's 观战 entry (密钥加入)
       await spec.open();
       await spec.hookRequests();
       await spec.enter('阿米娅');
-      await spec.click('.mode-card', '同盟模拟');
+      await spec.click('.hub-tile', '密钥加入'); // fork's own tile; it opens the hub's 选择同盟方式
       await spec.click('.join-row input');
       await spec.page.keyboard.type(room.code);
-      await spec.click('.join-row button', '观战');
+      await spec.click('.join-row .join-spectate', '观战'); // the fork's HubDialog is gone: 选择同盟方式 is the project Modal
       await spec.page.waitForSelector('.room-screen .specbar__who.is-me', { timeout: 10000 });
       const roomView = await spec.page.evaluate(() => ({
         bar: document.querySelector('.room-bar__right .rs-go')?.textContent || '',
@@ -75,9 +75,10 @@ describe('spectator seats (community report #26, real server)', { skip: !ENABLED
       await host.page.waitForFunction(() => document.querySelectorAll('.specbar__who').length === 1, { timeout: 8000 });
 
       // the match: a spectator is no player to wait for
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
       for (const c of [host, spec]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
       assert.match(await spec.page.evaluate(() => document.querySelector('.brief__foot .btn--primary')?.textContent || ''), /观战中/);
+      await host.settled('.brief-go'); // (a click during its entrance falls through)
       await host.click('.brief__foot .btn--primary', '准备就绪');
       const t0 = Date.now();
       for (;;) {

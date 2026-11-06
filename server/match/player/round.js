@@ -12,7 +12,8 @@ import { computeBonds, bondSnapshot, activatedLayers, bondsWithGains } from '../
 export class PlayerRound {
   startRound(r) {
     this.round = { refreshes: 0, buys: 0, sells: 0, spent: 0, gainedChess: 0, arts: 0 };
-    this.pendingLayerGains = null; // settled (or lapsed) at the last SETTLE
+    this.pendingLayerGains = null; // only unsynchronized result gains may remain until SETTLE
+    this.battleLayerGains = {};
     if (r > 1) this.shop.upgradePrice = Math.max(0, this.shop.upgradePrice - 1);
     // onIncome handlers may rewrite ev.income / ev.pending (e.g. 老鲤 withholds R1–R2 income until R3)
     const ev = { round: r, income: this.gd.income(r), pending: this.pendingFunds };
@@ -52,6 +53,7 @@ export class PlayerRound {
   // `effects` are kept: a 信标 gift still pending is delivered to the teammate at the next round start (builtin_gift is
   // flagged afterElimination — GitHub #86); nothing else of an eliminated player is dispatched.
   eliminate(round) {
+    this.pendingDeath = false;
     this.alive = false;
     this.ready = false;
     this.eliminatedRound = round;
@@ -116,9 +118,8 @@ export class PlayerRound {
   activatedLayers() { return activatedLayers(this.bonds); }
 
   /**
-   * The bond states the views show (m.private bonds, m.public players[].bonds): the computed states plus the pending
-   * in-battle gains of this round's finished normal battle (bondsMeta.bondsWithGains). The 联防 field fights with them too
-   * (battleInput `reached`); no other rule reads them.
+   * The bond states the views show (m.private bonds, m.public players[].bonds): live persistent states plus only a
+   * legacy/reference result's uncredited remainder. The 联防 field uses the same reached count, never double gains.
    */
   bondsView() { return bondsWithGains(this.bonds, this.pendingLayerGains); }
 
@@ -138,11 +139,11 @@ export class PlayerRound {
         const pick = this.diyPickOf(piece.id);
         if (pick) {
           // 0.2.0 自选编队: a slotted DIY slot fights as its pick (sim getChess(id, { diy }): the operator's body, the pick's
-          // skill and module — no loadout fields, docs/SIM.md §12)
+          // skill and module — no loadout fields, docs/development/SIM.md §12)
           u.diy = { charId: pick.charId, skillIndex: pick.skillIndex, uniEquipId: pick.uniEquipId };
         } else if (this.fieldsStandIn(piece.id)) {
           // 0.2.0 补位: a chess this player does not own fights as its stand-in (sim getChess(id, { standIn: true }): the
-          // backup skill / module — no loadout fields, docs/SIM.md §12)
+          // backup skill / module — no loadout fields, docs/development/SIM.md §12)
           u.standIn = true;
         } else {
           // DESIGN §16: the equipped skill / module (elite only) from the loadout (defaults when absent)

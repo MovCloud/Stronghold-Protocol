@@ -120,8 +120,13 @@ describe('9: the prep camera keeps the bench clear of the shop bar on phones in 
   test('HUD_REM mirrors the CSS it measures (bond strip bottom, shop bar top, the notched-phone rule)', () => {
     const game = read('public/css/screens/game.css');
     const shop = read('public/css/screens/game-shop.css');
-    // #678: clip padding is offset by margins; the 44 px arrows can still raise the band on phones.
-    assert.match(game, /\.gm__bonds \{ position: absolute; left: 1\.56rem; top: 1\.36rem;/);
+    // bond strip: centred (left 0 / right 0), top 1.36rem + a .52rem disc and its name line → measured 2.14–2.15rem in
+    // Chrome; 2.16rem kept. #678's clip padding is offset by margins and the 44 px arrows can still raise the band on phones.
+    assert.match(game, /\.gm__bonds \{ position: absolute; left: 0; right: 0; top: 1\.36rem;/);
+    // The narrow-aspect override has to stay symmetric: the right-only inset was a leftover of the left-anchored
+    // layout and shifted the centred band left by half its value (user report 2026-11-05, measured at 1280×800).
+    assert.match(game.match(/@media \(max-aspect-ratio: 16\/10\) \{[^}]*\}/)[0],
+      /\.gm__bonds \{ left: 4\.6rem; right: 4\.6rem; \}/, 'the band stays centred at 16:10 and below');
     assert.match(game, /\.bslot \.bond \{ --disc: \.52rem; \}/);
     assert.match(game, /\.gm__bonds \.bstrip-scroll \.bstrip \{[^}]*padding: \.08rem 0; margin: -\.08rem 0;/);
     assert.match(game, /\.gm__bonds \.bstrip-scroll__arrow \{[^}]*height: 44px;/);

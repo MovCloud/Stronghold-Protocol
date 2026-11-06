@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_1_01-inside.js — 隐现 (char_498_inside) kit, tier 1.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-1 kits: ../shared/tier1.js; kit contract and rules: ../README.md.
 
 import { num, talentBb, up, once, skillBbOf, batMod } from '../shared/tier1.js';
@@ -37,7 +38,7 @@ export default {
           battle.after(dur, () => {
             // (the larger magazine applies from the next activation: a running skill keeps its rounds)
             if (!up(unit) || unit.deploySeq !== seq) return;
-            const pool = battle.allyUnits.filter((a) => a !== unit && a.kind === 'op' && a.ownerId === unit.ownerId && a.alive
+            const pool = battle.allyUnits.filter((a) => a !== unit && nativeOperator(a) && a.ownerId === unit.ownerId && a.alive
               && (a.def.bonds || []).includes('lateranoShip') && a.skill && a.skill.kind === 'ammo');
             const pick = battle.rng.pick(pool);
             if (!pick) return;

@@ -1,0 +1,528 @@
+# fork-added tests archived 2026-10-21
+# reason: fork-only paths (absent from sganggs mainline); features not merged or contract drifted
+# restore: move back under test/ and rewrite to the current contract
+announcement.test.js
+announcement-assets-shared.test.js
+announcement-notices-monitor.test.js
+announcement-notices-spool.test.js
+announcements.test.js
+announcements-cli.test.js
+announcements-store.test.js
+asset-cache.browser.test.js
+asset-cache-catalog.test.js
+asset-cache-manager.test.js
+asset-cache-pack.test.js
+asset-cache-pack-worker.test.js
+asset-cache-shared.test.js
+asset-cache-sw.test.js
+asset-cache-ui.browser.test.js
+asset-cdn.browser.test.js
+assets-v022-retention.test.js
+bandwidth-emergency.test.js
+cache-limiter-emergency.test.js
+capacity-matchmaking.test.js
+chat.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+chatlog.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+client-claim-retry.test.js
+client-cluster-load.test.js
+client-foreign-access.test.js
+client-latency.test.js
+cluster-afk.test.js
+cluster-bond-plan.test.js # 已接回 test/（2026-10-26，被测主体已并入主线，实测通过）
+cluster-config.test.js
+cluster-coordinator.test.js
+cluster-directory.test.js
+cluster-game-host.test.js
+cluster-game-node.test.js
+cluster-ingress.test.js
+cluster-ingress-transport.test.js
+cluster-link.test.js
+cluster-load.test.js
+cluster-load-network.test.js
+cluster-lobby.test.js
+cluster-local-replica.test.js
+cluster-matchmaking.test.js
+cluster-network-handler.test.js
+cluster-persist.test.js
+cluster-platform.test.js
+cluster-platform-network.test.js
+cluster-player-capacity.test.js
+cluster-prepare-rpc.test.js
+cluster-receipts.test.js
+cluster-restore-departed.test.js
+cluster-rpc.test.js
+cluster-tickets.test.js
+cluster-ticket-skew.test.js
+cluster-two-ingress-process-network.test.js
+cluster-v022.test.js
+code-source.test.js
+code-source-carry.test.js
+compact-wire.browser.test.js
+content\free-grant-stock-488.test.js
+content\op_oblvns.test.js
+content\reactive-origin.test.js
+content\rem.test.js
+content\rem_native_kits.test.js
+content\rem-balance.test.js
+content\rem-pizza-fx.test.js
+content\rem-traits.test.js
+content\rhine.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_assault_all.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_device_rework.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_diy_compat.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_equipment.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_fx.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_kits.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_magallan.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_new_kits.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content\rhine_support_all.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+content-data-scope.test.js
+cooperative.test.js
+coordbench.test.js
+coordinator-offload.test.js
+data-hash.test.js
+dorothy-tier.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+emergency.browser.test.js
+emergency-network.test.js
+encoded-message.test.js
+es2020-syntax.test.js
+expanded-draft-network.test.js
+experimental-duck-lord.test.js
+experimental-options.test.js
+foreign-sessions.test.js
+generations.test.js
+geoip.test.js
+health-metrics.test.js
+history\browser.e2e.test.js
+history\migration.test.js
+history\record.test.js
+history\storage.test.js
+http-read-json.test.js
+http-rooms.test.js
+lexicon-encryption.test.js
+lobby-access.browser.test.js
+lobby-access.test.js
+lobby-afk.test.js
+lobby-bot-band.test.js
+lobby-card.test.js
+lobby-discovery.browser.test.js
+lobby-discovery.test.js
+lobby-matchmake.test.js
+lobby-matchmaking.test.js
+lobby-player-capacity.test.js
+lobby-social.test.js
+lobby-soloqueue.test.js
+lobby-versus.test.js
+local-import.test.js
+maintenance.test.js
+match\afk.test.js
+match\battle-start-stats.test.js
+match\bondCall.test.js
+match\bond-plan.test.js # 已接回 test/match/（2026-10-26，被测主体已并入主线，实测通过）
+match\bondsMetaServe.test.js
+match\boss-local-replica.test.js
+match\boss-scaling-workers.test.js
+match\bot-band.test.js
+match\bot-band-policy.test.js
+match\bot-capacity.test.js
+match\bot-formation.test.js
+match\bot-ioleta.test.js
+match\bot-ioleta-default.test.js
+match\bot-ioleta-experimental.test.js
+match\bot-ioleta-integration.test.js
+match\bot-preview-combat.test.js
+match\combat-engine.test.js
+match\combat-lean-wire.test.js
+match\combat-pacing.test.js
+match\combat-pool.test.js
+match\combat-shared-pace.test.js
+match\combat-terminal-transport.test.js
+match\combat-wire.test.js
+match\combat-workers.test.js
+match\confront-roster.test.js
+match\confront-traits.test.js
+match\console-diy.test.js
+match\console-item-stock.test.js
+match\coop-hunt.test.js
+match\damage-board.test.js
+match\damage-board-transport.test.js
+match\damage-match-workers.test.js
+match\dedicated-trial-workers.test.js
+match\draft-capacity.test.js
+match\draft-repeat-drive.test.js
+match\eight-player.test.js
+match\emergency-freeze.test.js
+match\event.test.js
+match\experimental-capacity-workers.test.js
+match\experimental-player-capacity.test.js
+match\experimental-unite-relay.test.js
+match\experimental-unite-relay-workers.test.js
+match\field-battle-release.test.js
+match\five-player.test.js
+match\five-player-real.test.js
+match\freeze-scheduler.test.js
+match\group-draft-audit.test.js
+match\group-draft-generation.test.js
+match\group-drafts.test.js
+match\group-stock.test.js
+match\group-unite-audit.test.js
+match\group-unite-rounds.test.js
+match\instant-field-slices.test.js
+match\kick-vote.test.js # 已接回 test/match/（2026-10-31，被测主体已并入主线，实测通过）
+match\large-room-bounty.test.js
+match\layer-forecast.test.js
+match\layer-memo-equivalence.test.js
+match\layer-memo-probe.test.js
+match\local-replica.test.js
+match\merchant.test.js
+match\original-profile-host.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）—— rhine/original 内容档对照契约已随整分支移出失效（rhineEnabled 已不存在）
+match\passive-item-stock.test.js
+match\pause-progress-ticker.test.js
+match\player-capacity.test.js
+match\realtime-layers.test.js
+match\rehearsal-match-workers.test.js
+match\rehearsal-worker-job.test.js
+match\rem-price.test.js
+match\rem-rally.test.js
+match\rem-round-carry.test.js
+match\revival.test.js
+match\revival-workers.test.js
+match\rhine_equipment_bot.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhine-client-layers.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhine-laser-field-share.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhine-opening-bans.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhineResearch.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhine-upstream-021.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\rhine-upstream024.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+match\round-communicators.test.js
+match\runner-profile.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）—— rhine/original 内容档对照契约已随整分支移出失效（rhineEnabled 已不存在）
+match\shop-stock-view.test.js
+match\six-player.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+match\six-player-boss-hp.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+match\six-player-local.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+match\six-player-real.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+match\six-player-round-beacons.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+match\snapshot.test.js
+match\snapshot-rate.test.js
+match\spec-bounds-cache.test.js
+match\test-mode-group-holds.test.js
+match\trial-workers.test.js
+match\twenty-player-rules.test.js
+match\twenty-unite-time.test.js
+match\unite-capacity.test.js
+match\unite-confront.test.js
+match\unite-device-overrides.test.js
+match\unite-original-stage.test.js
+match\unite-vote.test.js
+match\upstream-v022-capacity.test.js
+match\upstream-v023-capacity.test.js
+match\upstream-v026-capacity.test.js
+match\ws-public-compact.test.js
+match-chat.browser.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+match-chat.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+match-chat-ws.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+matchmaker.test.js
+matchmaking-lifecycle.test.js
+matchmaking-party.test.js
+match-worker-hotpaths.test.js
+match-worker-lifecycle.test.js
+material-fallback.test.js
+memory-lifecycle.test.js
+merge023-worker-persist.test.js
+merge024-worker-persist.test.js
+merge025-worker-persist.test.js
+merge-generated-release.test.js
+metrics.test.js
+monitoring-exporter.test.js
+net-backpressure.test.js
+net-diagnostics.test.js
+net-fanout.test.js
+net-resilience.test.js
+nickname-http.test.js
+nickname-policy.test.js
+notice.test.js
+online-limit.test.js
+online-presence.test.js
+operator-skins-assets.test.js
+operator-skins-cluster.test.js
+operator-skins-lobby.test.js
+operator-skins-match.test.js
+operator-skins-metadata.test.js
+operator-skins-native.test.js
+operator-skins-spec.test.js
+operator-skins-ui.test.js
+operator-skins-worker.test.js
+operator-voices.test.js
+outfits-sync.test.js
+owner-mark.test.js
+persist.test.js
+persist-queue-recovery.test.js
+persist-redis.test.js
+persist-startup.test.js
+persist-transfer.test.js
+persist-valkey.test.js
+persist-version.test.js
+persist-worker.test.js
+plain-asset-urls.test.js
+player-capacity-network.test.js
+player-capacity-shared.test.js
+plugins\profile-content-sets.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）—— rhine/original 内容档对照契约已随整分支移出失效（rhineEnabled 已不存在）
+plugins\rhine-shared-tokens.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+popup-rich.test.js
+portal-room.test.js
+portal-room-admin.test.js
+portal-room-agent.test.js
+preload.browser.test.js
+preload.test.js
+presence.test.js
+protocol-seats.test.js
+queue-cancellation.test.js
+queue-population.test.js
+reconnect-stats.test.js
+refactor-contracts.test.js
+ref-lru-churn.test.js
+rehearsal-pressure.test.js
+rem_data.test.js
+rem-default-modules.test.js
+render\battle-visuals.browser.test.js
+render\battle-visuals.test.js
+render\charge-skill-attack.test.js
+render\fortress-shot.test.js
+render\frame-rate.test.js
+render\frozen-pose.test.js
+render\highlight-teardown.test.js
+render\image-cors-recovery.test.js
+render\impostor-extents.test.js
+render\impostor-fork-models.test.js
+render\model-recovery.test.js
+render\model-scale.test.js
+render\oblvns-notes.test.js
+render\outfit-model.test.js
+render\prep-skins.test.js
+render\rem-art.browser.test.js
+render\rem-movement.browser.test.js
+render\resourcePacks.test.js
+render\resource-shrink.test.js
+render\rhineDevices.browser.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+render\rhineDevices.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+render\rhineOperators.browser.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+render\runtime-retry.browser.test.js
+render\scout-rescout.test.js
+render\skinRegistry.test.js
+render\skins.test.js
+render\spine-first-pose.test.js
+render\status-details.browser.test.js
+render\status-details.test.js
+render\vfx-cdn.test.js
+render\vfx-pivot.test.js
+render\vfx-skin-fx.test.js
+render\vfx-skins.test.js
+render\weak-network.test.js
+resource-index.test.js
+resources\archive.test.js
+resources\browser.e2e.test.js
+resources\cdn-import.test.js
+resources\cdn-repro.e2e.test.js
+resources\combat.test.js
+resources\common.test.js
+resources\delta-script.test.js
+resources\deploy-packs.test.js
+resources\index.test.js
+resources\manifest.test.js
+resources\manifest-cache.test.js
+resources\network-scheduling.test.js
+resources\optimizations.test.js
+resources\panel.test.js
+resources\precompressed.test.js
+resources\r2-sync.test.js
+resources\runtime-index.test.js
+resources\state.test.js
+resources\store.test.js
+resources\tasks.test.js
+resources\worker-cache.test.js
+resources\worker-manifest.test.js
+resources\zip-reader.test.js
+resource-selection.test.js
+resource-upgrade.test.js
+rhine_data.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+rhine_equipment_data.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+rhine-bundle-launch.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+rhine-bundle-update.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+rhine-online-update.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+rhineResearch_shared.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+room-card.test.js
+room-config-v2.test.js
+room-management.browser.test.js
+room-management.test.js
+room-reclamation.test.js
+room-rhine-profile.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+room-status.test.js
+runtime-http.test.js
+runtime-lifecycle.test.js
+server-load.test.js
+server-settings.test.js
+sim\damage-board.test.js
+sim\healsrc.test.js
+sim\merchant-bank.test.js
+sim\reactive-origin.browser.test.js
+sim\rem.browser.test.js
+sim\rem-survival.browser.test.js
+sim\rhine.browser.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+sim\scheduling.test.js
+sim\skin-battle.test.js
+sim\spring-counter.test.js
+skins-lifecycle.test.js
+skin-spine-loader.test.js
+skins-protocol.test.js
+skin-tools.test.js
+spine-preview.test.js
+stalls.test.js
+state-delta.test.js
+state-delta-integration.test.js
+state-delta-network.test.js
+state-file.test.js
+state-runtime.test.js
+state-shards.test.js
+texture-fixes.test.js
+tools\rem-asset-plan.test.js
+tools\rhine-asset-plan.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+tools\rhine-bundle.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+tools\verify-rhine-release.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+traffic-category.test.js
+twenty-rules-cluster.test.js
+twenty-rules-network.test.js
+ui\ai-danmaku-events.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+ui\alliance.test.js
+ui\announcement.e2e.test.js
+ui\announcementMarkdown.test.js
+ui\announcements.test.js
+ui\asset-image.test.js
+ui\asset-import-db.browser.test.js
+ui\asset-import-http.browser.test.js
+ui\asset-section.test.js
+ui\auth-probe.test.js
+ui\avatar.test.js
+ui\avatar-skin.test.js
+ui\bond-plan-ui.test.js # 已接回 test/ui/（2026-10-26，被测主体已并入主线，实测通过）
+ui\boss-local-replica.e2e.test.js
+ui\branch-resource-entry.test.js
+ui\card-looks.test.js
+ui\chat.e2e.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+ui\cluster-status.test.js
+ui\combat-metrics-layout.test.js
+ui\combat-unit-stats.test.js
+ui\confront-ui.test.js
+ui\damage-board.test.js
+ui\damage-chart.test.js
+ui\danmaku.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+ui\data-profile.browser.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）—— rhine/original 内容档对照契约已随整分支移出失效（rhineEnabled 已不存在）
+ui\data-recovery.test.js
+ui\dev-sandbox.e2e.test.js
+ui\difficulty-details.test.js
+ui\emergency-state.test.js
+ui\event-ui.test.js
+ui\experimental-ducklord.test.js
+ui\final-plate.test.js
+ui\five-player.test.js
+ui\foreign-access.browser.test.js
+ui\glass-theme.e2e.test.js
+ui\group-drafts.test.js
+ui\high-ground-i18n.e2e.test.js
+ui\hotkey-sale-refill.test.js
+ui\html-templates.test.js
+ui\image-policy.test.js
+ui\imported-assets.test.js
+ui\improv-teammate-picks.test.js
+ui\kick-vote.test.js # 已接回 test/ui/（2026-10-31，被测主体已并入主线，实测通过）
+ui\language-menu.test.js
+ui\large-room-bounty.e2e.test.js
+ui\lobby-discovery-model.test.js
+ui\lobby-discovery-ui.test.js
+ui\lobby-feedback.test.js
+ui\lobby-media.test.js
+ui\management-scale.test.js
+ui\match-alert.test.js
+ui\match-chat.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+ui\match-chat-model.test.js # 已删除：文字聊天整分支移出（2026-10-26）
+ui\matchmaking.e2e.test.js
+ui\match-notice.test.js
+ui\material-fallback.e2e.test.js
+ui\materialImage.test.js
+ui\merchant-ui.test.js
+ui\mobile-fixes-20261011.test.js
+ui\mobile-shop-online.e2e.test.js
+ui\mobile-shop-online.test.js
+ui\multiplayer.e2e.test.js
+ui\multiplayer-mobile.e2e.test.js
+ui\native-boot-report.e2e.test.js # 已删除：Android 整条线移除（2026-10-26，按根项目为准，上游无该线）
+ui\nickname-policy.e2e.test.js
+ui\notice.e2e.test.js
+ui\online-presence.e2e.test.js
+ui\operator-preset.test.js
+ui\operator-preset-v022.test.js
+ui\outfits.e2e.test.js
+ui\overlap.e2e.test.js
+ui\peer-avatars.e2e.test.js
+ui\player-capacity.test.js
+ui\poolGroups.test.js
+ui\preload-import.browser.test.js
+ui\production-client.browser.test.js
+ui\queue-population.test.js
+ui\rem-rally.browser.test.js
+ui\result-screen.test.js
+ui\rhine.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+ui\rhine-profiles.e2e.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+ui\rhineRange.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+ui\rhineUpstream.test.js # 已删除：莱茵生命同人扩展整分支移出（2026-10-26，按根项目为准）
+ui\room-cues.test.js
+ui\room-entry.test.js
+ui\room-share.test.js
+ui\root-paths.test.js
+ui\roster-ui.test.js
+ui\round-buffs.test.js
+ui\selection-shortcuts.test.js
+ui\server-load.test.js
+ui\settings-mobile.test.js
+ui\settlement-display.test.js
+ui\sha256.test.js
+ui\six-player.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+ui\six-player-balance.e2e.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+ui\six-player-beacon.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+ui\six-player-layout.e2e.test.js # 已删除：六人合作整分支移出（以 20 人房为准）
+ui\skin-picker-layout.test.js
+ui\skin-quickbar.test.js
+ui\skins.e2e.test.js
+ui\skinWorkshop.test.js
+ui\sponsor.test.js
+ui\state-delta.e2e.test.js
+ui\team-layout.test.js
+ui\team-roster.test.js
+ui\term-tip.test.js
+ui\topbar-layout.test.js
+ui\twenty-human-start.e2e.test.js
+ui\twenty-repeat.test.js
+ui\twenty-unite-budget.test.js
+ui\ui-scale.e2e.test.js
+ui\ui-scale.test.js
+ui\unite-relay.test.js
+ui\update-panel.test.js # 已删除：热更新在线半移除（2026-10-26）
+ui\urgent-announcements-model.test.js
+ui\urgent-announcements-ui.test.js
+ui\utility-mobile.e2e.test.js
+ui\utility-mobile.test.js
+ui\versus-text.test.js
+ui\voice-lang.test.js
+ui\voice-picker.test.js
+ui\voice-settings-v022.test.js
+ui\webgl-fallback.e2e.test.js
+update-online.test.js # 已删除：热更新在线半移除（2026-10-26）
+vanilla-data.test.js
+vite.test.js
+voice-language.test.js
+wire-bench.test.js
+wire-codec.test.js
+wire-network.test.js
+wire-pressure.test.js
+workers.test.js
+ws-cork.test.js
+ws-latency.test.js

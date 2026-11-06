@@ -6,6 +6,13 @@
  * kinds fall back to a keyword guess, then to a generic sparkle (fxSpec).
  */
 export const FX_KINDS = Object.freeze({
+  form: { a: 'none' }, // the persistent UnitView form is applied by render/app.js before cosmetic fx
+  remPizza: { a: 'remPizza', c: 0xffce6c, r: .45, pt: true },
+  remPizzaImpact: { a: 'blast', c: 0xffce6c, r: .45, pt: true },
+  burn: { a: 'flame', c: 0xff713b, r: 0.6 },
+  dorothyTrap: { a: 'blast', c: 0xffcf69, r: 1.2, pt: true },
+  dorothyCritical: { a: 'summon', c: 0xff665c, r: 0.4, pt: true },
+  dorothyChain: { a: 'dorothyChain', c: 0xffcf69, r: 0.5, pt: true },
   // blasts
   // [ASSUMED] Clementia's S3 uses the shared blast placeholder until her official effect is ported.
   blast: { a: 'blast', c: 0xffb35c },
@@ -72,6 +79,10 @@ export const FX_KINDS = Object.freeze({
   // 限伤 (sim/attack/health.js leaderHitCancelled): a leader's hit of ≥ 300000 dealt nothing — the official shows no number and
   // no effect [ASSUMED], so nothing is drawn (`a: 'none'`)
   hitCap: { a: 'none', c: 0xffffff },
+  // 丰川祥子's notes (sim notes.js): born / hit, drawn by render/fx/notes.js (the hit burst) — nothing generic here
+  note: { a: 'none', c: 0xffffff },
+  // the Ave Mujica Fever start / end (sim fever.js): the BGM (audio.js) and the gauge (render/units.js) show it
+  fever: { a: 'none', c: 0xff5f9e },
   // 自选 operator kits (0.2.0): 逻各斯, 真言, 维伊 (O3); 早露, 提丰, 娜仁图亚 (O7); 嵯峨's 重伤 (O8)
   bulletClear: { a: 'wave', c: 0xd8b0ff }, logosLexicon: { a: 'mark', c: 0xc9a2ff }, logosExecute: { a: 'strike', c: 0xb07dff },
   mantraArc: { a: 'bolt', c: 0xc77dff }, mantraGrant: { a: 'mark', c: 0xc77dff }, mantraGate: { a: 'reticle', c: 0xc77dff },

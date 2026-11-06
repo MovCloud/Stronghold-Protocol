@@ -300,7 +300,7 @@ describe('BoardScene (three.js scene graph, stub renderer)', () => {
     const meshes = board.root.children;
     assert.ok(meshes.length >= 5 && meshes.length <= 16, `draw objects ${meshes.length}`);
     for (const m of meshes) assert.ok(m.geometry.getAttribute('position').count > 0);
-    assert.ok(board.meshes.board && board.meshes.gateStart && board.meshes.gateEndAb && board.meshes.blowers && board.meshes.bg, Object.keys(board.meshes).join());
+    assert.ok(board.meshes.board && board.meshes.gateStart && board.meshes.gateEndTop && board.meshes.blowers && board.meshes.bg, Object.keys(board.meshes).join());
     assert.equal(R.shadowMap.needsUpdate, true);
     const before = board.meshes.board.geometry.getAttribute('position').count;
     assert.equal(board.setArea(AREAS.boss), true);
@@ -348,7 +348,7 @@ describe('BoardScene (three.js scene graph, stub renderer)', () => {
     assert.notEqual(board.mat.gateStartAdd.uniforms.uAlpha.value, p0, 'gate pulse animates');
     board.flashObjective(9, 2);
     board.render(cam, 2.4);
-    assert.ok(board.mat.gateEndAb.uniforms.uFlash.value.r > 0.5, 'leak flash');
+    assert.ok(board.mat.gateEndTop.uniforms.uFlash.value.r > 0.5, 'leak flash');
     board.setFocus({ r0: 9, r1: 12, c0: 0, c1: 10 });
     for (let i = 0; i < 60; i++) board.render(cam, 2.4 + i / 30);
     const F = board.focus.uFocus.value;

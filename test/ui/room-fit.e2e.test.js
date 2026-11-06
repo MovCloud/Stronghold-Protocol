@@ -163,16 +163,11 @@ describe('the waiting room\'s text fit (real server, headless Chrome)', { skip: 
           await host.page.waitForSelector('.rs-opts', { visible: true, timeout: 3000 });
           for (const p of await check(host.page, '.rs-opts')) bad.push(`${lang} ${ts} ${size.join('×')} ⚙ 同盟设置: ${p}`);
           await host.page.$eval('.rs-pill__gear', (b) => b.click());
-          await guest.page.$eval('[data-testid="seat-card-pick"]', (b) => b.click());
-          await guest.page.waitForSelector('.modal__box.cardpick', { visible: true, timeout: 5000 });
-          await sleep(300);
-          for (const p of await check(guest.page, '.modal__box.cardpick')) bad.push(`${lang} ${ts} ${size.join('×')} the picker: ${p}`);
+          // (名片干员 is picked in the lobby's 个人名片 since 2026-11-05: the room's seat cards only show the card, and its
+          // picker fits — room-cards.e2e.test.js checks it on the phones)
           if (shotAt(size, ts)) {
             for (const [who, c] of [['host', host], ['spectator', spec], ['solo', solo]]) await c.page.screenshot({ path: path.join(OUT, `room-fit-${who}-${size.join('x')}-${lang}-${ts}.png`) });
-            await guest.page.screenshot({ path: path.join(OUT, `room-fit-picker-${size.join('x')}-${lang}-${ts}.png`) });
           }
-          await guest.page.keyboard.press('Escape');
-          await guest.page.waitForSelector('.modal__box.cardpick', { hidden: true, timeout: 5000 });
         }
       }
       if (touch) {

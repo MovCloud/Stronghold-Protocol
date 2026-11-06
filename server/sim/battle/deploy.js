@@ -6,6 +6,7 @@
 import { COLS } from '../constants.js';
 import { unitInfo } from '../snapshot.js';
 import { fin } from './util.js';
+import { isRemMobile } from '../remMobile.js';
 
 export class BattleDeploy {
   /**
@@ -43,6 +44,8 @@ export class BattleDeploy {
     u.deployedAt = this.time;
     u.atkCd = 0;
     u.lastAttackAt = -Infinity;
+    u.lastAnimAttackAt = -Infinity;
+    u.quietAttack = false;
     u.elem.burn = u.elem.neural = u.elem.necrosis = u.elem.apoptosis = u.elem.erosion = 0;
     u.ground = this.grid.isLow(R0, C0) && !this._elevated?.has(k);
     u.markDirty();
@@ -53,7 +56,8 @@ export class BattleDeploy {
     // 联防 reconstructs deployment/battle-start effects first, then restores HP/SP once in Battle.start.
     const restoreLater = this.kind === 'unite' && this._startDeploying;
     if (!restoreLater && cs && u.kind === 'op' && Number.isFinite(cs.hpPct) && cs.hpPct > 0) u.hp = u.s.maxHp * Math.min(1, cs.hpPct);
-    this._occ[k] = u;
+    if (isRemMobile(u)) (this.remTroops ??= new Set()).add(u);
+    else this._occ[k] = u;
     this._refreshRange(u); // also rebuilds baseRangeKeys (initial range incl. permanent rangeExtend)
     if (!u.skill) this._setupUnit(u);
     u.skill.reset(restoreLater ? null : cs);
@@ -79,10 +83,10 @@ export class BattleDeploy {
   }
 
   /** Mark `unit` dead (hp reached 0). Fires `kill` then `death`. */
-  kill(unit, killer = null) {
+  kill(unit, killer = null, dmg = null) {
     if (!unit || !unit.alive) return;
     unit.hp = 0;
-    if (this._hooks.kill) this.emit('kill', { killer, victim: unit });
+    if (this._hooks.kill) this.emit('kill', { killer, victim: unit, dmg });
     // a nested kill/retreat inside the handlers already removed it: a later handler's hp write must not stick
     if (!unit.alive) { if (!unit.bossPool) unit.hp = 0; return; }
     if (unit.hp > 0 && !unit.bossPool) { // revived by a kill handler (clamped: a handler may write any number)
@@ -90,7 +94,7 @@ export class BattleDeploy {
       return;
     }
     unit.hp = 0; // NaN / negative writes from handlers
-    this._remove(unit, 'killed', killer);
+    this._remove(unit, 'killed', killer, false, false, dmg);
   }
 
   /**
@@ -104,7 +108,7 @@ export class BattleDeploy {
     this._remove(unit, reason, null, permanent, dying);
   }
 
-  _remove(unit, reason, killer = null, permanent = false, dying = false) {
+  _remove(unit, reason, killer = null, permanent = false, dying = false, dmg = null) {
     this._cutAttackStand(unit);
     unit.alive = false;
     unit.removeReason = reason;
@@ -120,6 +124,7 @@ export class BattleDeploy {
     unit._removing = false;
     if (unit.side === 'ally') {
       this.releaseBlocked(unit);
+      this.remTroops?.delete(unit);
       const k = unit.tileR * COLS + unit.tileC;
       if (this._occ[k] === unit) this._occ[k] = null;
       // keep persistent buffs only
@@ -156,12 +161,18 @@ export class BattleDeploy {
           if (pp) pp.killedInTotal++;
         }
         if (killer) killer.stats.kills++;
-        if (unit.bounty && unit.bounty.coins > 0) this.addCoins(this._bountyPayee(unit, killer), unit.bounty.coins);
+        if (unit.bounty && unit.bounty.coins > 0) {
+          const payee = this._bountyPayee(unit, killer);
+          // 2V2 悬赏 (user 2026-10-17): a monster the OPPONENT PLACED pays its killer's 坎诺特 account, never gold; the
+          // official 悬赏 card bounties (no `bank` flag) keep paying gold.
+          if (unit.bounty.bank) this.addBank(payee, unit.bounty.coins);
+          else this.addCoins(payee, unit.bounty.coins);
+        }
       }
     }
     // the reason ('killed' | 'retreat' | 'expired' | …) lets the client keep the knock-down sound for real knock-outs
     if (reason !== 'leak') this._ev(['die', unit.id, reason]);
-    if (this._hooks.death) this.emit('death', { unit, reason, killer, dying: !!dying });
+    if (this._hooks.death) this.emit('death', { unit, reason, killer, dying: !!dying, dmg });
     if (unit.removed) this._toRelease.push(unit);
   }
 

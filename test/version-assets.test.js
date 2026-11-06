@@ -9,6 +9,8 @@ import { fxFixture } from './helpers/fxFixtures.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const assets = JSON.parse(readFileSync(path.join(root, 'data/assets.json'), 'utf8'));
+// Windows has `python` but not always `python3` (the Store alias exits 9009); the same fallback as the other Python tests.
+const PY = ['python3', 'python'].find((bin) => spawnSync(bin, ['--version']).status === 0);
 
 test('every official version declares comparable pictures, models, clips, icons and scenes without installed art', () => {
   const result = assetCoverage({ root, local: { groups: {} } });
@@ -47,7 +49,7 @@ test('add-only keeps existing nested values, arrays and null while admitting new
   assert.deepEqual(old.chars.old.events, ['a']);
 });
 
-test('fx discovery includes each season even when their chess ids collide', (t) => {
+test('fx discovery includes each season even when their chess ids collide', { skip: !PY && 'no python3' }, (t) => {
   const f = fxFixture(t);
   f.put('data/chess.json', { shared: { charId: 'char_9001_current', skills: [{ skillId: 'sk_current' }] } });
   f.put('data/versions/earlier/chess.json', { shared: { charId: 'char_9002_earlier', skills: [{ skillId: 'sk_earlier' }] } });
@@ -55,7 +57,7 @@ test('fx discovery includes each season even when their chess ids collide', (t) 
     char_9001_current: { skills: [{ skillId: 'sk_shared[3]' }] },
     char_9002_earlier: { skills: [{ skillId: 'sk_shared[3]', overridePrefabKey: 'skchr_earlier_1' }] },
   });
-  const r = spawnSync('python3', ['-B', '-c', `import sys,json\nsys.path.insert(0,${JSON.stringify(path.join(root, 'tools/local-extract'))})\nimport fx\nprint(json.dumps(fx.game_data(${JSON.stringify(f.root)})))`], { encoding: 'utf8' });
+  const r = spawnSync(PY, ['-B', '-c', `import sys,json\nsys.path.insert(0,${JSON.stringify(path.join(root, 'tools/local-extract'))})\nimport fx\nprint(json.dumps(fx.game_data(${JSON.stringify(f.root)})))`], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const gd = JSON.parse(r.stdout);
   assert.deepEqual(gd.chars, ['char_9001_current', 'char_9002_earlier']);
@@ -63,7 +65,7 @@ test('fx discovery includes each season even when their chess ids collide', (t) 
   assert.deepEqual(gd.skillOverrides, { char_9002_earlier: { sk_shared: 'skchr_earlier_1' } }, 'official art overrides stay scoped to their operator');
 });
 
-test('add-only FX extraction retains shared metadata and old files while crawling only new units', (t) => {
+test('add-only FX extraction retains shared metadata and old files while crawling only new units', { skip: !PY && 'no python3' }, (t) => {
   const f = fxFixture(t);
   const script = `import sys,json,pathlib
 from unittest.mock import patch
@@ -104,6 +106,6 @@ assert json.loads((dest/'textures.json').read_text())['textures']['shared']==tex
 assert json.loads(manifest.read_text())['groups']['fx/tex']==groups['fx/tex']
 assert (dest/'untouched.bin').read_bytes()==b'keep'
 `;
-  const r = spawnSync('python3', ['-B', '-c', script], { encoding: 'utf8' });
+  const r = spawnSync(PY, ['-B', '-c', script], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
 });

@@ -5,6 +5,7 @@
 // Installed on Battle.prototype by server/sim/Battle.js (a method container: never instantiated; `this` is the battle).
 
 import { TICK, MAX_INTERNAL_ERRORS, MAX_HOOK_DEPTH } from '../constants.js';
+import { withGameData } from '../content/support/dataScope.js';
 
 let hookSeq = 0;
 
@@ -76,7 +77,7 @@ export class BattleHooks {
         if (h.removed) continue;
         this._frameName[d] = name;
         this._frameOwner[d] = h.owner;
-        try { h.fn(ctx, this); } catch (e) { this._handlerError(`hook:${name}`, h.owner, e); }
+        try { withGameData(this.data, () => h.fn(ctx, this)); } catch (e) { this._handlerError(`hook:${name}`, h.owner, e); }
         if (h.once) this.off(h);
         if (ctx && ctx.stopPropagation) break;
       }
@@ -197,7 +198,7 @@ export class BattleHooks {
     this._frameName[d] = label;
     this._frameOwner[d] = owner;
     this._frameCtx[d] = null;
-    try { return fn(); } catch (e) { this._handlerError(label, owner, e); return undefined; } finally { this._emitDepth--; }
+    try { return withGameData(this.data, fn); } catch (e) { this._handlerError(label, owner, e); return undefined; } finally { this._emitDepth--; }
   }
 
   _handlerError(label, owner, e, internal = false) {

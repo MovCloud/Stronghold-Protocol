@@ -298,7 +298,7 @@ describe('impostor atlas (render/impostor.js): every slot is cleared and clipped
         assert.deepEqual(s.mask.rect, [s.x, s.y, s.w, s.h], 'mask = the slot');
         assert.equal(s.box.mask, s.mask);
         assert.equal(s.mask.parent, s.box, 'the mask lives in the box (its transform follows the page)');
-        assert.deepEqual([s.eraser.x, s.eraser.y, s.eraser.width, s.eraser.height], [s.x, s.y, s.w, s.h], 'the eraser clears all of it');
+        assert.deepEqual(s.eraser.rect, { x: s.x, y: s.y, w: s.w, h: s.h }, 'the eraser clears all of it');
         assert.equal(s.box.visible, false, 'nothing drawn until queued');
       }
       assert.equal(drawn.length, 2);

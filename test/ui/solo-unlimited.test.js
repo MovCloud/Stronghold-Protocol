@@ -53,15 +53,11 @@ test('solo time lines: 300/150 when timed and off, the untimed lines otherwise, 
   assert.equal(soloTimedOf({}, 'act2autochess'), false);
   assert.equal(soloTimedOf(null, null), false);
 
-  assert.equal(soloTimeMsgid('brief', { timed: true, unlimited: false }), '独立模拟中每轮休整限时 300 秒，机变 150 秒');
-  assert.equal(soloTimeMsgid('brief', { timed: true, unlimited: true }), '独立模拟中休整期与机变阶段不限时');
-  assert.equal(soloTimeMsgid('brief', { timed: false }), '独立模拟中休整期与机变阶段不限时');
-  assert.equal(soloTimeMsgid('brief', { timed: null }), '');
-  assert.equal(soloTimeMsgid('card', { timed: true, unlimited: false }), '休整每轮 300 秒，机变 150 秒');
-  assert.equal(soloTimeMsgid('card', { timed: false }), '休整期与机变阶段不限时');
-  assert.equal(soloTimeMsgid('short', { timed: true, unlimited: false }), '每轮 300 秒');
-  assert.equal(soloTimeMsgid('short', { timed: true, unlimited: true }), '不限时');
-  assert.equal(soloTimeMsgid('short', { timed: false }), '');
+  assert.equal(soloTimeMsgid({ timed: true, unlimited: false }), '独立模拟中每轮休整限时 300 秒，机变 150 秒');
+  assert.equal(soloTimeMsgid({ timed: true, unlimited: true }), '独立模拟中休整期与机变阶段不限时');
+  assert.equal(soloTimeMsgid({ timed: false }), '独立模拟中休整期与机变阶段不限时');
+  assert.equal(soloTimeMsgid({ timed: null }), '');
+  assert.equal(soloTimeMsgid(), '');
 });
 
 test('the room, the lobby and the picker say the new lines through t(); en.json has the English', () => {

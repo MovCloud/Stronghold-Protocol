@@ -48,13 +48,20 @@ function slicedPage(holdsOn) {
 }
 
 test('a wait longer than one slice keeps polling the same predicate until it holds', async () => {
-  const page = slicedPage(4);
+  // Fixed slice outcomes keep this retry test independent of event-loop delays under the full suite.
+  const page = {
+    calls: [],
+    waitForFunction(fn, opts, ...args) {
+      this.calls.push({ fn, opts, args });
+      return this.calls.length < 4
+        ? Promise.reject(timeoutError(opts.timeout))
+        : Promise.resolve({ handle: 'ok', args });
+    },
+  };
   const fn = () => true;
-  const t0 = Date.now();
   const got = await waitForFunctionLong(page, fn, { timeout: 60_000, polling: 200, slice: 30 }, 'a', 2);
   assert.deepEqual(got, { handle: 'ok', args: ['a', 2] });
   assert.equal(page.calls.length, 4, 'three slices ran out, the fourth held, nothing polled after it');
-  assert.ok(Date.now() - t0 >= 85, `the three slices waited their 30 ms each (${Date.now() - t0} ms)`);
   for (const c of page.calls) {
     assert.equal(c.fn, fn);
     assert.deepEqual(c.args, ['a', 2]);

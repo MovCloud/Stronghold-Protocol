@@ -154,7 +154,7 @@ export const PERMISSIONS = Object.freeze({
 /**
  * The parts of manifest 2: the classes that may carry each, how it is written, the permissions one of which it needs.
  * shape: 'inline' — a path to a .json file or the object inline; 'list' — a .json path or a list of them; 'langs' —
- * { <lang>: .json path }.
+ * { <lang>: .json path }. A part may also cap the files it names (maxFiles) and require one name (name).
  */
 const PARTS = Object.freeze({
   assets: { classes: ['cosmetic', 'content', 'script', 'trusted'], shape: 'inline', needs: ['assets.override', 'assets.add'] },
@@ -168,6 +168,10 @@ const PARTS = Object.freeze({
   // PLUGIN API v2: a declarative interaction window (shared/plugins/offers.js). Data only — the host owns the window's
   // lifecycle and applies one of its effect primitives, so the part needs no code permission.
   offers: { classes: ['content', 'script', 'trusted'], shape: 'list', needs: ['offers'] },
+  // PLUGIN API v2: one page of the emote wheel (shared/plugins/emoteCatalog.js). Data only — the wheel is core code
+  // (public/js/ui/emotes.js) and a plugin has no interface slot for it, so this part contributes a page and no widget.
+  // One file per page, always named `emotes.json`: the client finds it in the visual set's file table.
+  emotes: { classes: ['cosmetic', 'content'], shape: 'list', needs: [], maxFiles: 1, name: 'emotes.json' },
   i18n: { classes: ['content', 'script', 'trusted'], shape: 'langs', needs: [] },
 });
 
@@ -536,6 +540,7 @@ function readPart(name, v, list) {
   const json = (rel, at, path) => {
     if (!isPackPath(rel)) { list.problem('PLUGIN_PART_SHAPE', `${at}: ${short(rel)} is not a path inside the plugin folder`, { at: path }); return false; }
     if (extOf(rel) !== '.json') { list.problem('PLUGIN_PART_SHAPE', `${at}: ${rel} is not a .json file`, { at: path }); return false; }
+    if (spec.name && rel !== spec.name) { list.problem('PLUGIN_PART_SHAPE', `${at}: ${rel} is not ${spec.name}`, { at: path }); return false; }
     return true;
   };
   if (spec.shape === 'inline' && isObj(v)) {
@@ -568,6 +573,10 @@ function readPart(name, v, list) {
   const paths = typeof v === 'string' ? [v] : v;
   if (!Array.isArray(paths) || !paths.length || paths.length > 256) {
     list.problem('PLUGIN_PART_SHAPE', `"${name}" is not ${spec.shape === 'inline' ? 'an object, ' : ''}a .json path or a list of 1–256 of them`, { at: [name] });
+    return null;
+  }
+  if (spec.maxFiles && paths.length > spec.maxFiles) {
+    list.problem('PLUGIN_PART_SHAPE', `"${name}" names more than ${spec.maxFiles} file${spec.maxFiles > 1 ? 's' : ''}`, { at: [name] });
     return null;
   }
   const files = [];
@@ -630,6 +639,7 @@ export function readPluginManifest(raw, ctx) {
   else if (m.api < supported.min || m.api > supported.current) list.problem('PLUGIN_API', `"api": ${m.api} is not supported (this game: ${supported.min}–${supported.current})`, apiAt);
   else api = m.api;
   if (m.offers !== undefined && api !== null && api < 2) list.problem('PLUGIN_API', 'offers requires plugin API 2', apiAt);
+  if (m.emotes !== undefined && api !== null && api < 2) list.problem('PLUGIN_API', 'emotes requires plugin API 2', apiAt);
 
   let scope = [...kind.defaultScope];
   if (m.scope !== undefined) {

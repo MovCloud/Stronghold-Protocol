@@ -1,13 +1,15 @@
 # DESIGN §6, §16 — The match and meta engine (server/match), operator loadouts
 
-Part of [DESIGN.md](../DESIGN.md) (the index; section numbers are global).
+Part of [DESIGN.md](../development/DESIGN.md) (the index; section numbers are global).
+
+The starting roster fixes the fork's BAN and boss modifiers for the full match: the core BAN draw is reduced by one at five opening seats and by two at six, the boss pool uses 1.5× of the equivalent four-seat baseline at five and 2× at six, applied once per boss round, and rosters of seven or more keep the upstream baseline. Matches that start with five or more players grant a fixed 信标 at the start of round 10 only, and their bounty drafts show nine cards, including three extra kill bounties. Pool grouping follows [docs/PLAYER_CAPACITY.md](../PLAYER_CAPACITY.md).
 
 ## 6. Match & meta (server/match)
 
 ### 6.1 State machine (Match.js)
 
 ```
-LOBBY(room) → INFO_CHECK (co-op 25 s; solo and any single-human match untimed (§18.2); all ready ⇒ skip; the operator loadout (§16) locks when it ends) → BAND_DRAFT (co-op: random order — the room option 「AI 队友最后选择」 (host, off by default; `room.setAiPicksLast`) puts every human seat before every AI seat, each group keeping the drawn order, and draws no extra random number; a skipping human goes behind the other humans still to pick and ahead of the AI seats, or to the very end when no other human remains [ASSUMED] —, ONE countdown — `BAND_TURN_SECONDS` 50 s per turn = m.public.deadline, AI seats pick at once, 1 skip each, a strategy a teammate already took is refused (队友已选), timeout ⇒ the strategy the player highlights (`g.bandFocus`) while free, else band_bldsk, else the first free one; solo: free pick, no timer, no skip; a single human: untimed) → BATTLE_CHECK (3 s)
+LOBBY(room) → INFO_CHECK (co-op 25 s; solo and any single-human match untimed (§18.2); all ready ⇒ skip; the operator loadout (§16) locks when it ends) → BAND_DRAFT (co-op: random order — the room option 「AI 队友最后选择」 (host, off by default; `room.setAiPicksLast`) puts every human seat before every AI seat, each group keeping the drawn order, and draws no extra random number; a skipping human goes behind the other humans still to pick and ahead of the AI seats, or to the very end when no other human remains [ASSUMED] —, ONE countdown — `BAND_TURN_SECONDS` 50 s per turn = m.public.deadline, AI seats pick at once — the host may designate an AI seat's strategy in the room (`room.setBotBand`, off by default, one AI seat per strategy [ASSUMED: a remake option, no source]): that seat takes it on its turn and, in ordinary co-op, it counts as taken for everybody else until then (refused picks, skipped by the timeout / departure defaults; `m.public.draft.reserved` {bandId: playerId}) —, 1 skip each, in ordinary co-op a strategy a teammate already took is refused (队友已选; expanded fork exception below), timeout ⇒ the strategy the player highlights (`g.bandFocus`) while free, else band_bldsk, else the first free one; solo: free pick, no timer, no skip; a single human: untimed) → BATTLE_CHECK (3 s)
 → loop r = 1..lastRound:
      ROUND_START   (income, upgrade price −1 (floor 0), temp NOT wiped — what overflowed after the last prep's deadline is shown in this
                     prep (§6.2 temp overflow), unfrozen shop slots rerolled, frozen kept; a strategy's 「进入休整期时」 grants and the
@@ -16,17 +18,23 @@ LOBBY(room) → INFO_CHECK (co-op 25 s; solo and any single-human match untimed 
                     a card is picked with two taps, §18.2)
      PREP          (onPrepStart: the strategies' 「进入休整期时」 grants — 老鲤, 松桐, 杜宾, 娜仁图亚, the preparation_start_* keys —
                     and the traits' <进入休整期时> effects (META.md §2.3), after the 机变 draft, GitHub #851, DESIGN §35.24 /
-                    §35.53; co-op: timer from config, ends when all alive humans+bots ready;
-                    solo / single human: untimed, ends on ready)
+                    §35.53; co-op: timer from config, ends when all alive humans+bots ready; solo / single human: untimed,
+                    ends on ready; the own m.private carries 预计叠层 `layerForecast` — the layers the own <休整期结束时>
+                    effects add if the prep ended now, random sources left out and flagged: server/match/layerForecast.js,
+                    feedback #25, §32.14.46)
      PREP_END      (<休整期结束时> effects; unfrozen shop cleared; Ready is blocked while a personal choice or temp overflow is pending;
                     at the deadline personal choices are auto-picked first, then
                     the temp pieces due at this prep are resolved (chess sold back, items destroyed, summon stacks removed — they come back at the next round start, §20.1) — pieces that arrived
                     after Ready or during the <休整期结束时> effects wait for the next prep (§6.2 tempDue))
-     COMBAT        (one Battle per alive player, all in parallel, 2×; watchers get snapshots; solo: pausable, §14 Solo pause)
+     COMBAT        (one Battle per alive player, all in parallel, 2×; watchers get snapshots; 比赛控制 §14 — 暂停 / 快进 / 跳过, a request every connected human must agree to)
      UNITE         (co-op only, if ≥1 leaked & ≥1 perfect: ≤2 perfect helpers in `unite.js helperOrder` order (research 08 §5 / PRTS 帮助:
-                    most units on the field > an active bond > most standing units > seat; the pair ordered by units > active bond >
-                    Σ active layers > standing > seat, the first one on the right-hand field) fight the union of leaks; no layer gains — with
+                    most units on the field > an active bond > most standing units > most active bonds > Σ active layers > seat;
+                    the pair ordered by units > active bond > Σ active layers > standing > most active bonds > seat, the first one
+                    on the right-hand field; the bond count / Σ layers before the seat: owner 2026-10-17, feedback #13)
+                    fight the union of leaks; no layer gains — with
                     the layers their own combat reached (the round's pending gains, PRTS "以其阵地当前的状态" [ASSUMED]);
+                    the round's terrain and blocking devices remain, with each helper's own device overrides (#282);
+                    escape templates supply re-entry waves/routes, not a flat replacement battlefield;
                     a helper's operator knocked out at the end of its own combat enters down — carryState { down: true },
                     PRTS "上一阶段为退场状态的干员强制退场", its full redeploy timer — confirmed by the user (§19.3))
      SETTLE        (LP −min(leaks,10) per player (unite survivors to their source); eliminations; layer gains applied; coins; broadcast;
@@ -54,6 +62,39 @@ their clocks (preparation 300 s, 机变 150 s; the other two use the co-op lengt
 co-op match with one human stays untimed. A second-season solo stays untimed.
 
 P1b plugin modes inherit an official mode and may override economy and other global configuration field by field in `GameData` (DESIGN §32.5). Original modes retain the same values and behavior; room mode selection belongs to P1c.
+
+**Fork expanded-co-op rules (2026-10-09, local candidate):** `capacityExperiment` means configured capacities
+8 / 12 / 16 / 20, even when the room starts short or loses players. Strategies and all 机变 families allow repeated
+choices, with six legal 机变 cards, the existing turn order and one confirmation per player. The server's
+`draft.allowRepeat` / `sp.allowRepeat` authorizes reuse; current `sp.picks` identifies every confirmed picker, while
+`taken` is only first-picker display metadata. The UI shows each player's chosen card and every picker of a reused
+card; this adds no persistent pick history or private-choice exposure. Ordinary four-player / solo rules stay as above.
+
+The host may opt into `experimental.disableDuckLord` only for expanded co-op (default unchecked). It is an optional
+strict boolean, canonically omitted when false or at capacity 4. The match's own `MatchGD` filters `band_ducklord`
+from manual picks, focus, timeout/autoplay and bot/default selection, and the strategy grid applies the same room rule.
+No global band/effect data is changed; unchecked expanded rooms, ordinary four-player and solo remain unaffected.
+Host-only mutation, queue locks, preparation invalidation, rule compatibility and local / cluster match inheritance
+use the existing nested experimental configuration. The fixed four-seat card-pool chunks remain **capacity-20 only**;
+this option and the timing rules below do not extend that pool policy to capacities 8 / 12 / 16.
+
+Every expanded co-op 联防 segment has a fixed **300 game-second** budget, not a wave-base / alive-count scaling.
+The original relay admission still requires at least eight alive at normal-combat start **and** UNITE entry. With a
+viable, genuinely perfect, unused helper reserve at entry, allocations freeze at **150 + 150** game seconds; without
+one the single field receives 300. Below-eight or sparse expanded rosters still get 300, but do not gain relay admission
+or necessarily relay metadata. Each field has at most two helpers and the segment at most two rounds. Round 2 starts
+only after the first natural terminal, with re-enterable residual enemies and still-alive, unused, genuinely perfect
+helpers; killed enemies are never replayed. Both fields use the original stage and each helper's normal-combat end
+state. Early completion consumes actual virtual time but never rolls saved time into the second field's 150-second
+cap. Generation / battle identity guards, natural headless release, idempotency, earnings / damage accounting and the
+single final source-attributed LP settlement remain authoritative; no first-round LP charge or premature rescue.
+
+First-round UI says 「联防」 / 「联防阶段」, not 1/2; only an actual second field says 「联防2/2」 /
+「接力联防第2轮」. Metadata, not text, identifies fields. An originally admitted >=8 plan with no viable reserve
+explicitly has `uniteRound: 1, uniteRounds: 1`; below-eight plans retain the legacy non-relay shape. Known-single
+fields still fence current field / battle identity and do not advertise a second-generation relay key. See
+[EXPERIMENTAL-MULTIPLAYER.md](../EXPERIMENTAL-MULTIPLAYER.md). Local inline / actual-Worker regressions and browser
+fixtures cover these rules and reconnects; no deployment, full natural match or production-capacity claim is implied.
 
 ### 6.2 Player state (PlayerState.js) — authoritative per player
 
@@ -246,7 +287,7 @@ combat blocking, healing and damage rules are unchanged.
 Pending Pointing Stick offers use the existing bounty scorer at bot prep entry, immediately after a successful cast,
 and before Ready. The prep's deadline — and the scheduler's fallback when a step of a bot's prep fails — randomly resolves any remaining offer before temp and Ready; a seat that left is eliminated and its offer dropped.
 
-Deterministic-ish heuristic player used for (a) AI teammates, (b) auto-play for disconnected humans (only auto-ready + auto-picks, not shopping, unless "AI 托管" is toggled), (c) tests. Strategy (§21.6): pick a band (weighted by starting LP; never one built around a bond the mode switches off — `gd.bandBondIds`, §21.26); each prep: take offers, sell dead bench weight, fill the board, complete affordable merges, level on the curve, then buy only merge progress / lineup upgrades worth more than the refreshes their price would buy (shop odds of completing held pairs), freeze for an unaffordable third copy (坎诺特 keeps 5 funds back); build around a committed focus core bond (a teammate's main bond on its strip counts against it; bonds the mode switches off never) + a second bond; value dealers by DPS vs the round's DEF / RES (an attack on every enemy in range counts double — 阵法术师 / 轰击术师), with the range the unit is deployed with; place by the exposure model + rehearsal on the server's deploy map (no 深水区; a blocker whose range is its own tile only — range 0-1 — takes a free tile of the enemy road first; a tactician's 援军 within `PlayerState.summonRange`; a melee chess whose trait reads 「可以放置于远程位」 (钩索师 / 推击手) on a 高台 whose range covers the enemy road, else on the ground, counted as a blocker in the lineup either way — §3; `g.move` judges legality); items by effect (META §1.5: 突变细胞 on the least valuable normal single below 6阶, a cell left in temp gets a hand slot made for it, the operator its transformation gains is deployed by the next prep's lineup step like any owned unit — AI 托管 too; the buy loop's bench shed never sells a piece gained since the bot's last prep, §21.1); 机变 bounties by expected payout − expected LP loss over the offered cards; resolve temp — on a human seat under AI 托管 never by destroying an item while a bench operator can be sold for the slot —; ready. A bot's whole prep — shop decisions and layout planning (`botPrepBeginSteps`, 25–70 ms late in a 4-bot match), the layout rehearsal and `botPrepEndSteps` — runs in wall-clock slices of `botSliceMs` (8 ms) per scheduler callback on a real host (step generators that yield between whole actions, never with a transient board; the same actions in the same order, so decisions are unchanged; at once in virtual time). Under AI 托管 a human's own 自选 pieces score `DIY_PIECE_BONUS` (12) more in the shop / reward choice and the 调度中心 is levelled one round earlier for the step that opens a slotted tier (`levelUp`, `diyOpensAt`; 0.2.0 — bots field no 自选 piece).
+Deterministic-ish heuristic player used for (a) AI teammates, (b) auto-play for disconnected humans (only auto-ready + auto-picks, not shopping, unless "AI 托管" is toggled or the seat has been offline for 2 prep ends in a row — 掉线由 AI 接管, released on reconnect, Match.js), (c) tests. Strategy (§21.6): pick a band (weighted by starting LP; never one built around a bond the mode switches off — `gd.bandBondIds`, §21.26); each prep: take offers, sell dead bench weight, fill the board, complete affordable merges, level on the curve, then buy only merge progress / lineup upgrades worth more than the refreshes their price would buy (shop odds of completing held pairs), freeze for an unaffordable third copy (坎诺特 keeps 5 funds back); build around a committed focus core bond (a teammate's main bond on its strip counts against it; bonds the mode switches off never) + a second bond; value dealers by DPS vs the round's DEF / RES (an attack on every enemy in range counts double — 阵法术师 / 轰击术师), with the range the unit is deployed with; place by the exposure model + rehearsal on the server's deploy map (no 深水区; a blocker whose range is its own tile only — range 0-1 — takes a free tile of the enemy road first; a tactician's 援军 within `PlayerState.summonRange`; a melee chess whose trait reads 「可以放置于远程位」 (钩索师 / 推击手) on a 高台 whose range covers the enemy road, else on the ground, counted as a blocker in the lineup either way — §3; `g.move` judges legality); items by effect (META §1.5: 突变细胞 on the least valuable normal single below 6阶, a cell left in temp gets a hand slot made for it, the operator its transformation gains is deployed by the next prep's lineup step like any owned unit — AI 托管 too; the buy loop's bench shed never sells a piece gained since the bot's last prep, §21.1); 机变 bounties by expected payout − expected LP loss over the offered cards; resolve temp — on a human seat under AI 托管 never by destroying an item while a bench operator can be sold for the slot —; ready. A bot's whole prep — shop decisions and layout planning (`botPrepBeginSteps`, 25–70 ms late in a 4-bot match), the layout rehearsal and `botPrepEndSteps` — runs in wall-clock slices of `botSliceMs` (8 ms) per scheduler callback on a real host (step generators that yield between whole actions, never with a transient board; the same actions in the same order, so decisions are unchanged; at once in virtual time). Under AI 托管 a human's own 自选 pieces score `DIY_PIECE_BONUS` (12) more in the shop / reward choice and the 调度中心 is levelled one round earlier for the step that opens a slotted tier (`levelUp`, `diyOpensAt`; 0.2.0 — bots field no 自选 piece).
 
 ### 6.7 Where a match runs: match hosts (§32.6, §35.23)
 
@@ -293,17 +334,20 @@ Client sync preparation may await chess/backups data. A later edit (including re
 
 **UI:** a 干员调配 screen reachable from the lobby, room and briefing (INFO_CHECK): the roster is one list, a row per operator with aligned columns under a head row — portrait / name / bonds, the skills and the elite's modules to tap (不装备 first; the quick choices of PR #301 by @farridge, laid out as one list instead of its three columns of cards, the owner's call of 2026-10-08), the 潜能 / 练度 selects (`screens/loadout.js RosterRow`, `screens/cultivation.js`); a click anywhere in the row that is not one of its controls picks the operator and opens the detail — the controls act on their own: a skill / module button selects the row through `quickChange` and keeps the list on a phone, a select opens its own list (`RosterRow onRowClick` → `screens/loadoutSections.js rowControlHit`, which anchors the guard to the row, so a wrapping link or button cannot swallow its clicks); the detail beside it (below 1000 px wide it slides over the list, a quick choice keeps the list) opens with the 潜能与练度 section (潜能 1–6, the four official 练度 tiers with their effect texts); the detail then shows the operator's 特质 — the in-match `GarrisonBlock` / RichText of the form its 普通 / 精锐 skill toggle shows, triggers such as 「<进入休整期时>」 kept (0.2.2, PR #301 by @farridge); filter by tier/bond/class, per chess choose skill (icon, name, SP info, desc at Lv4 and Lv7) and elite module (official type icon from the local-client art when extracted (§13), else a lettered tile; name/type, stat bonus, trait/talent changes), 恢复默认, persisted; a 局内数值 section between the skills and the modules (普通 / 精锐 toggle, 精锐 first) draws the detail card's own stats block, 特性 and 天赋 for the chosen skill / module (§22.16); the chosen skill/module shown on shop cards and in the detail panel (a teammate's unit — 前往查看 in prep, 联防 / 最终攻势 fields, an observed battle — shows **its owner's** skill/module from its UnitInfo `skillIndex` / `moduleId`, `gameLogic.js unitLoadout`) — which also shows the stats, 特性, talents and attack range the unit fights with (`shared/loadoutRecord.js` `loadoutRecord` / `attackRangeGrid`, the same composition the sim's `getChess(id, loadout)` uses; the deploy wheel's range preview too) — the range it is deployed with: a selected passive range skill (引星棘刺 S3 3-9) and the 特性's permanent 攻击距离 (信仰搅拌机 SPT-Y +1) included, over all 1284 loadouts equal to the battle's range at deployment; in battle and prep the card draws the live `range` (§21.16). In battle the renderer plays the equipped skill's own Spine clip and ON_SKILL_START sound (`UnitInfo.skillIndex`; `data/assets.json` lists icons, clips and sounds for every skill index).
 
-**导出 / 导入 a loadout:** 导出 hands the current loadout out as a versioned envelope `{ kind: 'stronghold.loadout', v, exportedAt, count, entries, ops }` (`ops`: the 潜能 / 练度 settings, 0.2.2 — an import without them leaves the current settings alone) — copied through `ui/clipboard.js copyText` or downloaded as a file. 导入 accepts that envelope, the stored `{ v, entries }` form and a bare `{ [chessId]: { skill, module } }` map (serialised text too), and refuses another tool's `kind`, junk, an empty result and a **newer** `v` (`parseImport` — a newer payload is never mis-read). Both go through `loadoutSync.applyLoadoutEntries` → `sanitizeEntries`, so a preset from another build never sends the server an entry it would refuse, an import that keeps nothing changes nothing, and the result is reported as N imported / M not (`ui/loadoutModel.js`, `screens/loadout.js`).
+**导出 / 导入 a loadout:** 导出 hands the current loadout out as a versioned envelope `{ kind: 'stronghold.loadout', v, exportedAt, count, entries, ops, skins, portraits }` (`ops`: the 潜能 / 练度 settings, 0.2.2 — an import without them leaves the current settings alone; `skins` / `portraits`: the 皮肤 and 商店立绘 choices keyed by operator — both fields are always in the envelope, an empty map when there is no choice, and an older build reading them ignores the fields) — copied through `ui/clipboard.js copyText` or downloaded as a file. 导入 accepts that envelope, the stored `{ v, entries }` form and a bare `{ [chessId]: { skill, module } }` map (serialised text too), and refuses another tool's `kind`, junk, an empty result and a **newer** `v` (`parseImport` — a newer payload is never mis-read). Both go through `loadoutSync.applyLoadoutEntries` → `sanitizeEntries`, so a preset from another build never sends the server an entry it would refuse, an import that keeps nothing changes nothing, and the result is reported as N imported / M not (`ui/loadoutModel.js`, `screens/loadout.js`).
 A payload that carries `ops`, including `ops: {}`, is refused before any write when chess.json or backups.json is missing (`loadoutOpsImportRefusal` in `screens/loadout.js`, the same check as a 自选编队 import). An older file with no `ops` still imports skills and modules once chess is ready and leaves the current 练度 in place.
 Export remains available for non-default `ops` alone, including operators outside the normal roster. The roster's
 adjusted count and reset scope stay limited to its own operators; the DIY export still carries picks only.
+The export envelopes (loadout, DIY, ownership, local-stats) are core-fixed: a plugin has no extension point and cannot
+add a field, and plugin data is not part of a portable preset. The only plugin-dependent fields are the core-defined
+record fields `vs` and `content` (docs/PLUGINS.md §11), null when the room has no plugins.
 
 **干员持有 (0.2.0 补位):** the overlay's second tab marks operators as not owned (the 55 NORMAL chess; per-browser `sp.pref.ownership` = `{ v, notOwned }`, synced as `room.ownership { notOwned }` by the same sync engine as the loadout, `ui/loadoutSync.js installPrefSync`; 导出 / 导入 as `{ kind: 'stronghold.ownership', v, exportedAt, count, notOwned }`). A not-owned chess fights as its official stand-in with the backup skill / module — the loadout never applies to it ("对于补位干员其技能不可更改") — and is shown as the stand-in wherever the player's copy appears (shop / reward cards, hand and 临时整备区, board, detail card, result lineup, a teammate's scouting and bond popups: portrait, name, model, with a small 「替补」 mark; the owner's recall of the official mode, 2026-10-06), while its bonds, 特质, tier, price and merge stay the chess's; the 0.2.0 补位 design subsections have the rules and sources.
 **自选编队 (0.2.0):** the overlay's third tab fills the four DIY slots (5阶 ×2, 6阶 ×2) with an owned 6★ outside the chess pool (any of its three skills, any module of its elite form but a 集成战略 one) or a prototype (its locked skill / module); only operators with a kit are offered (`welcome.diyKitted`). Per-browser `sp.pref.diy` = `{ v, picks }`, synced as `room.diy { picks }` by the same sync engine; 导出 / 导入 as `{ kind: 'stronghold.diy', v, exportedAt, count, picks }` (`ui/diyModel.js`, `screens/diy.js`). **UI:** the picker is the roster's own screen (the UI paragraph above) with the picker's own **draft** and its own filter row: the 原型 / 已持有 chips and the search it has always had, plus the roster's 职业 chips (`loadoutSections.js ProfFilter`, one markup for both screens — no 盟约 select and no 仅看已调整, neither of which means anything for a slot's pick). The row's quick skill / module choices write the draft (确认 saves it, 取消 / Esc drop it, a saved pick is never touched) while 潜能 / 练度 writes stay immediate; a taken option (another slot holds the operator) disables its row and names that slot, and a prototype's locked skill / module are static cells. Two 自选 facts differ from the roster's list: the modules come from `pickChoices().modules` (集成战略 / 生息演算 ones excluded, 不装备 first) with the 默认 badge suppressed (on a composed slot record `isDefault` marks the current pick, not an official default), and a 自选 record carries `garrisonIds: []`, so the pane has no 特质 section. Below 1000 px wide the pane slides over the list with a 「干员列表」 back button, and a row's first tap only selects it (the next tap opens the pane). Every row's choices are memoized per loaded backups.json (`pickChoices` behind `screens/diy.js rowChoices`): the tier-6 list holds ~81 operators, so a search keystroke never recomposes them all. In the match a slotted piece is the operator for its player (name, art, class, bonds from its factions, no 特质, the pick's skill and module; the slot's tier, price and merge), sold only in that player's shop from the slot's 调度中心 level with its own stock; the shop / reward / detail cards and the own pieces carry a 「自选」 badge (`ui/gameLogic/diy.js`); the 0.2.0 自选编队 design subsection has the rules and sources.
 
 ---
 
-### Cooperative buying, reactions and opening rerolls (§28.15–16, §28.21)
+### Cooperative buying, reactions, opening rerolls and 投票移出 (§28.15–16, §28.21, §32.14.45)
 
 [ASSUMED] Bot purchasing applies one soft 18-point penalty to non-elite, non-DIY tier V/VI shared-pool cards whose
 active bonds overlap another living teammate's opening strategy. Human and AI teammates are treated equally; it
@@ -319,6 +363,41 @@ bot reply. Settlement uses that round's results (kills then damage, stable seat 
 chess merge reacts once and resets at settlement. Gifts are classified by trusted source playerId, never display name.
 These hooks consume no gameplay RNG and schedule no game actions.
 
+[ASSUMED] During INFO_CHECK a player may request an opening reroll (重刷本局): any seated human of a matchmade room
+(野排, `room.source === 'matchmaking'`), only the host of a private one (`Lobby.rerollSetup`). The voters are the humans
+connected at the proposal, autoplay humans included; bots, spectators and offline humans neither vote nor block. It
+needs `ceil(0.75 × voters)` yes votes, the proposer's counted (2→2, 3→3, 4→3, 8→6, 20→15), passes as soon as that is
+reached and fails as soon as `voters − rejected` falls below it. A voter that disconnects or leaves is dropped from the
+vote and the threshold recomputed from the voters left — the vote goes on and may pass or fail on that recount; a human
+connecting later does not join it. A vote lasts 20 s (× timerScale). It pauses the confirmation timer and blocks Ready;
+rejection, timeout, the proposer withdrawing (its own no) or the host's `room.cancelReroll` restores the remaining time /
+prior Ready state. One proposal per player per setup revision, at most 3 rerolls per match, and one vote per seat per
+30 s (`SETUP_REROLL_COOLDOWN_MS`, PR #860): a completed reroll opens a fresh window, a cancelled or rejected vote does
+not give the cooldown back; the refusal is RATE with the detail `setup reroll cooldown`, which the client shows as
+「每人 30 秒内只能发起一次重刷投票」, and stale revisions or vote identities are refused. With one human (solo, or co-op
+with bots) every start completes at once and so clears the cooldown; there `room.rerollSetup` is throttled by the
+connection's heavy bucket (server/net.js `HEAVY_TYPES`, 2 per second after a burst of 6; plain RATE), since each reroll
+rebuilds the opening and resends `m.public` (§35.47). Success preserves the room, seats, settings and connections,
+redraws the complete opening, resets Ready, and starts the full original timer (single-human matches remain untimed).
+Fixed stage/bans remain fixed and random results can repeat. A separate seed-derived stream leaves shop/draft RNG
+untouched; requests have a 300 ms anti-burst guard, revision and vote identities. All new setup data and player DIY
+stocks are prepared before mutation; data preparation failure leaves the old opening intact. The vote and the proposal
+marks are transient: a checkpoint restore drops them and keeps the paused confirmation time, while the seat cooldown
+survives the restore (`_rerollStartAt`, §35.47). This is a remake convenience, not an official mode rule (owner's rules
+of 2026-10-17, §32.14.45).
+Unrelated result-screen changes from PR #408 are not included.
+
+[ASSUMED] 投票移出 (GitHub feedback #12, owner's rules of 2026-10-17, `match/kickVote.js`): in SP_DRAFT / PREP the
+connected humans may vote out a teammate whose seat the AI plays because it stayed offline (掉线由 AI 接管: alive,
+offline, `offlineAutoplay`; an AI 托管 chosen while connected does not qualify). Voters are the connected humans that
+have not left, the target excluded, at the proposal; a strict majority `⌊n/2⌋ + 1` passes it, the proposer's yes
+counted; a voter that disconnects or leaves is dropped and the majority recomputed. The vote lasts 30 s and is
+cancelled at the prep's end, when the target reconnects or is gone, or when the proposer withdraws. One vote at a time
+per match; a failed vote blocks another on the same target for the rest of the round; 300 ms burst guard per player.
+A passed vote removes the seat exactly like 中途退出 — the AFK rule's removal path with reason `kicked` (copies back to
+the pool, out of the Final Assault pairing, Boss HP rescaled); the player hears `room.closed {reason:'kicked'}` on its
+next resume. All room types; transient across checkpoints. A remake rule, not an official one.
+=======
 [ASSUMED] During INFO_CHECK any seated human participant may request an opening reroll; all connected human
 participants must explicitly agree, including autoplay humans. Bots and spectators do not vote; one human refreshes
 immediately. A vote pauses the confirmation timer and blocks Ready. Rejection, cancellation by any seated participant,
@@ -334,6 +413,7 @@ burst of 6; plain RATE), since each reroll rebuilds the opening and resends `m.p
 All new setup data and player DIY stocks are prepared before mutation; data preparation failure leaves the old opening
 intact. This is a remake convenience, not an official mode rule. Unrelated result-screen changes from PR #408 are not
 included.
+>>>>>>> theirs
 
 The shared DIY detail preview (stats, range, trait, talents, potential, cultivation and matching normal/elite skill descriptions) follows roster loadout resolution. Jessica shield placement is limited to her four orthogonal neighbors. The two Ptilopsis prep-gift copy exceptions are defined in §29.3 and META; no generic change to all copied conditions is implied.
 

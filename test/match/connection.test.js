@@ -15,7 +15,8 @@ test('public throttling starts at broadcast time even when building the previous
   const sent = [];
   const timers = [];
   const match = {
-    _lastPubAt: 0,
+    // fork keeps DELAYS.PUBLIC_THROTTLE = 125 (8 Hz, D021); start open so the first frame is not itself throttled
+    _lastPubAt: -Infinity,
     sched: {
       now: () => now,
       setTimeout: (fn, delay) => { timers.push({ fn, at: now + delay }); return timers.length; },
@@ -33,7 +34,8 @@ test('public throttling starts at broadcast time even when building the previous
   assert.deepEqual(sent, [116], 'the second frame waits for the full interval after the first broadcast');
   now = timers[0].at;
   timers[0].fn();
-  assert.deepEqual(sent, [116, 216]);
+  // first broadcast at 116; the next waits 125 − (200 − 116) = 41 ms from the second call → 241
+  assert.deepEqual(sent, [116, 241]);
 });
 
 test('constructor validation mirrors the stub; start() sends the first m.public and one m.private per human', () => {
@@ -49,7 +51,8 @@ test('constructor validation mirrors the stub; start() sends the first m.public 
   assert.equal(pub.factions.length, 3);
   assert.ok(DATA.bosses[pub.bossId]);
   for (const p of pub.players) {
-    for (const k of ['playerId', 'seat', 'name', 'isBot', 'connected', 'alive', 'lp', 'bandId', 'shopLevel', 'boardCount', 'ready', 'bonds', 'fieldId', 'status']) assert.ok(k in p, `players[].${k}`);
+    for (const k of ['playerId', 'seat', 'name', 'isBot', 'connected', 'alive', 'lp', 'bandId', 'shopLevel', 'boardCount', 'boardOps', 'ready', 'bonds', 'fieldId', 'status']) assert.ok(k in p, `players[].${k}`);
+    assert.ok(Array.isArray(p.boardOps), 'players[].boardOps is the 盟约 flyout list');
     assert.ok(STATUSES.includes(p.status));
   }
   const privs = h.sent.filter(([, m]) => m.t === 'm.private');

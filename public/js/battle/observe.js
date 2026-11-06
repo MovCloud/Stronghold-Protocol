@@ -4,8 +4,9 @@
 //   * own normal battle running: no observing ("当前无法查看");
 //   * own battle over: "⌛ 作战结束，等待队友完成作战" + the teammates' progress; tap a teammate → 前往查看 → a local
 //     replica of their battle; 返回战场 goes back;
-//   * 联防 / 最终攻势: the ‹ › pill switches the camera LEFT half / 全景 / RIGHT half of the own field; the other pair's
-//     boss field is never shown to a fighting player;
+//   * 联防 / 最终攻势: the ‹ › pill switches the camera LEFT half / 全景 / RIGHT half of the own field — so does a tap on
+//     the avatar of a player on a half (again: 全景; avatarLayer — an observer's tap picks them as 前往查看 does); the
+//     other pair's boss field is never shown to a fighting player;
 //   * eliminated: anything — each phase reset starts on the player it follows (the server's prep scout / b.start,
 //     followedScout).
 
@@ -18,6 +19,21 @@ const COMBAT = new Set([PHASE.COMBAT, PHASE.UNITE, PHASE.FINAL_ASSAULT, PHASE.HI
 
 /** The server runs client-side combat (m.public.combatMode). */
 export const isClientCombat = (pub) => !!pub && pub.combatMode === 'client';
+
+/** Only the admitted relay exposes a second UNITE generation within the same match round. */
+export const uniteRelayRound = (pub) => pub?.phase === PHASE.UNITE && pub.uniteRounds === 2
+  && (pub.uniteRound === 1 || pub.uniteRound === 2) ? pub.uniteRound : null;
+export const uniteRelayKey = (pub) => uniteRelayRound(pub) ? `${pub.round}:${pub.uniteRound}` : null;
+
+/** A new relay public state may arrive before its field; never re-enter the previous helpers' battle. */
+export function currentRelayField(pub, field) {
+  const single = pub?.phase === PHASE.UNITE && pub.uniteRounds === 1 && pub.uniteRound === 1
+    && typeof pub.unite?.battleId === 'string';
+  if (!uniteRelayRound(pub) && !single) return true;
+  const current = fields(pub).find(f => f.kind === 'unite');
+  return !!current && field?.fieldId === current.fieldId
+    && (!pub.unite?.battleId || !field.battleId || field.battleId === pub.unite.battleId);
+}
 
 const players = (pub) => (Array.isArray(pub?.players) ? pub.players.filter(isObj) : []);
 const fields = (pub) => (Array.isArray(pub?.fields) ? pub.fields.filter(isObj) : []);
@@ -144,6 +160,22 @@ export function cameraLayers(field, pub, myId) {
     { key: 'ALL', label: t('全景'), self: false, watch: false },
     { key: 'R', label: label(right), self: right === myId, watch: !!right && right !== myId },
   ];
+}
+
+/**
+ * Avatar taps on a 联防 / 最终攻势 field (the owner's request, 2026-10-14): the avatar of a player fighting on a half of
+ * the field on screen frames that half at once — the ‹ › pill's L / R layer, without 前往查看 — and the avatar of the
+ * player whose half is already on screen goes back to 全景. Null when the field has no halves or the player is not on
+ * one of them (the row's usual flow then).
+ * @param {any} field the local field meta on screen @param {any} pub @param {string} myId @param {string} playerId
+ * @param {string} layer the current ‹ › layer ('L' | 'ALL' | 'R')
+ * @returns {'L'|'ALL'|'R'|null} the layer to switch to
+ */
+export function avatarLayer(field, pub, myId, playerId, layer) {
+  if (typeof playerId !== 'string' || !playerId || !cameraLayers(field, pub, myId).length) return null;
+  const side = sidesOf(field)[playerId];
+  if (side !== 'L' && side !== 'R') return null;
+  return layer === side ? 'ALL' : side;
 }
 
 /** Camera options of a layer for view.setCamera(kind, …). */

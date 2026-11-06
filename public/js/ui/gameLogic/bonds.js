@@ -312,10 +312,10 @@ export function bannedPerBond(bonds, bannedChess) {
  * @returns {{ drawn: Set<string>, off: Set<string> }}
  */
 export function disabledBondSets(pub, staticInactive = []) {
-  const off = new Set(Array.isArray(staticInactive) ? staticInactive : []);
+  const staticBans = Array.isArray(staticInactive) ? staticInactive : [];
   const src = Array.isArray(pub?.drawnDisabledBonds) ? pub.drawnDisabledBonds : Array.isArray(pub?.disabledBonds) ? pub.disabledBonds : [];
-  const drawn = new Set(src.filter((b) => typeof b === 'string' && !off.has(b)));
-  return { drawn, off };
+  const drawn = new Set([...src, ...staticBans].filter((b) => typeof b === 'string'));
+  return { drawn, off: new Set() };
 }
 
 /**
@@ -341,9 +341,9 @@ export function briefingBondTip(name, state, bannedN = 0) {
  * @param {any} mode config.json modes[modeId] (data.js getMode), or null
  * @returns {Set<string>}
  */
-export function modeOffBonds(mode) {
-  const list = isObj(mode) && Array.isArray(mode.inactiveBondIds) ? mode.inactiveBondIds : [];
-  return new Set(list.filter((b) => typeof b === 'string'));
+export function modeOffBonds() {
+  // inactiveBondIds limits the chess pool, never bond activation.
+  return new Set();
 }
 
 /**

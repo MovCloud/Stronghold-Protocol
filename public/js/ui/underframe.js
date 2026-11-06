@@ -30,6 +30,8 @@ import { useTileScreen } from './facingWheel.js';
 import { hotkeyLabelOf } from './settings.js';
 import { localAsset } from '../data.js';
 import { GEO } from '../../../shared/constants.js';
+import { useShortcuts } from './settings.js';
+import { shortcutLabel } from './gameLogic.js';
 import { t, tParts } from '../../../shared/i18n.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -81,6 +83,7 @@ export function underframeRect(g, rem = 100) {
  *   name?: string, busy?: boolean, onRetreat?: () => void, onSell?: () => void, onDestroy?: () => void }} props
  */
 export function Underframe({ view, uid = null, row, col, actions, name = '', busy = false, onRetreat, onSell, onDestroy }) {
+  const shortcuts = useShortcuts();
   const g = useTileScreen(view, row, col);
   if (!g || !actions) return null;
   const s = g.s > 0 ? g.s : 64;
@@ -94,13 +97,13 @@ export function Underframe({ view, uid = null, row, col, actions, name = '', bus
       <path class="uframe__corner" d="M-100 0 L-86 -14 M-100 0 L-86 14 M100 0 L86 -14 M100 0 L86 14 M0 -100 L-14 -86 M0 -100 L14 -86 M0 100 L-14 86 M0 100 L14 86" />
     </svg>
     ${actions.retreat ? html`<button type="button" class="uframe__btn uframe__btn--retreat" disabled=${busy} onPointerDown=${stop}
-        onClick=${(e) => { stop(e); onRetreat?.(); }} title=${actions.sell != null ? t('撤退至整备区（{key}）', { key: keys.retreat }) : t('撤退至整备区')} aria-label=${t('撤退')} aria-keyshortcuts=${actions.sell != null ? keys.retreat : undefined}>
-      <${RetreatGlyph} /><span class="uframe__label">${actions.sell != null ? t('撤退[{key}]', { key: keys.retreat }) : t('撤退')}</span>
+        onClick=${(e) => { stop(e); onRetreat?.(); }} title=${t('撤退至整备区（{0}）', { 0: shortcutLabel(shortcuts, 'retreat') })} aria-label=${t('撤退')}>
+      <${RetreatGlyph} /><span class="uframe__label">${t('撤退')}<kbd class="uframe__key">${shortcutLabel(shortcuts, 'retreat')}</kbd></span>
     </button>` : null}
     ${actions.sell != null ? html`<button type="button" class="uframe__btn uframe__btn--sell" disabled=${busy} onPointerDown=${stop}
-        onClick=${(e) => { stop(e); onSell?.(); }} title=${t('出售（+{sell} 资金，{key}）', { sell: actions.sell, key: keys.sell })} aria-label=${t('出售，获得 {sell} 资金', { sell: actions.sell })} aria-keyshortcuts=${keys.sell}>
+        onClick=${(e) => { stop(e); onSell?.(); }} title=${t('出售（+{sell} 资金，{1}）', { sell: actions.sell, 1: shortcutLabel(shortcuts, 'sell') })} aria-label=${t('出售，获得 {sell} 资金', { sell: actions.sell })}>
       <${PlateIcon} sprite="icon_sell" glyph="sell" tone="sell" />
-      <span class="uframe__label">${t('出售[{key}]', { key: keys.sell })}</span>
+      <span class="uframe__label">${t('出售')}<kbd class="uframe__key">${shortcutLabel(shortcuts, 'sell')}</kbd></span>
       <${HexBadge} value=${`+${actions.sell}`} tone="gold" size="sm" class="uframe__price" />
     </button>` : null}
     ${actions.destroy ? html`<button type="button" class=${cx('uframe__btn', 'uframe__btn--destroy')} disabled=${busy} onPointerDown=${stop}
@@ -146,8 +149,8 @@ export function tempRowFrame(a, b, { labelW = 0, gap = 8, vw = Infinity } = {}) 
  */
 export function tempRowRule(ready) {
   return ready
-    ? t('已准备就绪后进入的单位保留到下个休整期，届时仍在此处的将被销毁（取消准备则在本休整期结束时销毁）')
-    : t('放入整备区或战场、配发或使用后才能准备；休整期结束时仍在此处的将被销毁');
+    ? t('仅本休整期内到期的会被销毁；准备就绪/战后获得的保留到下一休整期')
+    : t('放入整备区或战场、配发或使用后才能准备；仅本休整期内到期的会被销毁，准备就绪/战后获得的保留到下一休整期');
 }
 
 /**

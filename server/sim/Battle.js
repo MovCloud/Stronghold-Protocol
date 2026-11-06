@@ -13,10 +13,10 @@
 // An operator that left the field — knocked out, or forced out by its own effects (史尔特尔's 余烬 …, GitHub #60) — lies
 // on its `body` tile — where it fell, or its own home when it fell on another board piece's home — and redeploys there;
 // no ally deploys or moves onto that tile meanwhile (PRTS 卫戍协议/帮助 §作战阶段 单位部署; `isDown`, `_layBody`, `downOn`,
-// `restTile`, `isReservedTile`; docs/SIM.md §1).
+// `restTile`, `isReservedTile`; docs/development/SIM.md §1).
 // Tick order: scheduled callbacks → spawns → DP → buffs → enemies (attack, move, block) → enemy index →
 //   allies (skill tick, attack) → projectiles → redeploys → boss sync → `tick` hook → release hooks of removed units →
-//   time += TICK → end checks. A forceEnd() requested mid-step ends the step after the current phase (docs/SIM.md §1.4).
+//   time += TICK → end checks. A forceEnd() requested mid-step ends the step after the current phase (docs/development/SIM.md §1.4).
 // Board → field coordinates: units are given in board coordinates (rows 9–12, cols 2–10). Normal/unite:
 //   (row, col + colOffset). Boss/hidden: row − 7 when row ≥ 7 (board rows → boss rows 2–5); side 'R' mirrors
 //   the column (col → 20 − col) and mirrors the direction (RIGHT ↔ LEFT, UP / DOWN kept). Every ally has a direction
@@ -49,9 +49,11 @@ import { GEO } from '../../shared/constants.js';
 import { createRng } from './rng.js';
 import { Grid } from './grid.js';
 import { ProjectileSystem } from './projectiles.js';
+import { NoteSystem } from './notes.js';
 import { remainingDistance } from './ai.js';
 import { toDataSource, normalizeRoute, normalizeStage } from './simdata.js';
 import { installContent } from './content/index.js';
+import { withGameData } from './content/support/dataScope.js';
 import { BattlePlayers } from './battle/players.js';
 import { BattleLifecycle } from './battle/lifecycle.js';
 import { BattleHooks } from './battle/hooks.js';
@@ -136,6 +138,7 @@ export class Battle {
     this._sched = [];
     this._evq = [];
     this.projectiles = new ProjectileSystem(this);
+    this.notes = new NoteSystem(this);   // free-flight notes (丰川祥子's 颂乐音符, notes.js)
     this._occ = new Array(ROWS * COLS).fill(null);
     this._eb = new Array(ROWS * COLS);   // range buckets (colliders: queries.js _buildEnemyIndex)
     for (let i = 0; i < this._eb.length; i++) this._eb[i] = [];
@@ -160,6 +163,7 @@ export class Battle {
     this.errorCount = 0;
     this._errKeys = new Set();
     this._result = null;
+    this._startUnitStats = null;
     this._skills = { onDamaged: (u) => { if (u.skill) u.skill.onDamaged(); } };
     this.remainingDistance = (e) => remainingDistance(this, e);
 
@@ -176,7 +180,7 @@ export class Battle {
     // ---- content
     this.contentMode = opts.content ?? 'full';
     try {
-      installContent(this, { mode: this.contentMode, extra: opts.extraContent });
+      withGameData(this.data, () => installContent(this, { mode: this.contentMode, extra: opts.extraContent }));
     } catch (e) {
       if (!this.contentFault) this._handlerError('installContent', null, e);
     }
@@ -190,7 +194,7 @@ export class Battle {
       try { this._result = this._buildResult(); }
       catch { this._result = { time: this.time, reason: 'forced', perPlayer: {}, killed: this.killed, total: this.total, resolved: this.resolved, errors: this.errorCount }; }
     } else {
-      for (const u of this.allyUnits) if (!u.kit) this._setupUnit(u);
+      for (const u of this.allyUnits) if (!u.kit) withGameData(this.data, () => this._setupUnit(u));
       if (typeof opts.setup === 'function') this._safe(() => opts.setup(this), 'opts.setup');
     }
   }

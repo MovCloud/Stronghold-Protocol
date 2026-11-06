@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_6_17-nearl2.js — 耀骑士临光 (char_1014_nearl2) kit, tier 6.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-6 kits: ../shared/tier6.js; kit contract and rules: ../README.md.
 
 import { absoluteRangeKeys } from '../../../targeting.js';
@@ -12,7 +13,7 @@ function ensureDeployTracker(battle) {
   const S = bstate(battle);
   if (S.lastOp) return S.lastOp;
   S.lastOp = new Map();
-  battle.on('deploy', ({ unit }) => { if (unit.kind === 'op') S.lastOp.set(unit.ownerId, unit); }, { priority: -100 });
+  battle.on('deploy', ({ unit }) => { if (nativeOperator(unit)) S.lastOp.set(unit.ownerId, unit); }, { priority: -100 });
   return S.lastOp;
 }
 

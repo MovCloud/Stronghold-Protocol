@@ -1,4 +1,7 @@
 // Browser-local dub preferences. Every variant of an operator shares its charId; absent entries follow the global dub.
+// (fork) The global dub defaults to English (ui/gameLogic/settings.js); a dub an operator lacks falls back to the
+// Japanese one (operators not on the global server yet), then 中文 — voiceLangFor. Changing the global dub or the
+// 本土语言 switch clears the per-operator picks (ui/settings.js updateSettings).
 // Global settings.voiceLang is one of VOICE_LANGS. A per-operator override may also be 'native' (the operator's
 // own-language dub, audio.voiceNative). audio.js re-exports VOICE_TREES and plays the tree voiceLangFor picks.
 
@@ -19,9 +22,17 @@ export function sanitizeVoiceOverrides(raw) {
   return out;
 }
 
+/**
+ * The manifest tree of a dub: `audio.voice` / VOICE_TREES — or, in a manifest of this fork's earlier releases, its
+ * `voiceByLang` alias ({ cn, jp, en }).
+ */
+export function dubTree(audio, lang) {
+  return audio?.[TREE[lang]] ?? audio?.voiceByLang?.[lang] ?? null;
+}
+
 /** This server's manifest lists at least one line of `charId` in `lang`. */
 function hasTree(audio, charId, lang) {
-  const slots = audio?.[TREE[lang]]?.[charId];
+  const slots = dubTree(audio, lang)?.[charId];
   return !!slots && typeof slots === 'object' && !Array.isArray(slots) && Object.keys(slots).length > 0;
 }
 
@@ -31,7 +42,7 @@ function hasTree(audio, charId, lang) {
  * wins, otherwise the global language is 'jp' or 'cn'. 'en' / 'kr' / 'native' are not applied on that path.
  * With `audio` (including an empty object): the operator's own choice when this server has that tree, else the
  * own-language dub when `opts.native` is on and the operator has one, else the global language when that tree is
- * present (中文 always), else 'cn'.
+ * present (中文 always), else (fork) 日本語 when it has that tree, else 'cn'.
  * @param {string} charId
  * @param {string} globalLang
  * @param {Record<string, string>|null|undefined} overrides
@@ -46,5 +57,6 @@ export function voiceLangFor(charId, globalLang, overrides, opts) {
   if (opts.native === true && hasTree(audio, charId, 'native')) return 'native';
   const global = VOICE_LANGS.includes(globalLang) ? globalLang : 'cn';
   if (global === 'cn' || hasTree(audio, charId, global)) return global;
+  if (hasTree(audio, charId, 'jp')) return 'jp'; // (fork) an operator not dubbed in the global dub yet speaks JP
   return 'cn';
 }

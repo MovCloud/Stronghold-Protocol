@@ -1,3 +1,4 @@
+import { testLink } from '../helpers/links.js';
 // test/plugins/registry.test.js — the plugin registry (DESIGN §32, server/plugins/registry.js): one scan over the
 // language folders, packs/ and plugins/ — manifest 1 read as before, manifest 2 by class (lang and cosmetic loaded —
 // P1a —, content loaded, code disabled by default), broken manifests, stray files and links, duplicate ids (across packs/ and
@@ -176,10 +177,10 @@ test('links: a symbolic link inside a plugin folder keeps it out; a plugin folde
     put(outside, 'secret.json', { patch: 1, ops: [] });
     put(root, 'plugins/leak/plugin.json', content());
     fs.mkdirSync(path.join(root, 'plugins/leak/data'), { recursive: true });
-    try { fs.symlinkSync(path.join(outside, 'secret.json'), path.join(root, 'plugins/leak/data/economy.json')); } catch { t.skip('no symbolic links here'); return; }
+    try { testLink(path.join(outside, 'secret.json'), path.join(root, 'plugins/leak/data/economy.json')); } catch { t.skip('no symbolic links here'); return; }
     put(outside, 'dev/plugin.json', content());
     put(outside, 'dev/data/economy.json', { patch: 1, ops: [] });
-    fs.symlinkSync(path.join(outside, 'dev'), path.join(root, 'plugins/dev'));
+    testLink(path.join(outside, 'dev'), path.join(root, 'plugins/dev'));
     const r = readPluginFolder(path.join(root, 'plugins/leak'));
     assert.equal(r.plugin, null);
     assert.match(r.problems.join(), /data\/economy\.json: a symbolic link/);
@@ -192,7 +193,12 @@ test('links: a symbolic link inside a plugin folder keeps it out; a plugin folde
   }
 });
 
-test('one unreadable entry never stops the scan, the registry or the server: JSON nested too deep to quote back', async () => {
+// Node 24's JSON.stringify overflows on a nesting JSON.parse still reads; from Node 26 both are unbounded and no such
+// value exists, so the case has nothing to test there.
+const DEEP_UNWRITABLE = (() => { try { JSON.stringify(JSON.parse(`${'['.repeat(20000)}${']'.repeat(20000)}`)); return false; } catch { return true; } })();
+const deepSkip = { skip: !DEEP_UNWRITABLE && 'this Node writes back every value JSON.parse reads' };
+
+test('one unreadable entry never stops the scan, the registry or the server: JSON nested too deep to quote back', deepSkip, async () => {
   const root = exampleRoot();
   const deep = (n) => `{"manifest":${'['.repeat(n)}${']'.repeat(n)}}`;
   put(root, 'plugins/deep-one/plugin.json', deep(20000));

@@ -4,7 +4,7 @@
 // Opening the dialog reads nothing from the server: no art, not the manifests (assetPack.js reads the three served
 // manifests only once an import starts) and not the download queue. The dialog: a folder (showDirectoryPicker, else an
 // <input webkitdirectory>) or a zip (a picker, or dropped), cancel, the counts, 清除已导入的素材 after a confirm, the
-// persist note, and why import is unavailable on plain http or in a browser without the APIs. Closing it cancels a
+// persist note, and why import is unavailable if browser local storage is missing. Closing it cancels a
 // running import; what was stored stays, and the download queue skips it (assetDownload.js).
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html, Button, Modal, ProgressBar, confirmDialog } from './components.js';
@@ -80,7 +80,7 @@ export function AssetImportButton() {
       assetImport.cancel();
     };
   }, []);
-  // Cache Storage and the storage estimate only: nothing goes to the server. Read as the dialog opens and when an import
+  // Browser storage and the storage estimate only: nothing goes to the server. Read as the dialog opens and when an import
   // ends, never per stored file: listing a cache of 30,000 entries ten times a second made a whole-pack import quadratic.
   const importBusy = ['reading', 'importing'].includes(imported.phase);
   useEffect(() => {
@@ -109,7 +109,7 @@ export function AssetImportButton() {
   const support = importSupport();
   const importText = importStatus(imported);
   const showImportCounts = ['complete', 'partial', 'empty', 'cancelled', 'error'].includes(imported.phase)
-    && (imported.accepted + imported.rejected + imported.skipped + imported.failed) > 0;
+    && (imported.accepted + imported.reused + imported.rejected + imported.skipped + imported.failed) > 0;
 
   const startFiles = (files) => {
     if (!files?.length || !support.ok) return;
@@ -189,8 +189,8 @@ export function AssetImportButton() {
 
   return html`<div class="title-assets__item">
     <${Button} variant="secondary" block=${true} size="sm" data-testid="asset-import" aria-describedby="title-asset-import-hint"
-      onClick=${() => setOpen(true)}>${t('导入素材包')}<//>
-    <small id="title-asset-import-hint">${support.ok ? t('读取自己的素材包，美术不占服务器流量。') : t('导入需要 HTTPS 或 localhost。')}</small>
+      onClick=${() => setOpen(true)}>${support.ok ? t('导入素材包') : t('导入素材包（暂不可用）')}<//>
+    <small id="title-asset-import-hint">${support.ok ? t('读取自己的素材包，美术不占服务器流量。') : t('浏览器本地存储不可用，无法导入素材。')}</small>
     <${Modal} open=${open} onClose=${close} title=${t('导入素材包')} class="asset-import-dialog" actions=${html`
       <${Button} onClick=${close}>${t('关闭')}<//>`}>
       <p class="t-lo">${t('从素材包 zip、完整包 zip 或自己的 public/assets 文件夹导入。只收下和服务器清单哈希一致的文件，不上传任何内容。')}</p>
@@ -209,20 +209,16 @@ export function AssetImportButton() {
         <div class="asset-import__drop" onDragOver=${(event) => event.preventDefault()} onDrop=${(event) => void onDrop(event)}>
           ${t('或把文件夹 / zip 拖到这里')}
         </div>
-      ` : html`<p class="asset-import__reason" data-testid="asset-import-unavailable">${
-        support.reason === 'insecure'
-          ? t('导入需要 HTTPS 或 localhost。当前是 http 地址，浏览器不允许 Service Worker，所以不能导入。')
-          : t('此浏览器不能导入本地素材。')
-      }</p>`}
+      ` : html`<p class="asset-import__reason" data-testid="asset-import-unavailable">${t('浏览器本地存储不可用，无法导入素材。')}</p>`}
       <p role="status" data-testid="asset-import-status" class="asset-import__status">${importText}</p>
       ${importBusy || (imported.total > 0 && imported.phase !== 'idle') ? html`<${ProgressBar} value=${imported.done} max=${imported.total || 1} label=${t('已完成 {done} / {total} 个文件', { done: imported.done, total: imported.total })} />` : null}
-      ${showImportCounts ? html`<p data-testid="asset-import-counts">${t('已导入 {accepted} 个，校验不符 {rejected} 个，跳过 {skipped} 个，无法读取 {failed} 个', {
-        accepted: imported.accepted, rejected: imported.rejected, skipped: imported.skipped, failed: imported.failed,
+      ${showImportCounts ? html`<p data-testid="asset-import-counts">${t('已导入 {accepted} 个，复用 {reused} 个，校验不符 {rejected} 个，跳过 {skipped} 个，无法读取 {failed} 个', {
+        accepted: imported.accepted, reused: imported.reused, rejected: imported.rejected, skipped: imported.skipped, failed: imported.failed,
       })}</p>` : null}
       ${imported.unsupported > 0 ? html`<p class="t-lo">${t('其中 {n} 个因压缩方式不支持被跳过', { n: imported.unsupported })}</p>` : null}
-      ${storeInfo && storeInfo.usage != null ? html`<p class="t-lo">${t('已缓存 {count} 个文件，浏览器存储约 {size} MB。', {
+      ${storeInfo ? html`<p class="t-lo" data-testid="asset-import-stored">${storeInfo.usage != null ? t('已缓存 {count} 个文件，浏览器存储约 {size} MB。', {
         count: storeInfo.count, size: (storeInfo.usage / 1048576).toFixed(1),
-      })}</p>` : null}
+      }) : t('已导入 {count} 个素材文件。', { count: storeInfo.count })}</p>` : null}
       ${persistNote === true ? html`<p class="t-lo">${t('已请求浏览器尽量保留这些素材。')}</p>` : null}
       ${persistNote === false ? html`<p class="t-lo">${t('浏览器可能在存储空间不足时清掉导入的素材。')}</p>` : null}
     <//>

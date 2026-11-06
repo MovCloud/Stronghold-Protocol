@@ -44,8 +44,9 @@ aklz4.py registers a decoder for it. This script pulls the art the web sources l
     → fx/index.json, fx/textures.json, fx/prefabs/*.json, fx/tex/**.webp (or .png), fx/mesh/*.json, listed in their own
     data/local-fx.json (next to --manifest; data/local-assets.json has no fx group);
     only with an explicit --only fx (a plain run leaves them out): the Phase 1a sample by default, --fx-set used for
-    every effect the units reference, --fx-keys <k1,k2> for named prefabs; textures are WebP quality 90 by default,
-    --fx-texture-format png selects lossless PNG
+    every effect the units reference (and the swapped effects of the operators' skins of shared/skin-catalogue.js,
+    from skinpack/<charId>.ab; --fx-skins), --fx-keys <k1,k2> for named prefabs; textures are WebP quality 90 by
+    default, --fx-texture-format png selects lossless PNG
 
 Usage:
   python3 -m venv .venv && .venv/bin/pip install -r tools/local-extract/requirements.txt
@@ -56,7 +57,8 @@ Usage:
                                                           copied from a release bundle; needs Pillow)
   .venv/bin/python tools/local-extract/extract.py --only scene [--scenes <dir of in-season bundles>]
   .venv/bin/python tools/local-extract/extract.py --only fx [--fx-set sample|used] [--fx-keys k1,k2] [--fx-jobs N]
-                                                        [--fx-texture-format webp|png]
+                                                  [--fx-skins <skin-catalogue.js>|off] [--fx-skin-bundles <AB root>]
+                                                        [--fx-texture-format webp|png] [--fx-add-only]
   .venv/bin/python tools/local-extract/extract.py --only plugin-art [--plugin-root <installation>]
 
 Writes <out>/**.png|.webp|.skel|.atlas and data/local-assets.json (manifest of what was extracted). With --only, just
@@ -65,6 +67,7 @@ their groups replace those of the existing manifest (every other group is kept a
 Everything is (c) Hypergryph; for private, non-commercial fan use only.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -683,6 +686,7 @@ def webp_only(out_root, manifest_path, log):
         print(f'{manifest_path} has no groups. Extract the local art first.', file=sys.stderr)
         return 2
     n = sum(run_webp(out_root, sub, groups, log) for sub in dict.fromkeys([*(s for s, _, _ in WEBP), GUIDE_WEBP_SUB]))
+    add_hashes(Path(out_root), groups, log)
     Path(manifest_path).write_text(json.dumps(doc, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
     log(f'done: {n} WebP copies, manifest {manifest_path}')
     return 0 if n else 1
@@ -1023,6 +1027,34 @@ def export_enemy_spines(ab_root, out_root, manifest, log, ids=None):
     return n
 
 
+def add_hashes(out_root, groups, log):
+    """Record a content hash per entry (docs/ASSETS.md「Preload」).
+
+    The preload stores files by hash: with `hash` in the manifest the client replaces only the entries whose art really
+    changed, instead of re-downloading the whole set when this manifest is regenerated. Hash the actual file selected
+    by each entry, including WebP conversions; unreadable files must not retain an unverifiable old fingerprint.
+    """
+    hashed = 0
+    for group in groups.values():
+        for entry in group.values():
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get('path') or '')
+            marker = '/assets/local/'
+            if marker not in path:
+                continue
+            f = out_root / path.split(marker, 1)[1]
+            try:
+                digest = hashlib.sha1()
+                with open(f, 'rb') as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b''):
+                        digest.update(chunk)
+            except OSError:
+                entry.pop('hash', None)
+                continue
+            entry['hash'] = digest.hexdigest()[:12]
+            hashed += 1
+    log(f'hashed {hashed} file(s)')
 def export_token_spines(ab_root, out_root, manifest, log, ids=None):
     """TOKEN_SPINES (or `ids`) from the battle token packs: each token's prefab → the SkeletonDataAsset its Front / only
     Spine renderer draws (pick_spine_node) → write_spine. Each pack is loaded on its own; stops once every model was
@@ -1082,6 +1114,12 @@ def main():
     ap.add_argument('--fx-keys', default='', metavar='K1,K2',
                     help='with --only fx: export only these effect prefabs (comma-separated keys)')
     ap.add_argument('--fx-jobs', type=int, default=0, metavar='N', help='with --only fx: worker processes (default up to 8)')
+    ap.add_argument('--fx-skins', default='', metavar='PATH|off',
+                    help='with --fx-set used: the skin catalogue whose operators\' skins get their mount points and '
+                         'effect swaps (default shared/skin-catalogue.js; off: none)')
+    ap.add_argument('--fx-skin-bundles', default='', metavar='DIR',
+                    help='with --fx-set used: an AB root of newer bundles read for those skins only (its '
+                         'skinpack/<charId>.ab first; its effect prefabs the client lacks)')
     ap.add_argument('--fx-add-only', action='store_true',
                     help='extract only units/prefabs missing from the current fx index; preserve the existing set')
     ap.add_argument('--fx-texture-format', choices=('webp', 'png'), default='webp',
@@ -1115,6 +1153,7 @@ def main():
                                                 for sid, deps in scenes.SCENES]}},
                          ensure_ascii=False))
         return 0
+
     if args.webp:
         return webp_only(Path(args.out), Path(args.manifest), print)
 
@@ -1154,8 +1193,10 @@ def main():
         keys = [k.strip().lower() for k in args.fx_keys.split(',') if k.strip()]
         total += fx.export_fx(ab_root, out_root, manifest, print, selection=args.fx_set, keys=keys or None,
                               jobs=args.fx_jobs or None, root=ROOT,
-                              fx_manifest=Path(args.manifest).with_name(fx.FX_MANIFEST), texture_format=args.fx_texture_format,
-                              add_only=args.fx_add_only)
+                              fx_manifest=Path(args.manifest).with_name(fx.FX_MANIFEST),
+                              catalogue=False if args.fx_skins == 'off' else args.fx_skins or None,
+                              skin_bundles=args.fx_skin_bundles or None,
+                              texture_format=args.fx_texture_format, add_only=args.fx_add_only)
     if stage_ids:
         total += export_scenes(ab_root, out_root, manifest, print, stage_ids, scene_roots(ab_root, args.scenes))
     old, old_chars = {}, {}
@@ -1173,6 +1214,7 @@ def main():
         if group.startswith('char/'):
             manifest[group] = {**old.get(group, {}), **manifest[group]}
     groups = merge_manifest(old, manifest, ran_groups(old, manifest, fx_on))  # a missing bundle keeps its previous group
+    add_hashes(out_root, groups, print)
     count = sum(len(v) for v in groups.values())
     doc = {'version': 1, 'source': 'local-client', 'count': count, 'groups': groups}
     if old_chars or chars:

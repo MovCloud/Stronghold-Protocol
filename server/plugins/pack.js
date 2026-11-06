@@ -289,7 +289,11 @@ export function packPlugin(dir, { vanilla, dataDir = DATA_DIR, where = `plugins/
   // the old lock or the new one
   const tmp = path.join(dir, `.lock-${randomBytes(6).toString('hex')}.tmp`);
   fs.writeFileSync(tmp, `${JSON.stringify(r.lock, null, 2)}\n`, { flag: 'wx' });
-  try { fs.renameSync(tmp, path.join(dir, LOCK_FILE)); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  try {
+    const dest = path.join(dir, LOCK_FILE);
+    if (process.platform === 'win32' && fs.lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) fs.unlinkSync(dest);
+    fs.renameSync(tmp, dest);
+  } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
   return { wrote: true, lock: r.lock, build, check: checkPluginFolder(dir, where, { vanilla, dataDir }) };
 }
 

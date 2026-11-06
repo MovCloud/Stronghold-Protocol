@@ -339,11 +339,16 @@ test('lobby.css: the own backdrop and its dialog follow 文字大小, no !import
   const css = readFileSync(path.join(ROOT, 'public/css/screens/lobby.css'), 'utf8');
   const start = css.indexOf('/* ---- 大厅背景与音乐');
   assert.ok(start > 0);
-  const block = css.slice(start, css.indexOf('/* ----', start + 10));
+  // this repo's hub section (ui/hubBackdrop.js / hubScene.js) has its own comment header inside the region, so the
+  // block runs to the hub layout comment — the same region upstream guards
+  const block = css.slice(start, css.indexOf('/* ---- hub layout', start));
   const sizes = [...block.matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim());
   assert.ok(sizes.length >= 5);
   for (const v of sizes) assert.match(v, /^calc\(\.\d+ \* var\(--t\)\)$/, v);
-  assert.ok(!/!important|:has\(/.test(block));
+  // the fork's 动效关闭 kill switch may force an animation; a readable size is never forced
+  assert.ok(!/font-size:[^;]*!important/.test(block));
+  assert.ok(!/:has\(/.test(block));
   assert.match(block, /\.hub-bg__own::after[^}]*var\(--own-dim/);
-  assert.match(css.slice(css.lastIndexOf('prefers-reduced-motion')), /\.hub-bg__own/);
+  // the fork's hub has its own reduced-motion block, so the coverage is not in the file's last one
+  assert.ok([...css.matchAll(/prefers-reduced-motion: reduce\) \{[\s\S]*?\}/g)].some((m) => /hub-bg__own/.test(m[0])), 'the own backdrop stops animating under 减少动态效果');
 });

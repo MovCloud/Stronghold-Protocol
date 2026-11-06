@@ -370,7 +370,8 @@ describe('operator battle voice', () => {
       // the settings store hands the choice over (installAudio and ui/settings.js)
       const settings = readFileSync(path.join(ROOT, 'public/js/ui/settings.js'), 'utf8');
       assert.match(settings, /audio\.setVoiceLang\(s\.voiceLang, s\.voiceOverrides\)/);
-      assert.match(settings, /t\('语音语言'\)/);
+      // the 语音语言 picker lives in the 语言与配音 dialog (ui/languageSettings.js), not in settings.js
+      assert.match(readFileSync(path.join(ROOT, 'public/js/ui/languageSettings.js'), 'utf8'), /data-testid="voice-language-toggle"/);
       assert.match(settings, /audio\.setVoiceNative\(s\.voiceNative\)/);
     } finally {
       globalThis.fetch = origFetch;
@@ -739,7 +740,9 @@ describe('AudioManager', () => {
       const origFetch = globalThis.fetch;
       globalThis.fetch = async (u) => {
         urls.push(u);
-        return u === media ? { ok: false, status: 404 } : { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+        // both /media/ attempts are absent here: the plain route and the fork's one OpenI retry (?sp_source=openi)
+        if (u === media || u.includes('sp_source=openi')) return { ok: false, status: 404 };
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
       };
       try {
         const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
@@ -780,12 +783,15 @@ describe('AudioManager', () => {
       const origFetch = globalThis.fetch;
       globalThis.fetch = async (u) => {
         urls.push(u);
+        // the OpenI retry answers 404 here, so the /media/ attempt that returns an HTML page is the one under test
+        if (u.includes('sp_source=openi')) return { ok: false, status: 404 };
         if (u !== media) return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
         return {
           ok: true,
           status: 200,
           headers: { get: (n) => (n.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
-          body: { cancel: async () => { cancelled += 1; } },
+          // the body is drained (read through), never cancelled: the reader counts the one read that empties it
+          body: { getReader: () => ({ read: async () => { cancelled += 1; return { done: true }; }, cancel: async () => {} }) },
           arrayBuffer: async () => new ArrayBuffer(8),
         };
       };

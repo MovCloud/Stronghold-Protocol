@@ -6,12 +6,15 @@
 // 阵地)"). 0.2.0 fought it on the escaped levels' own map, an empty road (GitHub #41 item 3, docs/history/0.2.0.md
 // §25.6.4) — withdrawn; data/stages.json keeps those two records (kind 'unite'), which no field uses. Every test here
 // fails on 0.2.0 (the field was act1autochess_escaped_single / _multi there).
+// Branch regressions additionally cover helper-specific device overrides, browser/server parity and missing-stage fallback.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GEO, PHASE } from '../../shared/constants.js';
 import { Battle } from '../../server/sim/Battle.js';
 import { createBattleFromSpec } from '../../server/sim/spec.js';
 import { DataSource } from '../../server/sim/simdata.js';
+import { uniteStageId } from '../../server/match/unite.js';
+import { buildUniteWave } from '../../server/match/waves.js';
 import { FakeBattle } from './fakeBattle.js';
 import { DATA, makeMatch, give, chessOfTier, legalTileFor, checkInvariants } from './harness.js';
 
@@ -29,7 +32,7 @@ const M01_CRATES = [[10, 5], [10, 6], [10, 13], [10, 14], [11, 5], [11, 13]];
  * players are perfect — 1 helper with 2 humans, 2 helpers with 3. Each helper fields one ranged operator on the first
  * legal tile in reading order (战场#01: the 围墙 (12,3)).
  */
-function scenario({ humans, clientCombat, stageId = 'act1autochess_m01', data = DATA, seed = 4101 + humans }) {
+function scenario({ humans, clientCombat, stageId = 'act1autochess_m01', configureHelper = () => {}, data = DATA, seed = 4101 + humans }) {
   const h = makeMatch({
     mode: 'coop', humans, seed, fake: true, clientCombat, data,
     script: (b) => (b.kind === 'normal' ? { leaks: { p_0: 3 } } : {}),
@@ -43,6 +46,7 @@ function scenario({ humans, clientCombat, stageId = 'act1autochess_m01', data = 
     const ps = h.ps(`p_${i}`);
     const id = ranged[i];
     helpers.push({ ps, piece: give(m, ps, id, 'board', legalTileFor(m, ps, id)) });
+    configureHelper(ps, i);
   }
   h.drive(() => m.phase === PHASE.UNITE);
   return { h, m, helpers };
@@ -57,6 +61,65 @@ function uniteField(m, clientCombat) {
   const u = FakeBattle.instances.find((b) => b.kind === 'unite');
   return { opts: u.opts, battle: new NoFinish({ ...u.opts, data: m.ds, logger: { warn() {}, error() {}, info() {}, debug() {} } }) };
 }
+
+for (const clientCombat of [true, false]) {
+  for (const stageId of ['act1autochess_m01', 'act2autochess_m02']) {
+    test(`#282: 联防 keeps ${stageId}'s terrain and blocking devices (${clientCombat ? 'client' : 'server'})`, () => {
+      const { m } = scenario({ humans: 2, clientCombat, stageId });
+      try {
+        const { opts, battle: b } = uniteField(m, clientCombat);
+        assert.equal(opts.stageId, stageId, 'the escape wave must not replace the helper battlefield');
+        assert.deepEqual(b.stage.rows, m.stage.rows);
+        b.step();
+        const blocking = DATA.stages[stageId].devices.filter((d) => d.active && ['crate', 'platform'].includes(d.role)
+          && d.pos[0] >= 9 && d.pos[0] <= 12 && d.pos[1] <= 10);
+        assert.ok(blocking.length, 'the reported map has blocking devices');
+        for (const d of blocking) {
+          assert.equal(b.grid.groundPassable(...d.pos), false, `${d.alias}: still blocks the battlefield`);
+        }
+      } finally {
+        m.dispose();
+      }
+    });
+  }
+}
+
+for (const clientCombat of [true, false]) {
+  test(`#282: helpers retain their own crate-removal effects (${clientCombat ? 'client' : 'server'})`, () => {
+    const { m } = scenario({ humans: 3, clientCombat, configureHelper(ps, i) {
+      if (i !== 1) return;
+      for (const d of DATA.stages.act1autochess_m01.devices) if (d.role === 'crate') ps.deviceOverrides[d.alias] = false;
+    } });
+    try {
+      const { opts, battle: b } = uniteField(m, clientCombat);
+      assert.deepEqual(opts.players.map((p) => [p.playerId, p.colOffset]), [['p_1', 8], ['p_2', 0]]);
+      b.step();
+      const crates = b.allyUnits.filter((u) => u.kind === 'device' && u.defId === 'trap_1105_accrate' && u.alive);
+      assert.ok(crates.some((u) => u.x < 10), 'the left helper keeps its crates');
+      assert.equal(crates.some((u) => u.x > 10), false, 'only the right helper removed its crates');
+      assert.equal(b.grid.obstacle[10 * 21 + 13], 0, 'removed right-hand crate leaves no device obstacle');
+      assert.notEqual(b.grid.obstacle[10 * 21 + 5], 0, 'left-hand crate is still blocking');
+    } finally {
+      m.dispose();
+    }
+  });
+}
+
+test('#282: browser and server simulate the same obstacle-preserving two-helper field', () => {
+  const { m } = scenario({ humans: 3, clientCombat: true, stageId: 'act2autochess_m02' });
+  try {
+    const spec = m.fields[0].spec;
+    const local = createBattleFromSpec(JSON.parse(JSON.stringify(spec)), new DataSource(DATA, null), { quiet: true });
+    const server = createBattleFromSpec(spec, m.ds, { quiet: true });
+    const localResult = local.runToEnd(1000);
+    const serverResult = server.runToEnd(1000);
+    assert.deepEqual(localResult, serverResult);
+    assert.equal(local.errorCount, 0);
+    assert.equal(server.errorCount, 0);
+  } finally {
+    m.dispose();
+  }
+});
 
 const tileOf = (ps, piece) => [...ps.board.entries()].find(([, p]) => p === piece)[0].split(',').map(Number);
 const startOf = (r) => r.start ?? [r.startPosition?.row, r.startPosition?.col];
@@ -85,6 +148,9 @@ for (const [clientCombat, label] of MODES) {
     assert.deepEqual([r, c], [12, 3]);
     const u = b.allyUnits.find((x) => x.uid === piece.uid && x.ownerId === 'p_1');
     assert.deepEqual([u.tileR, u.tileC], [r, c]);
+    // Walkers detour instead of crossing the missing terrain from the flat template.
+    const path = b.grid.findPath(9, 10, 9, 2);
+    assert.ok(path && path.some(([r]) => r === 12), 'a route around the fences exists');
     assert.equal(b.grid.tile(r, c).key, 'tile_fence_bound', 'its tile is 战场#01\'s 围墙 (0.2.0: road)');
     // walkers go round 战场#01's walls: never on row 9 cols 5–7, through the top row instead
     const seen = new Set();
@@ -166,4 +232,39 @@ test('the 联防 field does not depend on the escaped levels\' map records: with
   const degraded = run({ ...DATA, stages });
   assert.equal(full.stageId, 'act1autochess_m01');
   assert.deepEqual(full, degraded, 'the same stage, routes and helper offsets');
+});
+
+test('#282: escape walking routes remain reachable on every current stage with blocking devices', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, fake: true });
+  try {
+    const stages = Object.values(DATA.stages).filter((s) => s.kind !== 'unite' && s.active);
+    assert.ok(stages.length >= 7, 'current battlefields are covered');
+    for (const st of stages) {
+      for (const count of [1, 2]) {
+        const wave = buildUniteWave(h.m.gd, [], count, 60);
+        assert.ok(wave.routes.some((r) => r.motion === 'WALK'), 'the actual escape walking routes are checked');
+        const b = new NoFinish({ stageId: st.stageId || st.id, kind: 'unite', rect: GEO.UNITE_RECT,
+          data: new DataSource(DATA, null), players: [], routes: wave.routes, recordEvents: false, quiet: true });
+        b.step();
+        for (const route of wave.routes.filter((r) => r.motion === 'WALK')) {
+          const points = [route.start, ...(route.checkpoints || []), route.end];
+          for (let i = 1; i < points.length; i++) {
+            assert.ok(b.grid.findPath(...points[i - 1], ...points[i]), `${st.id}, ${count} helpers: leg ${i} is reachable`);
+          }
+        }
+      }
+    }
+  } finally {
+    h.m.dispose();
+  }
+});
+
+test('#282: missing round-stage data uses the available escape map as a fallback', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, fake: true });
+  try {
+    assert.equal(uniteStageId(h.m.gd, 1, 'missing-stage'), 'act1autochess_escaped_single');
+    assert.equal(uniteStageId(h.m.gd, 2, 'missing-stage'), 'act1autochess_escaped_multi');
+  } finally {
+    h.m.dispose();
+  }
 });

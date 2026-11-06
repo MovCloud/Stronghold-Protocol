@@ -6,16 +6,18 @@ import { spawnSync } from 'node:child_process';
 import { fxFixture } from './helpers/fxFixtures.js';
 import { skel } from './helpers/pluginFixtures.js';
 
+// Windows has `python` but not always `python3` (the Store alias exits 9009); the same fallback as the other Python tests.
 const PY = ['python3', 'python'].find((bin) => spawnSync(bin, ['--version']).status === 0);
+const cases = (name, fn) => test(name, { skip: !PY && 'no python3' }, fn);
 
 function py(code) {
   const source = `import sys,json\nsys.path.insert(0, ${JSON.stringify(path.resolve('tools/local-extract'))})\nimport operators as op, extract as ex\n${code}`;
-  const r = spawnSync(PY ?? 'python3', ['-B', '-c', source], { encoding: 'utf8' });
+  const r = spawnSync(PY, ['-B', '-c', source], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
 
-test('operator plan names only exact base/E2 sprites and default battle Front/Back groups', () => {
+cases('operator plan names only exact base/E2 sprites and default battle Front/Back groups', () => {
   const [job] = py(`print(json.dumps(op.plan(['char_9001_test', '../char_9002_bad', 'char_x_custom', 'char_9001_test'])))`);
   assert.equal(job.bundle, 'chararts/char_9001_test.ab');
   assert.equal(job.prefab, '/char_9001_test/defaultskin.prefab');
@@ -26,13 +28,13 @@ test('operator plan names only exact base/E2 sprites and default battle Front/Ba
   assert.deepEqual(selected, [true, false, ['char_9001_test']]);
 });
 
-test('operator planner independently caps distinct operators, rather than duplicate requests', () => {
+cases('operator planner independently caps distinct operators, rather than duplicate requests', () => {
   const got = py(`ids=[f'char_{10000+i}_test' for i in range(600)]
 print(json.dumps([j['id'] for j in op.plan(list(reversed(ids))+ids)]))`);
   assert.deepEqual(got, Array.from({ length: 256 }, (_, i) => `char_${10000 + i}_test`));
 });
 
-test('full extraction needs --plugin-art; explicit --only plugin-art also authorizes the local art job', t => {
+cases('full extraction needs --plugin-art; explicit --only plugin-art also authorizes the local art job', t => {
   const f = fxFixture(t);
   const got = py(`from pathlib import Path
 import contextlib,io
@@ -59,7 +61,7 @@ print(json.dumps(results))`);
   assert.deepEqual(got, [[], [['char_9001_test']], [['char_9001_test']], []]);
 });
 
-test('sprite read, decode and save failures do not skip later requested operators in a bundle', t => {
+cases('sprite read, decode and save failures do not skip later requested operators in a bundle', t => {
   const f = fxFixture(t);
   const got = py(`from pathlib import Path
 from types import SimpleNamespace as NS
@@ -98,7 +100,7 @@ print(json.dumps(results))`);
   assert.deepEqual(got, Array.from({ length: 6 }, () => ({ files: 1, good: true, bad: false, warnings: 1 })));
 });
 
-test('partial manifest merge preserves other operators, old pictures, and unextracted battle directions', () => {
+cases('partial manifest merge preserves other operators, old pictures, and unextracted battle directions', () => {
   const got = py(`old={'char_9001_test': {'avatar':'old', 'portrait':'keep', 'spine': {'front': {'skel':'old'}, 'back': {'skel':'keep'}}}, 'char_9002_test': {'avatar':'keep'}}
 new={'char_9001_test': {'avatar':'new', 'spine': {'front': {'skel':'new'}}}}
 print(json.dumps({'merged':op.merge_chars(old,new),'old':old,'groups':ex.merge_manifest({'other':{'a':1},'char/avatar/char_9002_test':{'b':2}},{'char/avatar/char_9001_test':{'c':3}}, {'char/avatar/char_9001_test'})}))`);
@@ -110,7 +112,7 @@ print(json.dumps({'merged':op.merge_chars(old,new),'old':old,'groups':ex.merge_m
   assert.equal(Object.keys(got.groups).length, 3);
 });
 
-test('exporter writes only requested sprites and passes both complete model groups through the existing exporter', t => {
+cases('exporter writes only requested sprites and passes both complete model groups through the existing exporter', t => {
   const f = fxFixture(t);
   const got = py(`from pathlib import Path
 from types import SimpleNamespace as NS
@@ -153,7 +155,7 @@ print(json.dumps({'chars':chars,'count':n,'calls':calls,'files':sorted(str(p.rel
   assert.ok(got.files.every(p => !p.includes('skin') && !p.includes('other')));
 });
 
-test('Spine metadata bridge parses original synthetic skeletons with existing animation roles', t => {
+cases('Spine metadata bridge parses original synthetic skeletons with existing animation roles', t => {
   const f = fxFixture(t);
   f.put('unit.skel', skel({ animations: { Idle: [], Attack: [['OnAttack', 0.5]] } }));
   const r = spawnSync(process.execPath, ['tools/local-extract/plugin-art.mjs', '--spine', path.join(f.root, 'unit.skel')], { encoding: 'utf8' });

@@ -30,7 +30,8 @@ describe('field view features in headless Chrome', { skip }, () => {
     const puppeteer = (await import('puppeteer-core')).default;
     const { startServer } = await import('../../server/index.js');
     srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
-    browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-first-run', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+    const angle = process.platform === 'darwin' ? 'metal' : process.platform === 'win32' ? 'd3d11' : 'default';
+    browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-first-run', `--use-angle=${angle}`, '--enable-gpu', '--ignore-gpu-blocklist'] });
     mkdirSync(OUT, { recursive: true });
   });
   after(async () => {
@@ -40,7 +41,7 @@ describe('field view features in headless Chrome', { skip }, () => {
   });
 
   async function open(query, w = 1920, h = 1080) {
-    const page = await browser.newPage();
+    const page = await browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
     const problems = [];
     page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));

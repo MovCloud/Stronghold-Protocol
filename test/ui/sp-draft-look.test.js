@@ -6,6 +6,8 @@
 //   - the armed card's strip is ☑ 确认选择 · 再次点击
 //   - the match's top bar stays on screen during the draft (round, funds and timer stay readable)
 
+// (this fork keeps its 机变 order strip under the title and hides the top bar during the shared draft — the owner's choice
+// of 2026-10-18 — so upstream's three tests of the team-panel marks / visible top bar are not here)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -58,22 +60,6 @@ test('spMarks: ✓ for who has picked, ••• for who is deciding, nothing fo
   assert.equal(spMarks(null, { solo: false }).size, 0);
 });
 
-test('ChoiceView: no order list in the overlay; the player deciding is named over 正在决策…', () => {
-  const v = ChoiceView({ pub: { players, deadline: Date.now() + 9000 }, sp: sp({ turnPid: 'p3', pickOf: new Map([['p1', 0], ['me', 1]]) }),
-    myId: 'p3x', solo: false });
-  const nodes = [...walk(v)];
-  assert.ok(!nodes.some((n) => hasClass(n, 'spov__order')), 'the order lives on the team panel');
-  const who = nodes.find((n) => hasClass(n, 'spov__tw'));
-  assert.ok(who, 'the deciding player beside the countdown');
-  assert.equal(textOf(who), 'Kal\'tsit正在决策…');
-  assert.ok(nodes.some((n) => n.type?.name === 'Countdown'));
-  assert.doesNotMatch(textOf(v), /CONTINGENCY/);
-  const mine = ChoiceView({ pub: { players, deadline: 0 }, sp: sp(), myId: 'me', solo: false });
-  assert.match(textOf(mine), /当前轮到你决策/);
-  const done = ChoiceView({ pub: { players, deadline: 0 }, sp: sp({ turnPid: 'p3', pickOf: new Map([['p1', 0], ['me', 1]]) }), myId: 'me', solo: false });
-  assert.match(textOf(done), /已完成选择/);
-});
-
 test('the armed card\'s strip is ☑ 确认选择 · 再次点击', () => {
   const v = ChoiceView({ pub: { players, deadline: 0 }, sp: sp(), myId: 'me', solo: false, armed: 1 });
   const strip = [...walk(v)].find((n) => hasClass(n, 'spcard__confirm'));
@@ -82,17 +68,3 @@ test('the armed card\'s strip is ☑ 确认选择 · 再次点击', () => {
   assert.equal(textOf(strip), '确认选择再次点击');
 });
 
-test('the team panel draws the marks; the match screen passes them only for the shared draft (source contract)', () => {
-  const panel = read('public/js/ui/teamPanel.js');
-  assert.match(panel, /spMarks\?\.get\(p\.playerId\) === 'done' \? html`<span class="team__spmark is-done"/);
-  assert.match(panel, /spMarks\?\.get\(p\.playerId\) === 'turn' \? html`<span class="team__spmark is-turn"/);
-  const game = read('public/js/screens/game.js');
-  assert.match(game, /spMarks=\$\{sp \? spMarks\(sp, \{ solo \}\) : null\}/);
-  assert.match(read('public/css/screens/game.css'), /\.team__spmark\.is-turn i \{/);
-});
-
-test('the top bar stays on screen during the shared draft', () => {
-  const css = read('public/css/screens/game-panels.css');
-  assert.doesNotMatch(css, /has-spdraft[^{]*\.gtop[^{]*\{[^}]*(visibility:\s*hidden|display:\s*none|opacity:\s*0)/);
-  assert.match(css, /\.spov__inner \{ position: absolute; left: \.3rem; right: \.5rem; top: 1\.14rem;/, 'the overlay starts below the top bar');
-});

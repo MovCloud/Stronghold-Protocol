@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeMatch } from './harness.js';
+import { PHASE } from '../../shared/constants.js';
 import { Battle } from '../../server/sim/Battle.js';
 import { getDefaultSource } from '../../server/sim/simdata.js';
 
@@ -30,7 +31,8 @@ for (const reason of ['eliminated', 'quit']) for (const elites of [0, 2]) {
       h.ps('p_0').lp = 1;
       h.m.lastResults = new Map(h.m.order.map(p => [p.playerId, clean()]));
       h.m.lastResults.set('p_0', { ...clean(), perfect: false, leaked: [{ enemyKey: 'enemy_1422_lrsldr', counted: true }] });
-      h.m.settle(null, null); h.toPrep(2); h.setStage('act2autochess_m01');
+      // this fork's settle runs only out of COMBAT / UNITE (match/settle.js)
+      h.m.phase = PHASE.COMBAT; h.m.settle(null, null); h.toPrep(2); h.setStage('act2autochess_m01');
     }
     assert.equal(h.ps('p_0').alive, false);
     assert.equal(h.ps('p_1').privateView().prepMapChars.length, 1);

@@ -15,11 +15,11 @@ test('buying Matterhorn sends two live layer cues through the real client; resyn
       const mediaHits = [];
       c.page.on('response', (r) => { const p = new URL(r.url()).pathname; if (p.startsWith('/media/')) mediaHits.push({ p, status: r.status(), cache: r.headers()['cache-control'] }); });
       await c.enter('叠层音效测试');
-      await c.click('.mode-card', '独立模拟'); await c.click('.diff-card', '险境');
-      await c.click('.create-box button', '开始独立模拟');
+      await c.createSolo('险境');
       await c.waitFor(s => !!s.room, 'solo room');
-      if (!(await c.st()).phase) await c.click('.room-bar__right button', '开始模拟');
+      if (!(await c.st()).phase) await c.roomStart();
       await c.waitFor(s => s.phase === 'INFO_CHECK', 'briefing');
+      await c.settled('.brief-go'); // (a click during its entrance falls through)
       await c.click('.brief__foot .btn--primary', '准备就绪');
       await c.waitFor(s => s.phase === 'BAND_DRAFT', 'band draft');
       await c.page.click('.dband'); await c.click('.draft-detail__btns .btn--primary', '确认选择');
@@ -45,7 +45,7 @@ test('buying Matterhorn sends two live layer cues through the real client; resyn
       assert.equal(result.cues.length, 2); assert.equal(result.playing, true); assert.equal(result.state, 'running');
       assert.ok(result.cues.every(x => /act1autochess_b_ui_buffup/.test(x.url)));
       // host bandwidth layer 1: the served manifest names the cue with its content hash and the client fetches it through
-      // the extension-less /media/~<hash>/… route, cached immutably (skipped with SP_ASSET_INDEX=0: plain URLs)
+      // the extension-less /media/… route (this fork prefixes it with its release tag: /_v/<tag>/media/…)
       if (result.cues[0].url.includes('/~')) {
         assert.ok(result.cues.every(x => /^\/assets\/~[0-9a-f]{16}\/audio\//.test(x.url)), JSON.stringify(result.cues));
         const hit = mediaHits.find(h => /^\/media\/~[0-9a-f]{16}\/.*act1autochess_b_ui_buffup$/.test(h.p));
@@ -57,7 +57,8 @@ test('buying Matterhorn sends two live layer cues through the real client; resyn
       // g.watch on own prep asks the real server for state again, without a new gain.
       await c.page.evaluate(() => globalThis.__SP__.net.request('g.watch', { fieldId: `n:${globalThis.__SP__.store.get().me.playerId}` }));
       assert.equal(await c.page.evaluate(() => window.__layerCues.length), count);
-      await c.page.reload({ waitUntil: 'networkidle0' });
+      await c.page.reload({ waitUntil: 'load' });
+      await c.page.waitForFunction(() => !!globalThis.__SP__ && !!document.querySelector('.screen'), { timeout: 30000 }); // booted (as Client.open)
       await c.waitFor(s => s.phase === 'PREP', 'restored prep');
       assert.equal(await c.page.evaluate(async () => !!(await import('/js/audio.js')).audio.bondCueNode), false);
       assert.equal(c.problems.filter(x => x.startsWith('pageerror:')).length, 0, c.problems.join('\n'));

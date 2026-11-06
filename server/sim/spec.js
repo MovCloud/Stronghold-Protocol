@@ -11,7 +11,8 @@
 // references (stage records, the shared boss pool, the data source) never travel: `stageId` names the stage, `boss`
 // carries the pool numbers at battle start and the side that runs the battle attaches a pool object:
 //   * server: the match's SharedBossPool (or a crediting wrapper on takeover, server/match/finalAssault.js),
-//   * client: a LocalBossPool (below) reconciled with the server's `b.pool` broadcasts.
+//   * client: a LocalBossPool (below) reconciled with the server's `b.pool` broadcasts (client-side combat), or a
+//     ReplayBossPool fed with the Worker's record of the pool (`b.ext`: a local display replica of a server-run field).
 // Determinism: the sim uses no wall clock and no Math.random; the same spec + the same data give the same result on
 // every machine (test/match/clientCombat.test.js compares result digests).
 //
@@ -37,6 +38,7 @@
 // room's visual set of cosmetic plugins (shared/plugins/visual.js; 64 hex digits), likewise: kept when well-formed, never
 // read by the sim — a replay or a bug report names the art the battle was drawn with.
 
+import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 import { Battle } from './Battle.js';
 import { toDataSource, withUnitLoadouts } from './simdata.js';
 import { isPotential, isCultivate } from '../../shared/potential.js';
@@ -193,8 +195,8 @@ export function createBattleFromSpec(spec, dataSource, opts = {}) {
  * damage locally and shows `server hp − local damage the server has not acknowledged yet`.
  *   damage(playerId, amount)  called by the sim; returns the damage dealt (≤ the remaining displayed hp; the hit that
  *                             would leave less than BOSS_POOL_MIN_HP (1) takes the rest)
- *   sync(serverHp, ackedCum)  a b.pool broadcast: the server's hp and how much of THIS field's cumulative damage
- *                             (`cum`) it has already counted
+ *   sync(serverHp, ackedCum, maxHp)  a b.pool broadcast: the server's hp and maximum after player exits, and how much
+ *                                   of THIS field's cumulative damage (`cum`) it has already counted
  *   cum / byPlayer            cumulative damage of this field (reported as b.progress.bossDmg / .by)
  * `hp` below 1 reads 0 (the leader is down; user playtest #6 item 5): the difference of the server's float hp and the
  * local counters can leave dust (3.6e-12) smaller than half an ulp of `cum`, which no hit could remove — `cum += dust`
@@ -232,11 +234,81 @@ export class LocalBossPool {
     return dealt;
   }
 
-  sync(serverHp, ackedCum) {
+  sync(serverHp, ackedCum, maxHp) {
+    const nextMax = Number(maxHp);
+    if (Number.isFinite(nextMax) && nextMax > 0) this.maxHp = nextMax;
     const h = Number(serverHp);
     if (Number.isFinite(h)) this.serverHp = Math.max(0, Math.min(this.maxHp, h));
     const a = Number(ackedCum);
     if (Number.isFinite(a) && a >= 0) this.acked = a;
+  }
+}
+
+/**
+ * A local display replica's view of the shared boss HP pool under server-run combat (DESIGN §14 "Local display replicas",
+ * S→C b.ext). The Worker steps every boss field of the phase in turn against one SharedBossPool, so before a field's step
+ * the pool may hold less than that field left it with: the other fields' hits since. The Worker records exactly those
+ * values for the field — `[tick, hp]`, the pool before step `tick` whenever it differs from the value after the field's
+ * previous step — and the end it forced on the field (`{ tick, reason }` right after step `tick`: team LP 0, the hard
+ * cap, a forced field). Fed with them, the replica's own hits do SharedBossPool's arithmetic on the same values in the
+ * same order, so it plays the Worker's battle bit for bit and its b.sync digests agree.
+ *   feed(i, to, hp, end)  a batch: the field's record from entry `i`, complete through tick `to` (entries already held are
+ *                         skipped); false when it leaves a gap or carries a bad value — the replica cannot follow
+ *   ready(tick)           whether step `tick` may run (everything before it is known)
+ *   enter(tick)           right before step `tick`: take the Worker's pool value when it differed
+ *   endAfter(tick)        the forced end right after step `tick`, or null
+ *   damage(playerId, amount) / hp / maxHp / byPlayer  SharedBossPool's (server/match/finalAssault.js) without onHit
+ */
+export class ReplayBossPool {
+  constructor(maxHp, hp = maxHp) {
+    this.maxHp = Math.max(1, Number(maxHp) || 1);
+    const h = Number(hp);
+    this.hp = Number.isFinite(h) ? Math.max(0, Math.min(this.maxHp, h)) : this.maxHp;
+    /** @type {Map<string, number>} */
+    this.byPlayer = new Map();
+    /** @type {Map<number, number>} tick → the pool before that step */
+    this.entries = new Map();
+    this.count = 0;
+    this.to = 0;
+    /** @type {{ tick: number, reason: string } | null} */
+    this.end = null;
+  }
+
+  feed(i, to, hp, end) {
+    const list = Array.isArray(hp) ? hp : [];
+    if (!Number.isInteger(i) || i < 0 || i > this.count) return false;
+    for (let k = this.count - i; k < list.length; k++) {
+      const e = list[k];
+      if (!Array.isArray(e) || !Number.isInteger(e[0]) || e[0] < 1 || typeof e[1] !== 'number' || !Number.isFinite(e[1])) return false;
+      this.entries.set(e[0], e[1]);
+      this.count++;
+    }
+    if (end && !this.end) {
+      if (!Number.isInteger(end.tick) || end.tick < 0 || typeof end.reason !== 'string') return false;
+      this.end = { tick: end.tick, reason: end.reason };
+    }
+    if (Number.isInteger(to) && to > this.to) this.to = to;
+    return true;
+  }
+
+  ready(tick) { return tick <= this.to && !(this.end && tick > this.end.tick); }
+
+  enter(tick) {
+    const v = this.entries.get(tick);
+    if (v === undefined) return;
+    this.entries.delete(tick);
+    this.hp = v;
+  }
+
+  endAfter(tick) { return this.end && this.end.tick === tick ? this.end : null; }
+
+  damage(playerId, amount) {
+    const a = Number(amount);
+    if (!Number.isFinite(a) || a <= 0 || this.hp <= 0) return 0;
+    const dealt = this.hp - a < BOSS_POOL_MIN_HP ? this.hp : a;
+    this.hp -= dealt;
+    if (playerId != null) this.byPlayer.set(playerId, (this.byPlayer.get(playerId) || 0) + dealt);
+    return dealt;
   }
 }
 
@@ -325,7 +397,7 @@ export function battleProgress(battle) {
   }
   if (battle && (battle.kind === 'boss' || battle.kind === 'hidden')) {
     const leaksBy = {};
-    for (const pid of Object.keys(pp).slice(0, 4)) leaksBy[pid] = Math.min(1e6, leakEntries(pp[pid]).reduce((n, l) => n + leakLpr(l), 0));
+  for (const pid of Object.keys(pp).slice(0, MAX_PLAYER_CAPACITY)) leaksBy[pid] = Math.min(1e6, leakEntries(pp[pid]).reduce((n, l) => n + leakLpr(l), 0));
     out.leaksBy = leaksBy;
   }
   return out;
@@ -408,7 +480,7 @@ function compactMods(m) {
 export function compactResult(res) {
   const r = res && typeof res === 'object' ? res : {};
   const perPlayer = {};
-  for (const pid of Object.keys(r.perPlayer || {}).slice(0, 4)) {
+  for (const pid of Object.keys(r.perPlayer || {}).slice(0, MAX_PLAYER_CAPACITY)) {
     const p = r.perPlayer[pid] || {};
     const layerGains = {};
     for (const [k, v] of Object.entries(p.layerGains || {}).slice(0, 40)) if (isKey(k) && fnum(v) > 0) layerGains[k] = Math.min(1e4, fnum(v));
@@ -446,6 +518,9 @@ export function compactResult(res) {
     // the HUD capsule's numerator (or absent for a result that has none: the teammate UI falls back to `killed`)
     const resolved = Number.isFinite(p.resolved) ? Math.max(0, Math.min(total, Math.trunc(p.resolved))) : null;
     if (resolved != null) perPlayer[pid].resolved = resolved;
+    // (fork) the Fever gauge the field ended with (sim/fever.js; 联防 carries it: match/unite.js) — absent without one,
+    // kept to the gauge's range so the server's check (match/fields.js) accepts it
+    if (p.fever != null && Number.isFinite(p.fever)) perPlayer[pid].fever = Math.max(0, Math.min(450, Math.round(p.fever * 100) / 100));
   }
   const out = {
     reason: ['cleared', 'timeout', 'forced'].includes(r.reason) ? r.reason : 'forced',
@@ -469,22 +544,24 @@ export function compactResult(res) {
 export const RESULT_FRAME_BUDGET = 60 * 1024;
 
 /**
- * Keep a compact result under the frame budget (a larger frame closes the socket: the server would take the field over
- * at the very end). Never touches what settles LP / funds / layers of a normal field. In order: drop the per-unit
- * statistics, drop the leaks' `mods` (the server rebuilds them from the spec), and — boss fields only, whose leaks cost
- * team LP through b.progress — drop leak entries. Returns the (possibly) trimmed copy.
+ * Keep a compact result under the frame budget. Never truncate survivors of a normal / 联防 field: those entries
+ * settle LP and seed the next 联防 wave. Drop per-unit statistics first. A normal / 联防 field yields if it still does
+ * not fit: duplicate enemies may have different mods, so rebuilding a leak from its key alone can change its strength
+ * or bounty. Boss fields can drop leak mods and entries because b.progress already charged their team LP. Return null
+ * if the frame still cannot fit, so the client sends b.yield and the server re-simulates the field.
  * @param {object} result compactResult(...) output
  * @param {{ bossLike?: boolean, budget?: number, battleId?: string }} [o]
  */
 export function fitResult(result, { bossLike = false, budget = RESULT_FRAME_BUDGET, battleId = '' } = {}) {
-  const size = (r) => JSON.stringify({ t: 'b.result', battleId, result: r, rid: 2147483647 }).length;
+  const size = (r) => new TextEncoder().encode(JSON.stringify({ t: 'b.result', battleId, result: r, rid: 2147483647 })).length;
   if (!result || typeof result !== 'object' || size(result) <= budget) return result;
   const r = { ...result, perPlayer: {} };
   for (const [pid, p] of Object.entries(result.perPlayer || {})) r.perPlayer[pid] = { ...p, unitStats: [] };
   if (size(r) <= budget) return r;
+  if (!bossLike) return null;
   for (const p of Object.values(r.perPlayer)) p.leaked = (p.leaked || []).map((l) => ({ ...l, mods: null }));
-  if (size(r) <= budget || !bossLike) return r;
+  if (size(r) <= budget) return r;
   for (const p of Object.values(r.perPlayer)) p.leaked = [];
   if (Array.isArray(r.unspawned)) r.unspawned = [];
-  return r;
+  return size(r) <= budget ? r : null;
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // tools/build-i18n.mjs — LOCALIZED GAME DATA: data/i18n/en.json from the official EN client data (and, with --lang, the
-// game texts of a language pack from another official client: ja, ko, zh-TW — docs/I18N.md "Adding a language").
+// game texts of a language pack from another official client: ja, ko, zh-TW — docs/development/I18N.md "Adding a language").
 //
 // The game texts of data/*.json (operators, skills, talents, modules, traits, enemies, bonds, items, effects, bands,
 // 特质, 机变 cards, modes, stages, tokens …) are the official zh_CN texts (tools/build-data.mjs). This tool writes their
@@ -136,6 +136,10 @@ const TABLES = [
   { rel: 'excel/item_table.json', pick: (j) => j?.items },
   { rel: 'excel/token_table.json' },
   { rel: 'levels/enemydata/enemy_database.json', pick: (j) => (Array.isArray(j?.enemies) ? kvMap(j.enemies) : j) },
+  // fork: the outfit names and series of data/outfits.json (tools/build-outfits.mjs, docs/OUTFITS.md)
+  { rel: 'excel/skin_table.json', pick: (j) => ({ charSkins: j?.charSkins, brandList: j?.brandList }) },
+  // the status keyword glossary (data/terms.json)
+  { rel: 'excel/gamedata_const.json', pick: (j) => j?.termDescriptionDict },
 ];
 
 /** A Unity-style list of { Key, Value } entries as a plain map (the two dumps serialize some tables either way). */
@@ -151,7 +155,9 @@ const SEASON_SCOPE = 'act2';
 
 /** data/*.json files localized, in output order. */
 export const DATA_FILES = Object.freeze(['chess', 'backups', 'tokens', 'bonds', 'garrisons', 'items', 'bands', 'effects',
-  'choices', 'enemies', 'factions', 'stages', 'bosses', 'config', 'emotes']);
+  'choices', 'enemies', 'factions', 'stages', 'bosses', 'config', 'emotes', 'outfits', 'terms']);
+/** Files whose names never feed the `names` map (no server message names an outfit). */
+const NO_NAMES = new Set(['outfits']);
 
 /**
  * Research / developer notes of the data files (English with Chinese terms; no screen shows them): never translated,
@@ -238,7 +244,7 @@ function parseArgs(argv) {
   if (opts.refresh && opts.offline) throw new Error(`--refresh and --offline are mutually exclusive\n${USAGE}`);
   const lang = LANG_SOURCES[opts.lang];
   if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(opts.lang) || opts.lang === 'zh') throw new Error(`--lang ${opts.lang}: a language code (en, ja, zh-TW …; not zh, the source)`);
-  if (!lang && !opts.dict) throw new Error(`--lang ${opts.lang} has no official client here (${Object.keys(LANG_SOURCES).join(', ')}): give its game texts with --dict <file.json> (docs/I18N.md §2)`);
+  if (!lang && !opts.dict) throw new Error(`--lang ${opts.lang} has no official client here (${Object.keys(LANG_SOURCES).join(', ')}): give its game texts with --dict <file.json> (docs/development/I18N.md §2)`);
   if (lang && !lang.sources[opts.source]) throw new Error(`--source for ${opts.lang} must be one of ${Object.keys(lang.sources).join(', ')}`);
   if (!opts.cacheEn && lang) opts.cacheEn = join(ROOT, lang.sources[opts.source].cache);
   if (!opts.out) opts.out = join(ROOT, 'data', 'i18n', `${opts.lang}.json`);
@@ -678,11 +684,12 @@ export function buildOverlay({ zh, en, data, fallback = {}, corrections = {}, so
       const leaves = typeof record === 'string' ? translateScalar(file, id, record, tr, stats, samples) : translateRecord(file, id, record, tr, stats, samples);
       const ov = buildRecordOverlay(leaves.map(({ path, zh: z, en: e }) => ({ path, zh: z, en: e })));
       if (ov) out[id] = ov;
+      if (NO_NAMES.has(file)) continue;
       for (const l of leaves) {
         // record-level names (and the stand-ins' operator names): what server messages name
         const top = l.path.length === 1
           || (file === 'backups' && ((id === 'units' && l.path.length === 2) || (id === 'diy' && l.path[0] === 'operators' && l.path.length === 3)));
-        if (!top || !NAME_KEYS.has(l.key) || untranslated(l.zh, l.en)) continue;
+        if (!top || file === 'terms' || !NAME_KEYS.has(l.key) || untranslated(l.zh, l.en)) continue; // keyword names are no data names
         const prio = NAME_PRIORITY.indexOf(file);
         const list = nameVotes.get(l.zh) || [];
         list.push({ en: l.en, prio: prio < 0 ? 99 : prio });
@@ -758,12 +765,17 @@ async function main() {
     if (existsSync(abs)) data[f] = JSON.parse(await readFile(abs, 'utf8'));
   }
   const readDict = async (abs) => (existsSync(abs) ? JSON.parse(await readFile(abs, 'utf8')) : {});
-  // the remake's own strings and PR #70's are English; another language falls back to its pack's UI strings only
+  // the remake's own strings and PR #70's are English; another language falls back to its own optional
+  // tools/i18n/fallback-remake.<code>.json (texts its client lacks, e.g. newer status keywords), then its pack's UI strings
   const fallback = opts.lang === 'en' ? {
-    remake: await readDict(join(ROOT, 'tools', 'i18n', 'fallback-remake.json')),
+    // fork: + the English names of the CN-only outfits (arknights.wiki.gg; docs/OUTFITS.md), counted as 'remake'
+    remake: { ...await readDict(join(ROOT, 'tools', 'i18n', 'fallback-outfits-en.json')), ...await readDict(join(ROOT, 'tools', 'i18n', 'fallback-remake.json')) },
     pr70: await readDict(join(ROOT, 'tools', 'i18n', 'fallback-pr70.json')),
     ui: await readDict(join(ROOT, 'public', 'i18n', 'en.json')),
-  } : { ui: await readDict(join(ROOT, 'public', 'i18n', `${opts.lang}.json`)) };
+  } : {
+    remake: await readDict(join(ROOT, 'tools', 'i18n', `fallback-remake.${opts.lang}.json`)),
+    ui: await readDict(join(ROOT, 'public', 'i18n', `${opts.lang}.json`)),
+  };
   if (opts.dict) fallback.dict = JSON.parse(await readFile(opts.dict, 'utf8'));
   // corrections of the language's own official texts (none for a language without a file)
   const corrections = await readDict(join(ROOT, 'tools', 'i18n', `corrections-${opts.lang}.json`));

@@ -73,6 +73,16 @@ describe('hub lobby (real server, headless Chrome)', { skip: !ENABLED && 'set SP
     }, lang, textSize);
     await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online' && !!document.querySelector('.lobby-screen .hub-entries'), { timeout: 30000 });
+    // A fresh profile opens the announcement board (public/js/screens/lobby.js): a full-screen .modal whose body text
+    // would be measured as lying over the hub's own text, and whose layer covers the version switch. Dismiss it the way
+    // a visitor does before measuring the hub (devices.e2e.test.js does the same).
+    if (await page.waitForSelector('.announcement-board', { visible: true, timeout: 1500 }).catch(() => null)) {
+      const close = await page.$('.announcement-board .modal__actions button');
+      if (close) {
+        if (touch) await close.tap(); else await close.click();
+        await page.waitForSelector('.announcement-board', { hidden: true, timeout: 5000 });
+      }
+    }
     return { ctx, page, problems };
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -136,7 +146,9 @@ describe('hub lobby (real server, headless Chrome)', { skip: !ENABLED && 'set SP
       }));
       assert.equal(hub.title, '卫戍协议：盟约');
       assert.equal(await page.$('.lobby-screen .topbar .stats-entry'), null, 'no top-bar 统计数据 chip: the 成就统计 card is the entry');
-      assert.deepEqual(hub.entries, ['solo', 'coop']);
+      // The fork's 多人匹配 entry is kept beside the two upstream modes (program/v0.3.1/AGENTS.md: fork features
+      // are not cut to match an upstream-shaped assertion); MODE_CARDS in screens/lobby.js lists all three.
+      assert.deepEqual(hub.entries, ['solo', 'coop', 'match']);
       assert.deepEqual(hub.plates, [true, true]);
       assert.equal(hub.dialogs, 0);
       assert.deepEqual((await fit(page)).out, [], 'the hub fits 1920×1080');
@@ -269,7 +281,9 @@ describe('hub lobby (real server, headless Chrome)', { skip: !ENABLED && 'set SP
       await page.screenshot({ path: path.join(OUT, 'lobby-hub-room-settings.png') });
       await press(page, '.rs-opts__diff');
       await page.waitForSelector('.modal__box.proto', { visible: true });
-      assert.equal(await page.$('.rs-opts'), null, 'the menu closes under the dialog');
+      // the fork keeps ⚙ 同盟设置 mounted through its 160 ms exit fade (RoomScreen's usePresence), so it is still
+      // in the DOM right after the dialog appears; it must be gone (the dialog covers it meanwhile)
+      await page.waitForSelector('.rs-opts', { hidden: true, timeout: 2000 });
       await escape(page);
       await page.waitForSelector('.modal__box.proto', { hidden: true });
       assert.deepEqual(problems, []);
@@ -852,7 +866,8 @@ describe('hub lobby (real server, headless Chrome)', { skip: !ENABLED && 'set SP
       if (!a) break;
       total = a.n;
       if (!(a.n > 0) || seen.size >= a.n) break;
-      const probs = await page.evaluate(textProblems, '.lobby-screen');
+      // 大厅的公告卡(body)是 fork 功能, 在右侧细栏里是两行预览: 允许它的 line-clamp (公告板本身展示全文)
+      const probs = await page.evaluate(textProblems, '.lobby-screen', '.hub-notice__body b');
       if ((await now())?.i === a.i && !seen.has(a.i)) {
         seen.add(a.i);
         for (const p of probs) if (!known.has(p)) { known.add(p); out.push(`tip ${a.i}: ${p}`); }
@@ -881,7 +896,9 @@ describe('hub lobby (real server, headless Chrome)', { skip: !ENABLED && 'set SP
             for (const [w, h] of screens) {
               await page.setViewport({ width: w, height: h, hasTouch: touch, isMobile: touch, deviceScaleFactor: 1 });
               await sleep(150); await settle(page); await page.evaluate(() => document.fonts.ready);
-              const plain = await page.evaluate(textProblems, '.lobby-screen');
+              // (the notice card's preview is clamped to two lines in the hub's narrow right column; the board it
+              // opens shows the full text — fork feature, not a label of the hub that has to be whole)
+              const plain = await page.evaluate(textProblems, '.lobby-screen', '.hub-notice__body b');
               const what = `${lang} ${textSize} UI ${ui}% ${w}×${h}`;
               for (const p of plain) bad.push(`${what}: ${p}`);
               for (const p of await tipProblems(page, new Set(plain), h)) bad.push(`${what}: ${p}`);

@@ -146,16 +146,20 @@ async function place(c, chessId) {
   await c.page.waitForFunction((n0) => (globalThis.__SP__.store.get().match.private?.board || []).length > n0, { timeout: 8000 }, n0);
 }
 
+// 界面大小 at 100 % (ui/screenFit.js, `sp.pref.screenFit.ui`): the phone's pixel floors checked here are the design's
+// 100 % sizes; the size is never automatic, so the seed pins it against a stored profile (test/ui/ui-size.test.js).
+const AT_100 = { 'loadout.view': 'list', screenFit: { ui: 100 } };
+
 /** Two humans in a co-op room with `bots` AI seats: the host on a 1280×720 desktop, the guest on the user's phone
  *  (756×366 CSS px, touch), through the briefing and the band draft. */
 async function coopMatch(P, base, { bots = 1, prefix }) {
   const host = new Client(P, base, 'host', { prefix: `${prefix}-host`, w: 1280, h: 720 });
-  const guest = new Client(P, base, 'guest', { prefix: `${prefix}-phone`, w: 756, h: 366 });
+  const guest = new Client(P, base, 'guest', { prefix: `${prefix}-phone`, w: 756, h: 366, prefs: AT_100 });
   await host.open();
   await host.enter('凯尔希');
   const room = await host.createCoop();
   for (let i = 0; i < bots; i++) {
-    await host.click('button', '添加 AI 队友');
+    await host.send('room.addBot');
     await sleep(600);
   }
   await guest.open(`?room=${room.code}`);
@@ -169,13 +173,13 @@ async function coopMatch(P, base, { bots = 1, prefix }) {
     return !!s.room?.seats?.find((x) => x && x.playerId === s.me.playerId)?.ready;
   });
   for (let i = 0; i < 6 && !(await guestReady()); i++) {
-    await guest.click('.room-bar__right button', '准备就绪', { optional: true, timeout: 3000 });
+    await guest.roomReady({ optional: true, timeout: 3000 });
     await sleep(600);
   }
   assert.ok(await guestReady(), 'guest ready');
-  await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+  await host.roomStart({ timeout: 20000 });
   for (const c of [host, guest]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
-  for (const c of [host, guest]) await c.click('.brief__foot .btn--primary', '准备就绪');
+  for (const c of [host, guest]) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
   for (const c of [host, guest]) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);
   const picked = new Set();
   const t0 = Date.now();
@@ -205,8 +209,42 @@ async function coopMatch(P, base, { bots = 1, prefix }) {
   return { host, guest };
 }
 
-/** A teammate's row → 前往查看 (team panel). */
+/**
+ * A player's avatar on a 联防 / 最终攻势 field (the owner's request, 2026-10-14): one tap goes to their half — no 前往查看
+ * under the row. A folded roster (a phone) is opened for the tap and folded again.
+ */
+async function tapAvatar(c, name) {
+  const folded = await unfold(c);
+  const pt = await c.page.evaluate((name) => {
+    for (const row of document.querySelectorAll('.team__row')) {
+      if (!(row.querySelector('.team__name')?.textContent || '').includes(name)) continue;
+      const b = row.querySelector('.team__btn').getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+    }
+    return null;
+  }, name);
+  assert.ok(pt, `${c.label}: ${name}'s avatar`);
+  await c.page.mouse.click(pt.x, pt.y);
+  await sleep(500);
+  assert.equal(await c.page.$('.team__ob'), null, `${c.label}: no 前往查看 for ${name}, a player on the field`);
+  await refold(c, folded);
+}
+
+/** A phone's roster starts folded (ui/teamLayout.js): open it for a row's tap → whether it was folded. */
+async function unfold(c) {
+  const folded = await c.page.evaluate(() => !!document.querySelector('.team.is-folded'));
+  if (folded) { await c.click('.team__toggle'); await sleep(400); }
+  return folded;
+}
+
+/** Fold a roster `unfold` opened again (when it is still open). */
+async function refold(c, folded) {
+  if (folded && await c.page.evaluate(() => !document.querySelector('.team.is-folded'))) { await c.click('.team__toggle'); await sleep(400); }
+}
+
+/** A teammate's row → 前往查看 (team panel; a folded phone roster is opened for it and folded again). */
 async function watchMate(c, name) {
+  const folded = await unfold(c);
   const pt = await c.page.evaluate((name) => {
     for (const row of document.querySelectorAll('.team__row')) {
       if (!(row.querySelector('.team__name')?.textContent || '').includes(name)) continue;
@@ -218,6 +256,7 @@ async function watchMate(c, name) {
   assert.ok(pt, `${c.label}: ${name}'s row`);
   await c.page.mouse.click(pt.x, pt.y);
   assert.ok(await c.click('.team__ob', '前往查看', { timeout: 4000, optional: true }), `${c.label}: 前往查看 on ${name}`);
+  await refold(c, folded);
 }
 
 /** Every player's name and bond ids (count, layers or active), the field listing, the 联防 helpers. */
@@ -241,7 +280,7 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
     const P = (await import('puppeteer-core')).default;
     const host = new Client(P, srv.base, 'host', { prefix: 'watch-bonds', w: 1280, h: 720 });
     // the guest deploys on a desktop-sized window (the phone's shop bar covers the bench), then turns into the phone
-    const guest = new Client(P, srv.base, 'guest', { prefix: 'watch-bonds-phone', w: 1280, h: 720 });
+    const guest = new Client(P, srv.base, 'guest', { prefix: 'watch-bonds-phone', w: 1280, h: 720, prefs: AT_100 });
     try {
       await host.open();
       await host.enter('凯尔希');
@@ -254,13 +293,13 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
         return !!s.room?.seats?.find((x) => x && x.playerId === s.me.playerId)?.ready;
       });
       for (let i = 0; i < 6 && !(await guestReady()); i++) {
-        await guest.click('.room-bar__right button', '准备就绪', { optional: true, timeout: 3000 });
+        await guest.roomReady({ optional: true, timeout: 3000 });
         await sleep(600);
       }
       assert.ok(await guestReady(), 'guest ready');
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
       for (const c of [host, guest]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
-      for (const c of [host, guest]) await c.click('.brief__foot .btn--primary', '准备就绪');
+      for (const c of [host, guest]) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
       for (const c of [host, guest]) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);
       const picked = new Set();
       const t0 = Date.now();
@@ -371,6 +410,20 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
       await toLayer(host, hostSide);
       st = await stripOf(host);
       assert.deepEqual([st.owner, st.bonds], [null, hostOwn.ids], 'the own half ("你自己"): the host\'s bonds');
+      // the avatars do the same (the owner's request, 2026-10-14): the partner's avatar → their half (no 前往查看 under the
+      // row), the same avatar again → 全景, the own avatar → the own half
+      const avatar = tapAvatar;
+      const pillOf = (c) => c.page.evaluate(() => document.querySelector('.chud__layers .vswitch__label')?.textContent?.trim() ?? null);
+      await avatar(host, '阿米娅');
+      assert.match(await pillOf(host), /阿米娅/, "the partner's avatar: their half");
+      await host.page.waitForFunction(() => document.querySelector('.gm__bonds .bstrip')?.getAttribute('data-owner') === '阿米娅', { timeout: 4000 });
+      await host.shot('fa-avatar-partner');
+      await avatar(host, '阿米娅');
+      assert.equal(await pillOf(host), '全景', 'the same avatar again: 全景');
+      await avatar(host, '凯尔希');
+      assert.equal(await pillOf(host), '你自己', 'the own avatar: the own half');
+      st = await stripOf(host);
+      assert.deepEqual([st.owner, st.bonds], [null, hostOwn.ids], 'the own half by the avatar: the host\'s bonds');
 
       // the phone: the guest looks at the host's half
       const guestSide = hostSide === 'L' ? 'R' : 'L';
@@ -441,10 +494,11 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
       // the host (helper 1 or 2) on 全景: its own bonds
       const hs = await stripOf(host);
       assert.equal(hs.owner, null, 'the helper on 全景: own bonds');
-      // the guest picks each helper: the camera goes to their half, pill and strip agree, 返回战场 in the pill
+      // the guest picks each helper by the avatar (one tap, as 前往查看 did): the camera goes to their half, pill and strip
+      // agree, 返回战场 in the pill
       for (const name of [h2, h1]) {
         assert.equal((await guest.st()).phase, 'UNITE', '联防 still running');
-        await watchMate(guest, name);
+        await tapAvatar(guest, name);
         await ownerIs(guest, name);
         await guest.page.waitForFunction((name) => (document.querySelector('.chud__layers .vswitch__label')?.textContent || '').includes(name), { timeout: 6000 }, name);
         st = await stripOf(guest);
@@ -593,6 +647,11 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
       // the eliminated guest answers the official 协议已失效 dialog (PR #705) with 继续观战 before watching
       await continueWatching(guest);
       await guest.page.waitForSelector('.chud__layers', { timeout: 20000 });
+      // the eliminated guest's 协议已失效 plate (ui/downedPlate.js) covers the field: 继续观战 closes it
+      if (await guest.page.waitForSelector('[data-testid="downed-plate"]', { visible: true, timeout: 3000 }).catch(() => null)) {
+        await guest.click('[data-testid="downed-plate"] .downpl__btn--watch');
+        await guest.page.waitForSelector('[data-testid="downed-plate"]', { hidden: true, timeout: 5000 });
+      }
       await sleep(1000);
       const mv = await matchView(guest);
       const pair = mv.fields.find((f) => f.players.length === 2);
@@ -619,7 +678,7 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
       await closeCard(guest);
       for (const pid of [pair.players[1], pair.players[0]]) {
         const name = mv.names[pid];
-        await watchMate(guest, name);
+        await tapAvatar(guest, name);
         await ownerIs(guest, name);
         await guest.page.waitForFunction((name) => (document.querySelector('.chud__layers .vswitch__label')?.textContent || '').includes(name), { timeout: 6000 }, name);
         st = await stripOf(guest);

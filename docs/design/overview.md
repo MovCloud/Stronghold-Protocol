@@ -1,13 +1,13 @@
 # DESIGN §0, §1, §2, §11, §12 — Scope, stack, repository layout, quality bar
 
-Part of [DESIGN.md](../DESIGN.md) (the index; section numbers are global).
+Part of [DESIGN.md](../development/DESIGN.md) (the index; section numbers are global).
 
 ## 0. Product scope (v1)
 
 A faithful, polished, **online co-op** browser remake of Arknights' seasonal auto-chess TD mode 「卫戍协议：盟约」(下半, `act2autochess`).
 
 In scope:
-- Title → lobby (nickname, create room / join by 4-letter code or `?room=CODE` link, host picks difficulty, up to 4 players, **AI teammates** can fill seats, ready/start). Solo (独立模拟) and co-op (同盟模拟, 1–4 humans + optional AI).
+- Title → lobby (nickname, create room / join by 4-letter code or `?room=CODE` link, host picks difficulty, up to 20 players, **AI teammates** can fill seats, ready/start). Solo (独立模拟) and co-op (同盟模拟, 1–20 humans + optional AI).
 - Difficulties: 标准 FUNNY, 险境 NORMAL, 绝境 HARD, 终极 ABYSS (solo and multi variants from `modeDataDict`). Training/tutorial mode is out of scope.
 - Pre-game: INFO_CHECK briefing (disabled bonds, banned operators, enemy factions, stage) → BAND_CHECK strategy draft (40 bands, random order, 1 skip in co-op) → BATTLE_CHECK.
 - Rounds 1–14 (+ hidden 15): prep (shop, hand, board, items, freeze, refresh, level-up, sell, merge + reward pick, ready), 机变 draft rounds, simultaneous auto-combat on each player's own field, 联防 unite phase, LP loss/elimination, Final Assault boss round with merged LP and shared boss HP pool, Hidden Core, settlement with titles.
@@ -25,7 +25,7 @@ Out of scope v1: matchmaking queue, training/tutorial, DIY (甄选) slots (the 4
 
 ## 1. Tech stack
 
-- **Node.js ≥ 22** (CI: 22 and 24), ESM (`"type": "module"`), single dependency `ws@8`. No bundler, no TypeScript. JSDoc types where helpful.
+- **Node.js 24** (the only supported version; CI: 24), ESM (`"type": "module"`), single dependency `ws@8`. No bundler, no TypeScript. JSDoc types where helpful.
 - **Server-authoritative simulation.** Clients send *intents*; the server validates, mutates state and pushes state/snapshots.
 - **Client:** static files, native ES modules. Vendored libs in `public/vendor/`: `pixi.min.js` (PixiJS **7.4.2** UMD, global `PIXI`), `pixi-spine.js` (**4.0.6** UMD, `PIXI.spine`), `preact.module.js` + `hooks.module.js` + `htm.module.js` (Preact 10 + htm, no build step). No CDN at runtime (LAN play must work offline).
 - **Shared code** in `shared/` is imported by both server and browser (pure ESM, no Node APIs).
@@ -43,19 +43,21 @@ server/
   http/
     config.js              ROOT, served dirs, env (PORT, HOST, TRUST_PROXY, DEBUG), options handed to net.js / lobby.js
     websocket.js           session wiring (SessionRegistry → Lobby → Network), WebSocket upgrade at /ws (64 KB frames,
-                           permessage-deflate from 1 KB)
+                           permessage-deflate with SP_WS_COMPRESSION=on)
     static.js              mounts / → public, /data/, /shared/, /sim/ (.js only), the /data.js browser stand-in, path guards,
-                           the ~<hash> segment of /assets/ /fonts/ /media/ URLs stripped (immutable when it names the file)
+                           the /_v/<tag>/ release prefix of asset/code URLs stripped and validated (immutable; a changed byte behind it answers 503)
     media.js               /media/… extension-less audio → public/assets/audio
-    files.js               one file → response: MIME, brotli q5 / gzip (.skel/.atlas/.json/.js/.css …), ETag (content hash when known) / 304,
+    files.js               one file → response: MIME, brotli q5 / gzip (.skel/.atlas/.json/.js/.css …), ETag (size + mtime, and the release tag of a transformed body) / 304,
                            cache policy, ranges; serveBuffer for the served manifests
-    buildTag.js            build tag of the served browser runtime (/healthz build, public/js/ui/buildGuard.js)
-    routes.js              request listener: 414 / 400 / 405 guards, GET /healthz (?traffic=1: the counters), then static files
+    buildTag.js            the legacy build-tag helper (the served build is the release tag, static.jsersion)
+    routes.js              request listener: 414 / 400 / 405 guards, GET /healthz (public), GET /metrics (?traffic=1: the counters) — the latter two loopback / private only — then static files
     traffic.js             traffic counters: HTTP body bytes by category (assets / audio / code / data), WebSocket wire / payload
-    assetIndex.js          content hashes (SHA-256, 16 hex) of public/assets + public/fonts, background build, .cache/asset-hashes.json
-    assetViews.js          the served /data/assets.json + /data/local-assets.json: art URLs as /assets/~<hash>/… (immutable when it matches)
     common.js              security headers, URL split, error page, JSON replies, bare 400 for unparseable requests
     boot.js                boot banner (Local / LAN / tunnel URLs), port-in-use hint, graceful SIGINT / SIGTERM
+  assetVersion.js          the release namespace: /_v/<artTag|runtimeTag>/… (SHA-256 over the art / code trees), validated per request (a
+                           changed byte behind a validated path answers 503); the served manifests and HTML/CSS/JSON carry its URLs
+  ../shared/assetCdn.js     when SP_ASSETS_CDN is set: art/model/audio URLs become <base>/assets/…?v=<file hash> (per-file cache busting;
+                           the API and /ws never leave the game host) — docs/operations/CDN.md
   net.js                   session registry, send helpers, per-connection rate limit, message validation (uses shared/protocol.js)
   lobby.js                 rooms (4-letter codes), seats, host, AI seats, ready/start, reconnect tokens, room→Match wiring
   data.js                  loads data/*.json once, builds indexes (getChess, getBond, …); frozen objects
@@ -116,7 +118,7 @@ shared/
   protocol.js              message catalogue + validators (§8)
   format.js                rich-text description → HTML/plain; number formatting
   rules.js                 pure helpers shared by UI & server (e.g. price display, sell value, bond tier from count)
-data/                      generated by tools/build-data.mjs — committed; see docs/DATA.md
+data/                      generated by tools/build-data.mjs — committed; see docs/development/DATA.md
 public/
   index.html               single page; loads /js/main.js as module
   css/                     theme.css (tokens, fonts), components.css, screens/*.css
@@ -127,29 +129,36 @@ public/
     data.js                fetches /data/*.json, same indexes as server/data.js
     audio.js               BGM/SFX manager (Web Audio), volume settings
     assets.js              asset URLs, image cache, Spine loader with LRU + fallback
-    screens/               title.js, lobby.js, room.js, briefing.js, bandDraft.js, game.js (entry; game/*.js plates, marks, early events), result.js
+    screens/               lobby.js, room.js, briefing.js, bandDraft.js, game.js (entry; game/*.js plates, marks, early events), result.js
     ui/                    hud.js, bondStrip.js, bondPopup.js, shopBar.js, teamPanel.js, detailPanel.js,
                            tooltip.js, choiceOverlay.js, rewardOverlay.js, ticker.js, emotes.js, settings.js, toasts.js,
                            gameLogic.js (barrel; gameLogic/*.js placement, bonds, phases, shop, loadout)
     render/                app.js (field view; app/*.js helpers), projection.js, tiles.js, units.js, spine.js, fx.js (effects; fx/*.js), interp.js, drag.js, pick.js, promote.js (API §9);
                            vfx/*.js (the official battle effects from the local client: interpreter, WebGL2 renderer, wiring; §9, §33)
   vendor/                  pixi, pixi-spine, preact, hooks, htm (copied from node_modules by tools/vendor.mjs)
-  assets/                  downloaded art/audio (git-ignored), see docs/ASSETS.md
+  assets/                  downloaded art/audio (git-ignored), see docs/development/ASSETS.md
   fonts/                   self-hosted fonts
 tools/
   build-data.mjs           official data + research JSON → data/*.json
   fetch-assets.mjs         downloads/optimizes assets → public/assets + data/assets.json
   vendor.mjs               copies vendor libs from node_modules → public/vendor
 test/                      node:test suites; test/e2e/ browser + bot tests
-docs/                      DESIGN.md (the index of this document: the rules in design/, the per-release revisions in
-                           history/), ARCHITECTURE.md, DATA.md, SIM.md, META.md, I18N.md, ASSETS.md, BALANCE.md,
-                           DEPLOY.md, PLAYING.md, WINDOWS.md, research/
+docs/                      README.md (documentation navigation)
+  guides/                  player guides, content packs, match history and matchmaking
+  operations/              deployment, Windows bundles, CDN and persistence
+  development/             DESIGN.md (this document's index), ARCHITECTURE.md, SIM.md, META.md, data and tooling references
+  design/                  current design rules; indexed by development/DESIGN.md
+  history/                 per-release design revisions; site/CHANGELOG.md holds this fork's site changes
+  research/                research notes and JSON tables (some read at runtime)
+  img/                     documentation images
+.cache/                    ignored local downloads, scratch scripts, logs and reports
+.state/                    ignored live match checkpoints
                            (the wire protocol is normative in shared/protocol.js itself)
 LICENSE                    GPL-3.0-or-later (the project's code); NOTICE.md: scope, non-commercial game assets, the Spine
                            Runtimes linking permission; THIRD-PARTY-NOTICES.md: libraries, fonts, data sources
 ```
 
-Ownership rule for parallel agents: **only edit files assigned to you**; if you need a change in someone else's file, write it in your final report instead (the integrator applies it). Shared files (`shared/*`, `docs/DESIGN.md`) are owned by the architect.
+Ownership rule for parallel agents: **only edit files assigned to you**; if you need a change in someone else's file, write it in your final report instead (the integrator applies it). Shared files (`shared/*`, `docs/development/DESIGN.md`) are owned by the architect.
 
 ---
 

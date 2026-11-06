@@ -1,19 +1,18 @@
-// test/build.test.js — the served-runtime build tag (server/http/buildTag.js computeBuildTag / buildTag, exported by
-// server/index.js): the signal that lets an already-open page notice a deploy (public/js/ui/buildGuard.js;
-// /healthz `build`).
+// Legacy fingerprint compatibility tests. Production HTML and /healthz use the
+// assetVersion release; healthz-cache and resource version tests cover that path.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeBuildTag, buildTag, resetBuildTag } from '../server/index.js';
+import { computeBuildTag, buildTag, resetBuildTag, BUILD_INPUTS, ROOT, startServer } from '../server/index.js';
 import { checkBuildOnce } from '../public/js/ui/buildGuard.js';
 
 /** A throwaway browser runtime, independent of the build tag's input list. */
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-build-'));
   for (const rel of [
-    'public/index.html', 'public/js/file.js', 'public/css/file.css',
+    'public/index.html', 'public/asset-cache-sw.js', 'public/js/file.js', 'public/css/file.css', 'public/vendor/runtime.js',
     'server/sim/content/kits/skill.js', 'shared/protocol.js', 'data/chess.json',
   ]) {
     const abs = path.join(root, rel);
@@ -23,7 +22,7 @@ function fixture() {
   return root;
 }
 
-for (const rel of ['server/sim/content/kits/skill.js', 'shared/protocol.js', 'data/chess.json']) {
+for (const rel of ['server/sim/content/kits/skill.js', 'shared/protocol.js', 'data/chess.json', 'public/asset-cache-sw.js', 'public/vendor/runtime.js']) {
   test(`buildTag: an update to ${rel} is visible to an old page after restart only`, async () => {
     const root = fixture();
     try {
@@ -117,8 +116,64 @@ test('computeBuildTag: dot files and editor backups are ignored (the static serv
   }
 });
 
+test('computeBuildTag: a custom public directory keeps sim/shared/data rooted in the served project', () => {
+  const root = fixture(), publicDir = path.join(root, 'preview');
+  try {
+    fs.mkdirSync(path.join(publicDir, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(publicDir, 'js/file.js'), 'custom browser');
+    const known = computeBuildTag(root, publicDir);
+    fs.writeFileSync(path.join(root, 'public/js/file.js'), 'not served by this instance');
+    assert.equal(computeBuildTag(root, publicDir), known);
+    for (const rel of ['server/sim/content/kits/skill.js', 'shared/protocol.js', 'data/chess.json']) {
+      const before = computeBuildTag(root, publicDir);
+      fs.writeFileSync(path.join(root, rel), 'new served runtime');
+      assert.notEqual(computeBuildTag(root, publicDir), before, rel);
+    }
+    const before = computeBuildTag(root, publicDir);
+    fs.writeFileSync(path.join(publicDir, 'js/file.js'), 'new custom browser');
+    assert.notEqual(computeBuildTag(root, publicDir), before);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('computeBuildTag: nothing readable → null (an unknown build never reloads a page)', () => {
   assert.equal(computeBuildTag(path.join(os.tmpdir(), 'sp-does-not-exist-xyz')), null);
+});
+
+test('client-build exposes only a stable instance marker for its actual public directory', async (t) => {
+  const a = fixture(), b = fixture();
+  t.after(() => { fs.rmSync(a, { recursive: true, force: true }); fs.rmSync(b, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(b, 'public/index.html'), 'different browser runtime');
+  const first = await startServer({ host: '127.0.0.1', port: 0, quiet: true, publicDir: path.join(a, 'public') });
+  t.after(() => first.close());
+  const get = async (server, route = '/client-build') => {
+    const res = await fetch(`http://127.0.0.1:${server.port}${route}`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('cache-control'), /no-store/);
+    return res.json();
+  };
+  const before = await get(first);
+  assert.deepEqual(Object.keys(before), ['build']);
+  // the served official versions' data (DESIGN §35.23) is part of the tag, so the assertion follows the instance's
+  const served = first.versions.servedDirs();
+  assert.equal(before.build, computeBuildTag(ROOT, { publicDir: path.join(a, 'public'), servedVersionDirs: served }),
+    'custom public files plus the actual served sim/shared/data trees');
+  fs.writeFileSync(path.join(a, 'public/js/file.js'), 'changed after the first server started');
+  const second = await startServer({ host: '127.0.0.1', port: 0, quiet: true, publicDir: path.join(b, 'public') });
+  t.after(() => second.close());
+  assert.equal((await get(second)).build, computeBuildTag(ROOT, { publicDir: path.join(b, 'public'), servedVersionDirs: second.versions.servedDirs() }));
+  assert.notEqual((await get(second)).build, before.build);
+  resetBuildTag();
+  assert.deepEqual(await get(first), before, 'other starts and helper resets cannot move a running instance marker');
+  const health = await get(first, '/healthz');
+  assert.equal(health.build, before.build);
+  assert.ok(health.performance, 'diagnostics belong only to the internal health response');
+  assert.deepEqual(await get(first), { build: before.build }, 'performance must never leak through client-build');
+  const head = await fetch(`${first.url}/client-build`, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  assert.equal(Number(head.headers.get('content-length')), Buffer.byteLength(JSON.stringify(before)));
 });
 
 test('buildTag: computed once per process — a file that changes afterwards does not move it until the next process', () => {

@@ -23,7 +23,7 @@
 
 import { RAW, joinUrl, safeName, urlBase, urlDir } from './sources.mjs';
 import { kindOf } from './formats.mjs';
-import { pickUnitSfx, assignSkillModeSfx, UI_SFX, BATTLE_SFX, resolveSpec, indexVoice, nativeVoiceDirs, VOICE_DIRS, VOICE_CUSTOM_DIR, VOICE_BATTLE_SLOTS } from './audio.mjs';
+import { pickUnitSfx, assignSkillModeSfx, UI_SFX, BATTLE_SFX, resolveSpec, indexVoice, nativeVoiceDirs, VOICE_DIRS, VOICE_CUSTOM_DIR, VOICE_BATTLE_SLOTS, normalizeVoiceLangs } from './audio.mjs';
 import { literal } from './manifest.mjs';
 import { EMOTE_CATALOG } from '../../shared/constants.js';
 
@@ -142,7 +142,7 @@ const ARTS_GROUPS = Object.freeze({
  * @param {string|string[]} urls
  * @param {number} [bytes] expected size
  */
-function alt(rel, urls, bytes) {
+export function alt(rel, urls, bytes) {
   const a = { rel, urls: [].concat(urls).filter((u) => typeof u === 'string' && u), kind: kindOf(rel) };
   if (Number.isInteger(bytes) && bytes > 0) a.bytes = bytes;
   return a;
@@ -212,6 +212,47 @@ function bytesOf(rec, url) {
 /** Local file stem for a skeleton URL or file name ('…/char_102_texas.skel' → 'char_102_texas'). */
 function skelStem(urlOrName) {
   return safeName(urlBase(urlOrName).replace(/\.skel$/i, ''));
+}
+
+/**
+ * The `plan.models` definition for one fexli source record (skel + atlas + page PNGs, all under `dir`).
+ *
+ * Exported because tools/install-skins.mjs (干员皮肤, docs/SKINS.md) builds a skin model exactly the way the full plan
+ * does — if the two ever drifted, an installed skin would download a different file set than a rebuilt manifest
+ * expects. @param {string} key unique model key @param {string} kind 'op'|'enemy'|'token' @param {string} dir local
+ * directory under public/assets (trailing slash) @param {{skel?:any, atlas?:any, png?:any}} rec research record
+ * @param {number[]} skillIndices skill clip indices to resolve animation roles for
+ * @returns {object|null} null when the record is missing any of the three parts
+ */
+export function fexliModelDef(key, kind, dir, rec, skillIndices) {
+  // rec: 07 { skel:{url,bytes}|url|url[], atlas, png } — arrays are candidate folders (same order for all three)
+  const us = (x) => (Array.isArray(x) ? x : [typeof x === 'string' ? x : x?.url]).filter((v) => typeof v === 'string' && v);
+  const b = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x.bytes : undefined);
+  if (!us(rec?.skel).length || !us(rec?.atlas).length || !us(rec?.png).length) return null;
+  const stem = skelStem(us(rec.skel)[0]);
+  return {
+    key, kind, dir, pma: false, skillIndices,
+    baseUrl: urlDir(us(rec.atlas)[0]),
+    skel: alt(`${dir}${stem}.skel`, us(rec.skel), b(rec.skel)),
+    // pixi-spine finds the atlas by swapping the .skel extension: keep the same stem.
+    atlas: { ...alt(`${dir}${stem}.atlas`, us(rec.atlas), b(rec.atlas)), mutable: true },
+    pngs: [alt(dir + safeName(urlBase(us(rec.png)[0])), us(rec.png), b(rec.png))],
+  };
+}
+
+/**
+ * The tall 立绘 of a skin (干员皮肤, docs/SKINS.md), derived from its 180×180 avatar URL: the same file name in the
+ * source's `portrait/` folder (`…/avatar/char_x_kitchen#2.png` → `…/portrait/char_x_kitchen#2.png`). The shop card
+ * shows this one — its frame is the 180×360 portrait, not the square avatar. Exported so tools/install-skins.mjs
+ * derives exactly the same URL as a full plan run.
+ * @param {{avatar?: {url?: string}}} skin research record
+ * @returns {string|null} null when the record carries no avatar URL (or one without the /avatar/ folder)
+ */
+export function skinPortraitUrl(skin) {
+  const u = skin?.avatar?.url;
+  if (typeof u !== 'string') return null;
+  const i = u.indexOf('/avatar/');
+  return i < 0 ? null : `${u.slice(0, i)}/portrait/${u.slice(i + '/avatar/'.length)}`;
 }
 
 /** Collect every enemy key referenced under a wave/branch structure. */
@@ -363,9 +404,9 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {ReturnType<import('./audio.mjs').indexAudio>} p.audio indexed audio_data.json
  * @param {any} p.modelsData Ark-Models models_data.json
  * @param {any} [p.charword] parsed excel/charword_table.json — the operators' official voice slots (voice, voiceJp)
- * @param {string} [p.voiceLang] voice dump of `audio.voice` (the 中文 setting): cn (default) | jp | en | kr — `audio.voiceJp`
- *   is the JP dub (`voice/`) whatever it is
- * @param {boolean} [p.voiceJp] plan the JP tree `audio.voiceJp` (default true)
+ * @param {string} [p.voiceLang] legacy single dump of `audio.voice`: cn (default) | jp | en | kr
+ * @param {string[]} [p.voiceLangs] simultaneous dumps; always includes CN as the legacy audio.voice fallback
+ * @param {boolean} [p.voiceJp] plan the JP compatibility tree `audio.voiceJp` (default true), whatever voiceLang is
  * @param {boolean} [p.optionalVoice] also plan the EN / KR / own-language trees (VOICE_OPTIONAL_TREES: `audio.voiceEn` /
  *   `audio.voiceKr` / `audio.voiceNative`, plus `audio.voiceNativeLangType`); default false so a plan that only asks
  *   for the two 0.2.2 trees stays those two. fetch-assets passes true unless `--no-optional-voice`.
@@ -392,10 +433,13 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
 export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, charword = null, voiceLang = 'cn',
-  voiceJp = true, voiceSlots = VOICE_BATTLE_SLOTS, optionalVoice = false,
+  voiceLangs = null, voiceJp = true, voiceSlots = VOICE_BATTLE_SLOTS, optionalVoice = false,
   extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, localTokenSpines = {}, extraOperators = {},
   moduleTypes = [], statsTemplate = [], charModes = null, extraBands = {}, extraItems = {}, extraBonds = {} }) {
   const notes = [];
+  if (!Object.hasOwn(VOICE_DIRS, voiceLang)) throw new Error(`unknown voice language ${voiceLang} (cn | jp | en | kr)`);
+  const languages = voiceLangs === null ? [voiceLang] : normalizeVoiceLangs(['cn', ...normalizeVoiceLangs(voiceLangs)]);
+  if (voiceJp && !languages.includes(VOICE_JP_LANG)) languages.push(VOICE_JP_LANG);
   /** @type {Map<string, any>} */
   const models = new Map();
   const skillIdx = skillIndicesByChar(ops03);
@@ -763,7 +807,9 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // client never requests them, and downloading them adds 360 files / 19.3 MB to every `npm run assets` — pass --voice-all for
   // the complete official set (`voiceSlots: null`, reviewer note on the voice PR).
   // `audio.voiceJp` (VOICE_JP_LANG): the same slots and lines in the Japanese dub, a second tree beside the Chinese one
-  // (the owner's request of 2026-10-08) — same file names, `audio/voice/jp/`.
+  // (the owner's request of 2026-10-08) — same file names, `audio/voice/jp/`. The JP compatibility tree and this fork's
+  // voiceByLang.jp use the same indexed lines and paths; aliases never select a skin-specific word key or turn randomly
+  // selectable lines into file alternatives.
   const voiceSlotsByChar = indexVoice(charword, VOICE_ID_LANG, voiceSlots);
   // `dirOf` (VOICE_OPTIONAL_TREES native): the operator's own-language folder, or nothing when it has no such dub
   const voiceTree = (lang, dirOf = null) => {
@@ -784,7 +830,10 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
     }
     return tree;
   };
-  const voice = voiceTree(voiceLang);
+  // this fork's simultaneous dumps (`voiceLangs`, --voice-langs): `audio.voiceByLang` { cn, jp, en, … } beside the trees
+  const voiceByLang = {};
+  for (const lang of languages) voiceByLang[lang] = voiceTree(lang);
+  const voice = voiceByLang[voiceLangs === null ? voiceLang : 'cn'];
   if (!Object.keys(voice).length) notes.push('battle voice: charword_table.json has no slots (index missing?)');
 
   // English, Korean and each operator's own-language dub (VOICE_OPTIONAL_TREES; public/js/audio.js VOICE_TREES):
@@ -809,7 +858,8 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
       bgm,
       bossBgm: Object.fromEntries(Object.entries(bossBgm).sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))),
       voice,
-      ...(voiceJp ? { voiceJp: voiceTree(VOICE_JP_LANG) } : {}),
+      ...(voiceJp ? { voiceJp: voiceByLang[VOICE_JP_LANG] } : {}),
+      ...(voiceLangs === null ? {} : { voiceByLang }),
       ...optionalTrees,
       sfx: { ui: sfxUi, battle: sfxBattle, units: unitsSfx, pools: sfxPools },
     },

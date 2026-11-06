@@ -710,7 +710,8 @@ test('rehearsal scripts use a separate budget and error sink; actual starts stil
     for (let i = 0; i < DEFAULT_BUDGET - 1; i++) charge(budget, null, 'preview-budget');
     const before = playerSnapshot(ps);
     const state = m.rngMeta.state();
-    for (let i = 0; i < 3; i++) assert.equal(m._normalOpts(ps, { preview: true }).players[0].testMarker, true);
+    // fork: a broken rehearsal estimate is thrown, not swallowed (effectsMeta _report `if (this.preview) throw e`)
+    for (let i = 0; i < 3; i++) assert.throws(() => m._normalOpts(ps, { preview: true }), /preview-budget intentional error/);
     assert.deepEqual(playerSnapshot(ps), before);
     assert.equal(m.rngMeta.state(), state);
     assert.equal(budgetUsed(budget, 'preview-budget'), DEFAULT_BUDGET - 1);

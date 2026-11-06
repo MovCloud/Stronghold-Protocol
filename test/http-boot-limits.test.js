@@ -1,7 +1,8 @@
 // test/http-boot-limits.test.js — the caps in effect are printed once when the session stack is built.
 //
-// The line is the configuration the server is running with, not a reason for a particular rejection: a global cap of 0
-// therefore prints as 0 (it rejects every room / socket), while a per-network 0 prints as "unlimited".
+// The line is the configuration the server is running with, not a reason for a particular rejection. In this fork every
+// cap defaults to 0 and a 0 cap is unlimited — lobby.js and net.js enforce a cap only when it is positive — so a 0
+// prints as "unlimited"; the limits file (server/onlineLimit.js) is what sets real caps while the server runs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,6 +10,9 @@ import assert from 'node:assert/strict';
 import { createSessionStack } from '../server/http/websocket.js';
 import { NET_DEFAULTS } from '../server/net.js';
 import { LOBBY_DEFAULTS } from '../server/lobby.js';
+
+/** How a cap prints on boot: 0 is unlimited here, as lobby.js / net.js treat it. */
+const cap = (n) => (n > 0 ? n : 'unlimited');
 
 /** Build the stack with `opts` and no SP_MAX_* in the environment; return what `log.info` was given. */
 function logLines(opts = {}) {
@@ -33,18 +37,18 @@ function logLines(opts = {}) {
 test('the defaults are printed as they are', () => {
   const lines = logLines();
   assert.equal(lines.length, 1, 'exactly one line on boot');
-  assert.equal(lines[0], `[http] limits: rooms ${LOBBY_DEFAULTS.maxRooms} (${LOBBY_DEFAULTS.maxRoomsPerAddr}/network), `
-    + `matches ${LOBBY_DEFAULTS.maxMatchesPerAddr}/network, `
-    + `sockets ${NET_DEFAULTS.maxConnections} (${NET_DEFAULTS.maxConnectionsPerAddr}/network)`);
+  assert.equal(lines[0], `[http] limits: rooms ${cap(LOBBY_DEFAULTS.maxRooms)} (${cap(LOBBY_DEFAULTS.maxRoomsPerAddr)}/network), `
+    + `matches ${cap(LOBBY_DEFAULTS.maxMatchesPerAddr)}/network, `
+    + `sockets ${cap(NET_DEFAULTS.maxConnections)} (${cap(NET_DEFAULTS.maxConnectionsPerAddr)}/network)`);
 });
 
-test('an explicit cap is printed, and a per-network 0 reads as unlimited', () => {
+test('an explicit cap is printed, and a 0 cap reads as unlimited', () => {
   const lines = logLines({ maxRooms: 5, maxConnections: 100, maxConnectionsPerAddr: 0, maxMatchesPerAddr: 0 });
-  assert.equal(lines[0], '[http] limits: rooms 5 (16/network), matches unlimited/network, sockets 100 (unlimited/network)');
+  assert.equal(lines[0], '[http] limits: rooms 5 (unlimited/network), matches unlimited/network, sockets 100 (unlimited/network)');
 });
 
-test('a global 0 is printed as 0, because it rejects every room / socket', () => {
-  const lines = logLines({ maxRooms: 0, maxConnections: 0 });
-  assert.match(lines[0], /rooms 0 \(16\/network\)/, 'a global room cap of 0 is not "unlimited"');
-  assert.match(lines[0], /sockets 0 \(64\/network\)/, 'a global socket cap of 0 is not "unlimited"');
+test('a 0 cap prints as unlimited, a positive per-network cap as itself', () => {
+  const lines = logLines({ maxRooms: 0, maxRoomsPerAddr: 16, maxConnections: 0, maxConnectionsPerAddr: 64 });
+  assert.match(lines[0], /rooms unlimited \(16\/network\)/, 'a 0 room cap is unlimited here, not a rejection');
+  assert.match(lines[0], /sockets unlimited \(64\/network\)/, 'a 0 socket cap is unlimited here, not a rejection');
 });

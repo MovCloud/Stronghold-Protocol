@@ -69,7 +69,8 @@ test('信标 on an elite: the teammate receives that elite with its 3 pool copie
 test('信标 on a normal operator still sends the normal card', () => {
   const { h, m, equip } = setup({ seed: 35 });
   const p0 = h.ps('p_0'), p1 = h.ps('p_1');
-  const cid = plain((c) => c.tier === 2 && c.bonds.length)[0];
+  const cid = plain((c) => c.tier === 2 && c.bonds.length).find(id => m.pool.has(id) && m.pool.left(id) > 0);
+  assert.ok(cid, 'the normal gift uses an available operator from this match\'s unbanned shared pool');
   assert.deepEqual(equip(giveItem(m, p0, BEACON), give(m, p0, cid, 'hand')), OK);
   h.toPrep(2);
   assert.deepEqual(ofBase(m, p1, cid).map((p) => [p.id, p.poolCopies]), [[cid, 1]]);
@@ -96,7 +97,8 @@ test('信标: the gift still arrives when its sender is eliminated before the ne
 test('信标: a grant that fails (no copy left in the pool) keeps the gift for the next round start', () => {
   const { h, m, equip } = setup({ seed: 37 });
   const p0 = h.ps('p_0'), p1 = h.ps('p_1');
-  const cid = plain((c) => c.tier === 2 && c.bonds.length)[1];
+  const cid = plain((c) => c.tier === 2 && c.bonds.length).find((id) => m.pool.has(id) && m.pool.left(id) > 0);
+  assert.ok(cid, 'the exhausted operator belongs to this match\'s actual unbanned shared pool');
   assert.deepEqual(equip(giveItem(m, p0, BEACON), give(m, p0, cid, 'hand')), OK);
   // every copy taken by "other players" before the round start
   const held = m.pool.take(cid, 99);
@@ -129,3 +131,28 @@ test('信标: a receiver eliminated before the round start is replaced by the li
   assert.equal(gifts(p0).length, 0);
   h.invariants();
 });
+
+for (const [humans, receiverId] of [[6, 'p_3'], [8, 'p_4'], [9, 'p_4'], [13, 'p_5']]) {
+  test(`${humans} players: 信标 consumes only the receiver group's copy, including three/five-player groups`, () => {
+    const { h, m, equip } = setup({ humans, seed: 41 });
+    const p0 = h.ps('p_0'), receiver = h.ps(receiverId);
+    const cid = plain((c) => c.tier === 3 && receiver.pool.has(c.chessId) && receiver.pool.left(c.chessId) > 1
+      && c.bonds.some((bond) => plain((mate) => mate.chessId !== c.chessId && mate.bonds.includes(bond)).length))[0];
+    assert.ok(cid, 'test needs an available tier-three carrier');
+    const bond = DATA.chess[cid].bonds.find((b) => plain((mate) => mate.chessId !== cid && mate.bonds.includes(b)).length);
+    const mate = plain((c) => c.chessId !== cid && c.bonds.includes(bond))[0];
+    deploy(m, receiver, mate);
+    assert.notEqual(p0.pool, receiver.pool);
+    const carrier = give(m, p0, cid, 'hand');
+    assert.deepEqual(equip(giveItem(m, p0, BEACON), carrier), OK);
+    assert.equal(gifts(p0)[0].params.toPlayerId, receiverId);
+    const sourceLeft = p0.pool.left(cid);
+    const receiverLeft = receiver.pool.left(cid);
+    h.toPrep(2);
+    assert.deepEqual(ofBase(m, receiver, cid).map((p) => p.id), [cid]);
+    assert.equal(p0.pool.left(cid), sourceLeft);
+    assert.equal(receiver.pool.left(cid), receiverLeft - 1);
+    h.invariants();
+    m.dispose();
+  });
+}

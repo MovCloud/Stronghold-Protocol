@@ -127,6 +127,44 @@ export function finalRowsY(n) {
 }
 const NODE_Y = 202;
 
+/**
+ * The 最终攻势 plate's layout. Up to FA_ROWS survivors: the official single column (finalRowsY), an avatar beside its LP,
+ * one line per row to the node. More (this fork's 8–20-seat rooms, the owner's request of 2026-10-15): a grid of at most
+ * FA_ROWS rows filled column by column inside the same left area, each LP under its avatar, one line per grid row — a
+ * single column of 20 rows left each avatar a few px and stacked the LP numbers over each other.
+ * @param {number} n survivors
+ * @returns {{ grid: boolean, x0: number, cells: { x: number, y: number, av: number }[], lines: { y: number, d: string }[] }}
+ *   cells: an avatar's left edge and its chip's centre (design px); x0: where the lines start
+ */
+export function finalLayout(n) {
+  const k = Math.max(0, Math.trunc(n) || 0);
+  const line = (x0, y, ey = NODE_Y) => ({ y, d: `M${x0} ${y} C${x0 + 180} ${y} ${x0 + 170} ${ey} 612 ${ey}` });
+  if (k <= FA_ROWS) {
+    const ys = finalRowsY(k);
+    return { grid: false, x0: 260, cells: ys.map((y) => ({ x: FA_ROW_X, y, av: 90 })), lines: ys.map((y) => line(260, y)) };
+  }
+  const cols = Math.ceil(k / FA_ROWS);
+  const rows = Math.ceil(k / cols);
+  const gap = Math.min(84, Math.floor(330 / (rows - 1)));
+  const pitch = Math.min(120, Math.floor(FA_GRID_W / cols));
+  const av = Math.max(28, Math.min(64, gap - 30, pitch - 20));
+  const x0 = FA_GRID_X + cols * pitch + 8;
+  const top = NODE_Y - ((rows - 1) * gap) / 2;
+  const cells = Array.from({ length: k }, (_, i) => {
+    const c = Math.floor(i / rows), r = i % rows;
+    return { x: Math.round(FA_GRID_X + c * pitch + (pitch - av) / 2), y: Math.round(top + r * gap), av };
+  });
+  const lines = Array.from({ length: rows }, (_, i) => {
+    const y = Math.round(top + i * gap);
+    return line(x0, y, Math.round(NODE_Y + (i - (rows - 1) / 2) * Math.min(10, 40 / Math.max(1, rows - 1))));
+  });
+  return { grid: true, x0, cells, lines };
+}
+const FA_ROWS = 5;
+const FA_ROW_X = 132;   // a row's left edge (the official column, css .fa__row)
+const FA_GRID_X = 16;   // the grid's left edge
+const FA_GRID_W = 320;  // the grid's width; the lines start after it (x0)
+
 /** A leader's portrait (the enemy icon of bosses.json's enemyKey), or null. */
 export function bossIconOf(bossId) {
   const b = bossId ? getBoss(bossId) : null;
@@ -190,19 +228,18 @@ function Portrait({ src, done = false, core = false, class: cls }) {
 export function FinalAssaultPlate({ rows, total, bossId = null, myId = null, onDone }) {
   const leaving = useTimedLeave(FINAL_PLATE_MS, onDone);
   const shown = useCountUp(total, 700, 450);
-  const ys = finalRowsY(rows.length);
-  return html`<div class=${cx('bpl', 'bpl--final', leaving && 'is-leaving')} role="status" aria-live="polite"
+  const { grid, cells, lines } = finalLayout(rows.length);
+  return html`<div class=${cx('bpl', 'bpl--final', grid && 'bpl--grid', leaving && 'is-leaving')} role="status" aria-live="polite"
       aria-label=${`${t('最终攻势')}：${t('合力击败敌方领袖！')}`} data-testid="final-plate">
     <div class="bpl__panel">
       <${Art} k="settle/settlemen_personal_fail" class="bpl__map" />
       <div class="fa__group">
         <svg class="fa__lines" viewBox="0 0 1360 430" aria-hidden="true">
-          ${ys.map((y, i) => {
-            const d = `M260 ${y} C440 ${y} 430 ${NODE_Y} 612 ${NODE_Y}`;
-            return html`<g key=${i} style=${`--i:${i}`}><path class="fa__line" d=${d} pathLength="1" /><path class="fa__comet" d=${d} pathLength="1" /></g>`;
-          })}
+          ${lines.map(({ d }, i) => html`<g key=${i} style=${`--i:${i}`}><path class="fa__line" d=${d} pathLength="1" /><path class="fa__comet" d=${d} pathLength="1" /></g>`)}
         </svg>
-        ${rows.map((r, i) => html`<div key=${r.player?.playerId ?? i} class="fa__row" style=${`top:${px(ys[i] - 45)};--i:${i}`}>
+        ${rows.map((r, i) => html`<div key=${r.player?.playerId ?? i} class=${cx('fa__row', grid && 'fa__row--grid')}
+            style=${grid ? `left:${px(cells[i].x)};top:${px(cells[i].y - cells[i].av / 2 - 10)};--fa-av:${px(cells[i].av)};--i:${(i * FA_ROWS / rows.length).toFixed(2)}`
+              : `top:${px(cells[i].y - 45)};--i:${i}`}>
           <${PlayerAvatar} player=${r.player} self=${r.player?.playerId === myId} class="fa__ava" />
           <span class="fa__lp num">${r.lp}</span>
         </div>`)}

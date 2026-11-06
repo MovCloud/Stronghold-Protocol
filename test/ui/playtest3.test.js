@@ -253,10 +253,10 @@ describe('3: the temp overflow row (临时整备区)', () => {
   });
 
   test('the row\'s label matches the server\'s due rule (PlayerState tempDue): destroyed at this prep\'s end unless ready — then kept through the next prep', () => {
-    assert.match(tempRowRule(false), /才能准备；休整期结束时仍在此处的将被销毁$/);
+    assert.match(tempRowRule(false), /才能准备；仅本休整期内到期的会被销毁，准备就绪\/战后获得的保留到下一休整期$/);
     // Ready is refused while the row holds pieces: what lies there while ready arrived after it (due at the next prep)
-    assert.match(tempRowRule(true), /保留到下个休整期/);
-    assert.match(tempRowRule(true), /取消准备则在本休整期结束时销毁/);
+    assert.match(tempRowRule(true), /保留到下一休整期/);
+    assert.match(tempRowRule(true), /仅本休整期内到期的会被销毁/);
   });
 
   test('the game screen frames the row only on the own prep board while it holds pieces (source contract)', () => {
@@ -275,6 +275,8 @@ describe('3: the temp overflow row (临时整备区)', () => {
     assert.match(game, /readyWhy && 'has-readywhy'/);
     const css = read('public/css/screens/game.css');
     assert.match(css, /\.gm__effects \{ position: absolute; right: \.3rem; top: 2\.4rem; \}/);
+    // this fork's 界面大小 scales through --sp-ui (uiSize.js), not the upstream --ui; unscaled() writes the
+    // floor back as its design px, so the rule reads max(.3rem, 16px) here
     assert.match(css, /\.gm\.has-readywhy \.gm__effects \{ top: calc\(2\.4rem \+ max\(\.3rem, 16px\)\); \}/);
   });
 });
@@ -379,7 +381,7 @@ describe('9: busy indicators and data loading', () => {
     const css = read('public/css/components.css');
     assert.doesNotMatch(css, /\.btn__spin/);
     assert.match(css, /\.btn__busy \{[^}]*animation: btn-busy-in 1ms linear 250ms forwards;/, 'only after 250 ms: quick replies show nothing');
-    assert.match(css, /@keyframes btn-busy \{ from \{ transform: translateX\(-100%\); \} to \{ transform: translateX\(250%\); \} \}/, 'a sweep, not a rotation');
+    assert.match(css, /@keyframes btn-busy \{[^}]*translateX\(-100%\)[^}]*\}\s*[^}]*translateX\(250%\)/, 'a sweep, not a rotation');
   });
 
   test('机变: the card being picked shows 选择中 (no spinner) only until the pick shows in m.public', () => {

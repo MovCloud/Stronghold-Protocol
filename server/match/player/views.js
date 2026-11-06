@@ -7,8 +7,25 @@ import { PHASE } from '../../../shared/constants.js';
 import { boardOrder, pieceDir } from '../board.js';
 import { bondList, offBondCounts } from '../bondsMeta.js';
 import { bountyText, bountyCard } from '../choices.js';
+import { layerForecast } from '../layerForecast.js';
+
+const publicBondViews = new WeakMap();
 
 export class PlayerViews {
+  publicBondsView(gd = this.gd) {
+    // Progress reports do not change membership. Dirty state and pending combat gains do.
+    const gains = JSON.stringify(this.pendingLayerGains || null);
+    let cached = publicBondViews.get(this);
+    if (!cached || cached.revision !== this._viewRevision || cached.bonds !== this.bonds
+      || cached.gains !== gains || cached.gd !== gd || cached.playerGd !== this.gd) {
+      cached = { revision: this._viewRevision, bonds: this.bonds, gains, gd, playerGd: this.gd,
+        list: bondList(gd, this.bondsView(), { off: offBondCounts(this.gd || gd, this) }) };
+      publicBondViews.set(this, cached);
+    }
+    // Views remain caller-owned; mutating one response must not poison later broadcasts.
+    return cached.list.map((entry) => ({ ...entry }));
+  }
+
   pieceView(p, rc = null) {
     const rec = p.kind === 'item' ? this.gd.item(p.id) : p.kind === 'token' ? this.gd.token(p.id) : this.gd.chess(p.id);
     // 皮肤 (docs/SKINS.md): skinFor resolves the effective body, including stand-ins and 自选 picks, on every surface.
@@ -27,6 +44,7 @@ export class PlayerViews {
       ...(skinId ? { skin: skinId } : {}),
     };
     if (rc) { v.row = rc[0]; v.col = rc[1]; v.dir = pieceDir(p); }
+    if (p.kind === 'item' && p.id === 'chess_item_5_04_e_a' && p.meta?.sixPlayerBeaconRound === 14) v.giftTiming = 'immediate';
     return v;
   }
 
@@ -54,6 +72,12 @@ export class PlayerViews {
     return out;
   }
 
+  /** Whether the AFK rule removes this seat at the end of its next prep without a substantive intent before it. */
+  afkWarned() {
+    const limit = this.m.afkRemoveRounds;
+    return limit > 1 && !this.isBot && !this.left && !this.botControlled && !this.afkActed && this.afkRounds >= limit - 1;
+  }
+
   privateView() {
     const slots = this.shop.slots.map((s) => (s ? { kind: s.kind, id: s.id, price: this.priceOf(s), basePrice: s.basePrice, sold: !!s.sold, frozen: !!s.frozen } : null));
     const offer = this.offers[0] || null;
@@ -62,17 +86,28 @@ export class PlayerViews {
     for (const { r, c, piece } of boardOrder(this.board)) board.push(this.pieceView(piece, [r, c]));
     // a boss round's prep: the partner's board on its half of the boss field (Match.bossMateView, item 51)
     const bossMate = typeof this.m.bossMateView === 'function' ? this.m.bossMateView(this) : null;
+    // 预计叠层 (PREP only, the own seat only): the layers the own <休整期结束时> effects add at the deadline
+    const forecast = layerForecast(this.m, this);
     return {
       t: 'm.private',
       playerId: this.playerId,
       ...(Number.isInteger(this.aiTakeoverRound) ? { aiTakeoverRound: this.aiTakeoverRound } : {}),
       seat: this.seat,
       alive: this.alive,
+      pendingDeath: this.pendingDeath,
+      revivalUnavailableReason: this.revivalUnavailableReason,
       lp: this.lp,
       funds: this.funds,
+      // 2V2 商人「坎诺特」: the banked 赏金 (NOT gold) and this round's withdrawal panel — null outside versus
+      merchant: typeof this.m.merchantView === 'function' ? this.m.merchantView(this) : null,
       bandId: this.bandId,
       ready: this.ready,
       canReady: this.alive && this.tempEmpty && !this.personalChoice && this.m.phase === PHASE.PREP,
+      // a concurrent 机变 draft (Match concurrentDraft): the cards this seat's own equipment stock cannot give
+      ...(this.m.phase === PHASE.SP_DRAFT && this.m.sp?.concurrent
+        ? { spBlocked: this.m.sp.cards.filter((c) => !this.m.spCardAvailable(c, this)).map((c) => c.idx) } : {}),
+      // 挂机移出: one more idle prep removes this seat (Match _checkIdle) — until a substantive intent clears it
+      ...(this.afkWarned() ? { afkWarn: true } : {}),
       personalChoice: this.personalChoice ? {
         id: this.personalChoice.id,
         round: this.personalChoice.round,
@@ -105,6 +140,8 @@ export class PlayerViews {
       nextEnemies: this.m.nextEnemiesFor(this),
       // DESIGN §16: the effective operator loadout ({ [baseChessId]: { skill, module } }; chess not listed use defaults)
       loadout: this.loadout,
+      // Private preference map; public/scouting DTOs carry only each visible piece's resolved skin.
+      skins: this.skins,
       // 0.2.2: the effective per-operator 潜能 / 练度 ({ [charId]: { potential, cultivate } }; operators not listed: 潜能 6,
       // 精英2 Lv.60) — the client's cards compose the numbers from it (shared/potential.js)
       ops: this.ops,
@@ -122,6 +159,10 @@ export class PlayerViews {
       // board pieces as UnitInfo on its half of the boss field (mirrored on the right half, as the battle places them);
       // the own prep view draws them beside the own half, read-only. Absent otherwise.
       ...(bossMate ? { bossMate } : {}),
+      // 预计叠层 (feedback #25, server/match/layerForecast.js): during PREP `{ bonds: { [bondId]: { n, sources: [{ kind,
+      // id, n }] } }, random, randomSources: [{ kind, id }], partial }` — the layers this player's own prep-end effects add if the
+      // prep ended now; random sources are left out (`random` true when one would add layers). Absent outside PREP.
+      ...(forecast ? { layerForecast: forecast } : {}),
       stats: {
         dmgDealt: Math.round(this.stats.dmgDealt), kills: this.stats.kills, leaks: this.stats.leaks, gold: this.stats.gold,
         refreshes: this.stats.refreshes, merges: this.stats.merges,

@@ -48,10 +48,10 @@ export async function waitForFunctionLong(page, fn, { timeout = 30000, polling =
 }
 
 // ---- drags that aim after the pickup (GitHub #602, PR #646) ---------------------------------------------------------
-// Picking a piece up on the own prep board folds the shop bar and zooms the board to the shop-collapsed camera: a client
-// point read before the press lies over another tile once that camera settles (FOLD_CAMERA_MS). A drag that read its
-// target before the press therefore picks the piece up first, waits for the camera, and ends on the same ground spot
-// under the new camera — as a player aims at the board they see. No-ops on the DOM fallback (its grid does not move).
+// 0.3.0's deploy fold zoomed the board as a piece was picked up, so a client point read before the press lay over
+// another tile once that camera settled. The fold is gone (the owner's decision of 2026-10-16) but a drag still aims
+// after the pickup: it picks the piece up, waits for any camera flight, and ends on the same ground spot under the
+// camera then — as a player aims at the board they see. No-ops on the DOM fallback (its grid does not move).
 
 /** The ground spot under client point `p` (world x / y on the tile top there and its height), or null (DOM fallback, off the board). */
 export function groundAnchor(page, p) {
@@ -76,6 +76,18 @@ export function anchorPoint(page, a) {
     return Number.isFinite(q?.x) && Number.isFinite(q?.y) ? { x: r.left + q.x, y: r.top + q.y } : null;
   }, a);
 }
+/**
+ * Wait until `sel` is there and its own entrance animations ran (bounded): e.g. the briefing's 准备就绪 (.brief-go) is
+ * clipped away for its first ~0.8 s, and a click then falls through it — a player cannot press a button not yet drawn.
+ * @param {any} page @param {string} sel @param {number} [timeout]
+ */
+export async function settled(page, sel, timeout = 5000) {
+  await page.waitForFunction((sel) => {
+    const el = document.querySelector(sel);
+    return !!el && el.getAnimations().every((a) => a.playState === 'finished' || a.effect?.getComputedTiming().iterations === Infinity);
+  }, { timeout, polling: 100 }, sel);
+}
+
 
 /** Wait until the render engine's camera holds still for a few frames (at most `ms`); resolves at once without it. */
 export function cameraSettled(page, ms = 1500) {
@@ -157,6 +169,7 @@ export async function startRealServer(opts = {}) {
   delete env.NODE_TEST_CONTEXT;
   if (opts.fast) {
     env.SP_TIMER_SCALE = String(opts.fast.timerScale ?? 1);
+    if (opts.fast.verbose) env.SP_FAST_VERBOSE = '1';
     env.SP_COMBAT_SPEED = String(opts.fast.combatSpeed ?? 2);
     // test hook of fastServer.mjs: the first round of every match (e.g. 'boss') + a starter kit of operators
     if (opts.fast.startRound != null) env.SP_START_ROUND = String(opts.fast.startRound);
@@ -175,10 +188,10 @@ export async function startRealServer(opts = {}) {
     if (opts.fast.finishAfter) env.SP_FINISH_AFTER = String(opts.fast.finishAfter);
     if (opts.fast.slowSpawns) env.SP_SLOW_SPAWNS = String(opts.fast.slowSpawns);
     if (opts.pluginsDir) env.SP_PLUGINS_DIR = opts.pluginsDir;
-  }
   // extra environment for the server. Unset enables every official version; { SP_VERSIONS: 'act2autochess' } hides the
   // switch (DESIGN §35.23). A null value unsets a variable.
   if (opts.env && typeof opts.env === 'object') for (const [k, v] of Object.entries(opts.env)) { if (v == null) delete env[k]; else env[k] = String(v); }
+  }
   const child = spawn(process.execPath, [entry], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
   const onData = (buf) => { for (const line of String(buf).split('\n')) if (line.trim()) logs.push(line); if (logs.length > 400) logs.splice(0, logs.length - 400); };
@@ -195,13 +208,8 @@ export async function startRealServer(opts = {}) {
     if (Date.now() - t0 > 20000) { child.kill('SIGKILL'); throw new Error(`server did not start:\n${logs.join('\n')}`); }
     await sleep(150);
   }
-  // the content-hash index (server/http/assetIndex.js, built ~1 s after the start): wait for it, so a page loads the
-  // served manifest's /assets/~<hash>/… URLs like a player's would (none: SP_ASSET_INDEX=0); bounded, never fatal
-  for (const t1 = Date.now(); Date.now() - t1 < 20000;) {
-    const h = await fetch(`${base}/healthz?traffic=1`).then((r) => r.json(), () => null);
-    if (!h || !h.assetHashes || h.assetHashes.ready) break;
-    await sleep(150);
-  }
+  // No content-hash index to wait for: this fork serves the manifests' /_v/<tag>/… URLs (docs/development/ASSETS.md
+  // "Manifest URLs and cache busting") and upstream 0.2.6's server-side index is deliberately not part of it.
   return {
     base, port, logs,
     // `{ hard: true }`: SIGKILL at once — a crash: no room.closed 'shutdown' reaches the clients
@@ -219,8 +227,11 @@ export async function startRealServer(opts = {}) {
  * hidden — no animation frames, so the Pixi view and visibility checks stall).
  */
 export class Client {
-  constructor(puppeteer, base, label, { w = 1920, h = 1080, prefix = 'coop' } = {}) {
-    Object.assign(this, { puppeteer, base, label, w, h, prefix, problems: [], log: [], shots: [] });
+  /** `settings`: sp.pref.settings seeded before every page load. `prefs`: other sp.pref.* keys — 界面大小 is
+   *  `sp.pref.screenFit` (e.g. { screenFit: { ui: 100 } }) — and by default 干员调配 opens in its list view (the rows
+   *  and tabs these tests drive; the card view of 2026-10-14 is the page's own default). */
+  constructor(puppeteer, base, label, { w = 1920, h = 1080, prefix = 'coop', settings = null, prefs = { 'loadout.view': 'list' } } = {}) {
+    Object.assign(this, { puppeteer, base, label, w, h, prefix, settings, prefs, problems: [], log: [], shots: [] });
   }
 
   async open(query = '') {
@@ -242,6 +253,14 @@ export class Client {
       this.problems.push(`requestfailed: ${r.url()} ${err}`);
     });
     page.on('response', (r) => { if (r.status() >= 400) this.problems.push(`http ${r.status()}: ${r.url()}`); });
+    if (this.settings) {
+      await page.evaluateOnNewDocument((s) => { try { localStorage.setItem('sp.pref.settings', JSON.stringify(s)); } catch { /* ignore */ } }, this.settings);
+    }
+    if (this.prefs) {
+      await page.evaluateOnNewDocument((p) => {
+        try { for (const [k, v] of Object.entries(p)) if (localStorage.getItem(`sp.pref.${k}`) == null) localStorage.setItem(`sp.pref.${k}`, JSON.stringify(v)); } catch { /* ignore */ }
+      }, this.prefs);
+    }
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
     await page.goto(`${this.base}/${query}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!globalThis.__SP__ && !!document.querySelector('.screen'), { timeout: 30000 });
@@ -298,6 +317,8 @@ export class Client {
   async click(sel, text = null, { timeout = 15000, optional = false, nth = 0, button = 'left', any = false } = {}) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
+      // the lobby opens its 公告板 by itself while a notice is unread; a test aiming elsewhere closes it first
+      if (!sel.includes('announcement') && await this.visible('.announcement-board')) { await this.dismissBoard(500); continue; }
       const pt = await this.point(sel, text, nth, any);
       if (pt) {
         await this.page.mouse.click(pt.x, pt.y, { button });
@@ -328,9 +349,9 @@ export class Client {
       let n = 0;
       for (const el of document.querySelectorAll(sel)) {
         if (text && !(el.textContent || '').includes(text)) continue;
-        if (!any && (el.disabled || el.getAttribute('aria-disabled') === 'true')) continue;
         // The loadout overlay hides the underlying screen until its closing effect restores it.
         if (getComputedStyle(el).visibility === 'hidden') continue;
+        if (!any && (el.disabled || el.getAttribute('aria-disabled') === 'true')) continue;
         const r = el.getBoundingClientRect();
         if (r.width < 2 || r.height < 2) continue;
         const x = r.left + r.width / 2; const y = r.top + r.height / 2;
@@ -345,6 +366,9 @@ export class Client {
   }
 
   async exists(sel) { return !!(await this.page.$(sel)); }
+  /** `settled` (above) on this client's page. */
+  async settled(sel, timeout = 5000) { await settled(this.page, sel, timeout); }
+
 
   async visible(sel) {
     return this.page.evaluate((sel) => {
@@ -361,7 +385,6 @@ export class Client {
     this.shots.push(file);
     return file;
   }
-
   /**
    * Lobby → a new co-op room: 同盟模拟 → 选择同盟方式 → 创建同盟 creates it at once (the event's 联合模拟; the remembered
    * difficulty, 标准 in a fresh browser) → with `difficulty` (a difficulty name, e.g. '险境模拟'), the host changes it in the
@@ -385,14 +408,64 @@ export class Client {
     await this.page.waitForFunction((n) => document.querySelector('.rs-pill__diff')?.textContent.includes(n), { timeout: 10000 }, name);
   }
 
-  /** Title → lobby with a callsign. */
+
+  /**
+   * Play under a callsign (there is no title screen): in the lobby 个人名片 → its 博士代号 row → 博士代号 → 确认 → 保存 (the
+   * dialog's edits are only a draft until 保存, which applies them and closes it); a page that follows an invite link
+   * (`?room=`) joins the room by itself, so there the name is stored and the page reloaded — the session and its room
+   * resume under it (the password gate stores the callsign the same way in production).
+   */
   async enter(name) {
-    await this.page.waitForSelector('.title-login input', { timeout: 20000 });
-    await this.click('.title-login input');
+    await this.page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online', { timeout: 30000 });
+    if (await this.page.evaluate(() => !!globalThis.__SP__.store.get().ui.pendingJoin || !document.querySelector('.lobby-screen'))) {
+      await this.page.evaluate((n) => localStorage.setItem('sp.name', n), name);
+      await this.page.reload({ waitUntil: 'domcontentloaded' });
+      await this.page.waitForFunction((n) => globalThis.__SP__?.net.status === 'online' && globalThis.__SP__.net.helloName === n,
+        { timeout: 30000 }, name);
+      return;
+    }
+    await this.dismissBoard();
+    await this.click('[data-testid="profile-open"]');
+    await this.page.waitForSelector('.modal__box.prof', { visible: true, timeout: 10000 });
+    await this.click('[data-testid="profile-rename"]');
+    await this.page.waitForSelector('.name-dialog input', { visible: true, timeout: 10000 });
+    // the dialog opens with the current name selected: typing replaces it
+    await this.page.waitForFunction(() => { const el = document.querySelector('.name-dialog input'); return el && el.value.length > 0 && document.activeElement === el && el.selectionStart === 0 && el.selectionEnd === el.value.length; }, { timeout: 5000 });
     await this.page.keyboard.type(name);
-    await this.click('.title-login button', '开始');
-    await this.page.waitForSelector('.lobby-screen', { timeout: 20000 });
+    await this.click('.name-dialog .modal__actions button', '确认');
+    await this.page.waitForSelector('.name-dialog', { hidden: true, timeout: 10000 });
+    // 保存 applies the draft (the new callsign) and closes 个人名片
+    await this.click('[data-testid="profile-save"]');
+    await this.page.waitForSelector('.modal__box.prof', { hidden: true, timeout: 10000 });
+    // the server's welcome to the renaming hello (net.js helloName) — the session plays under the new name
+    await this.page.waitForFunction((n) => globalThis.__SP__?.net.status === 'online' && globalThis.__SP__.net.helloName === n,
+      { timeout: 20000 }, name);
   }
+  // ---- hub and room (the lobby / room design adopted 2026-10-14) ----------------------------------------------------
+
+  /** Closes the lobby's 公告板 when it opened by itself (unread announcements); no board is a no-op. */
+  async dismissBoard(timeout = 2500) {
+    const board = await this.page.waitForSelector('.announcement-board', { visible: true, timeout }).catch(() => null);
+    if (!board) return false;
+    await this.click('.announcement-board .modal__actions button');
+    await this.page.waitForSelector('.announcement-board', { hidden: true, timeout: 10000 });
+    return true;
+  }
+
+  /** Hub 独立模拟 → 选择模拟协议: the card named `difficulty` (e.g. '标准模拟', '险境') and 开始模拟 (room.create). */
+  async createSolo(difficulty = '标准模拟') {
+    await this.click('.hub-entry', '独立模拟');
+    await this.page.waitForSelector('.proto .proto-list', { visible: true, timeout: 15000 });
+    await this.click('.proto .pcard__name', difficulty);
+    await this.click('.proto .proto-start', '开始模拟');
+  }
+
+  /** Room: 开始模拟 (the host). */
+  roomStart(opts) { return this.click('.rs-go', '开始模拟', opts); }
+
+  /** Room: 准备就绪 (a teammate). */
+  roomReady(opts) { return this.click('.rs-go', '准备就绪', opts); }
+
 
   // ---- field view (render engine debug hooks) -------------------------------------------------------------------
 
@@ -454,8 +527,7 @@ export class Client {
 
   /**
    * Press at `from`, move in steps to `to`, optionally screenshot mid-drag, release. `to` read before the press is
-   * re-aimed after the pickup: the own prep board's deploy fold zooms the board (`aimedDrag`, GitHub #602); `retarget`
-   * gives a DOM target the fold moved instead.
+   * re-aimed after the pickup (`aimedDrag`); `retarget` gives a DOM target read after the pickup instead.
    */
   async drag(from, to, { steps = 14, midShot = null, retarget = null } = {}) {
     return aimedDrag(this.page, from, to, { steps, settle: 160, retarget, before: midShot ? () => this.shot(midShot) : null });
@@ -543,6 +615,15 @@ export class Client {
   requests(t = null) {
     return this.page.evaluate((t) => (globalThis.__e2eReq || []).filter((r) => !t || r[0] === t), t);
   }
+  /**
+   * Send a protocol frame from the page, without going through a button. The room's 添加 AI 队友 button is gone (owner
+   * request 2026-10-06, ported from the fork), so the e2e suites that need AI teammates ask for them the way any other
+   * client would.
+   */
+  send(t, msg = {}) {
+    return this.page.evaluate((tt, mm) => globalThis.__SP__.net.request(tt, mm), t, msg);
+  }
+
 
   /** Geometry of the open direction wheel (client px): centre + half-diagonal, or null. */
   wheel() {

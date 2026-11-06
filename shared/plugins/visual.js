@@ -78,6 +78,7 @@ import { sha256Hex } from '../sha256.js';
 import { canonicalJson, isContentHash } from './identity.js';
 import { isPackPath, extOf, PLUGIN_IMAGE_EXTS, PLUGIN_AUDIO_EXTS } from './manifest.js';
 import { issueList } from './errors.js';
+import { genPathFor } from '../gen.js';
 
 /** The version of the `vs` composition above (a change of it changes every `vs`; 2: the `writes` of each overlay). */
 export const VISUAL_HASH_VERSION = 2;
@@ -594,7 +595,8 @@ export function attachSpineMeta(ops, lock, sha) {
 // ---- URLs, resolution, merge ------------------------------------------------------------------------------------------
 
 /** The served URL of a plugin file: /p/<id>/<hash8>/<path>, every segment URL-encoded. */
-export const pluginFileUrl = (id, hash8, rel) => `${PLUGIN_FILES_URL}${id}/${hash8}/${String(rel).split('/').map(encodeURIComponent).join('/')}`;
+// (fork) in the page's server generation (shared/gen.js): a plugin file is served by the process that scanned it
+export const pluginFileUrl = (id, hash8, rel) => genPathFor(/** @type {any} */ (import.meta).url, `${PLUGIN_FILES_URL}${id}/${hash8}/${String(rel).split('/').map(encodeURIComponent).join('/')}`);
 
 /** The hash of a Spine model: the SHA-256 of its files' SHA-256s, one per line (skeleton, atlas, pages). @param {string[]} shas */
 export const modelHashOf = (shas) => sha256Hex(shas.join('\n'));

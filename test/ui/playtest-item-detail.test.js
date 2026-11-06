@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { renderInfo } from '../../public/js/render/app/info.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const load = (f) => JSON.parse(readFileSync(path.join(ROOT, 'data', f), 'utf8'));
@@ -22,13 +23,10 @@ const HAMMER = 'chess_item_1_01_e_a'; // 维式重锤 → 维多利亚
 // ---- renderInfo: the snapshot UnitInfo reaches the client info object ---------------------------------------------
 
 test('renderInfo passes UnitInfo.items through (the teammate-unit equipment into the detail card)', () => {
-  const app = readFileSync(path.join(ROOT, 'public/js/render/app/info.js'), 'utf8');
-  const start = app.indexOf('export function renderInfo(');
-  assert.ok(start > 0, 'renderInfo exists');
-  const body = app.slice(start, app.indexOf('\n}', start));
-  assert.match(
-    body,
-    /items: Array\.isArray\(u\.items\) \? u\.items\.filter\(\(x\) => typeof x === 'string'\) : undefined/,
+  const info = renderInfo({ id: 1, items: [ISO, HAMMER, '', null, 42] });
+  assert.deepEqual(
+    info.items,
+    [ISO, HAMMER],
     'the equipped item ids must survive the info whitelist (DESIGN §16: a teammate\'s unit shows its owner\'s loadout)',
   );
 });

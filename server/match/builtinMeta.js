@@ -29,7 +29,7 @@
 
 import { getData } from '../data.js';
 import { itemKey } from './gamedata.js';
-import { msg, dn } from '../../shared/i18n.js';
+import { msg, dn, t } from '../../shared/i18n.js';
 
 const int = (v, d = 0) => (Number.isFinite(v) ? Math.trunc(v) : d);
 
@@ -101,7 +101,7 @@ const ITEM_HANDLERS = {
       const n = int(paramsOf(ctx, ev.item).count, 1);
       const rec = ctx.gd.item(ev.item.id);
       ctx.addEffect({
-        id: `doll:${ev.item.uid}`, key: 'effect:builtin_round_coin', name: rec ? rec.name : '精打细算玩偶', desc: rec ? rec.desc : '', // i18n-ignore: the item's data name
+        id: `doll:${ev.item.uid}`, key: 'effect:builtin_round_coin', name: rec ? rec.name : t('精打细算玩偶'), desc: rec ? rec.desc : '', // the item's data name
         iconKind: 'item', iconId: rec ? rec.iconId || rec.id : ev.item.id, battle: false, params: { count: n },
       });
     },
@@ -193,11 +193,18 @@ const ITEM_HANDLERS = {
         if (id) ids.push(id);
       }
       if (ids.length) ctx.offerChess(ids, { source: 'item', tier });
-      // co-op: next prep, send the original chess to the teammate with the most members of its bonds — except a 自选
-      // piece (0.2.0): its DIY slot is bound to this player's roster (no teammate's shop or slot can hold that operator),
-      // so nothing is sent [ASSUMED: the official text names no 自选 case]
+      // co-op: send the original chess to the teammate with the most members of its bonds
+      // DIY slots belong to their original player and cannot be gifted to a teammate.
       const to = ctx.chessRecord(original)?.diyFor ? null : mostBondMate(ctx, bonds);
-      if (to) ctx.addEffect({ id: `gift:${ev.item.uid}`, key: 'effect:builtin_gift', hidden: true, battle: false, params: { toPlayerId: to.playerId, chessId: original, bonds } });
+      if (to) {
+        // Only the concrete R14 six-seat supply is immediate: the final assault need not have a next prep.
+        // Preserve the original operator (including elite); a failed immediate grant retains the upstream retry.
+        if (ev.item.meta?.sixPlayerBeaconRound === 14) {
+          if (to.grantChess(original)) { to.giftTicker(ctx.name, original); return; }
+        }
+        // Bought/ordinary beacons, including those used during R14, retain the original next-round timing.
+        ctx.addEffect({ id: `gift:${ev.item.uid}`, key: 'effect:builtin_gift', hidden: true, battle: false, params: { toPlayerId: to.playerId, chessId: original, bonds } });
+      }
     },
   },
   sell_char_count_gain_equip_owner_bond: {
@@ -273,7 +280,7 @@ const ITEM_HANDLERS = {
       const copy = ctx.grantChess(target.id, { requirePool: false });
       if (!copy) { ev.error = 'HAND_FULL'; return; }
       for (const it of target.items || []) {
-        const itemPiece = ctx.grantItem(it.id);
+        const itemPiece = ctx.grantItem(it.id, { requirePool: false });
         if (itemPiece) ctx.equipDirect(itemPiece.uid, copy.uid);
       }
     },

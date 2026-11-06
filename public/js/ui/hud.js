@@ -10,8 +10,10 @@
 // Boss rounds (最终攻势 / 隐秘核心): the countdown is the level's 120 s maxPlayTime (m.public.deadline, gauge total from
 // gameLogic phaseTotalSeconds) and the red DOT overtime warning under it keys off m.public.overtimeAt (ui/matchStatus.js
 // overtimeState): "NN 秒后全队生命值开始流失" once the level time ran out, then a live "生命值 −1/秒" indicator while the
-// merged team LP drains (the LP tower turns red). Solo battles: a pause / resume button beside the countdown (g.pause);
-// while m.public.paused every clock here is frozen at the pause moment (`frozenAt`).
+// merged team LP drains (the LP tower turns red). Match control (server/match/match/matchControl.js): beside the countdown
+// the three buttons 跳过 (60×, deep red) · 快进 (2× toggle) · 暂停, left to right, and the open vote under them
+// (ui/matchControl.js MatchControlNotice); while m.public.paused every clock here is frozen at the pause moment
+// (`frozenAt`), and m.public.speed is what the 快进 button shows as pressed.
 // Normal rounds (user playtest #3 item 2): the LP tower marks the own battle's leaks live as its enemies enter the blue
 // gate — the settled lp stays until settlement, in red with a −min(lpCapPerRound, counted leaks) tick (GitHub #479: the
 // official keeps the current value until settlement), 联防中 while a 联防 may still save part of it (liveLp;
@@ -29,16 +31,19 @@
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
-import { html, Button, Icon, PingPill, Countdown, Tooltip, MicroLabel, DifficultyTag, Modal, useTicker } from './components.js';
-import { Sprite, LpTower, GIcon, LocalSprite } from './gameComponents.js';
+import { html, Button, Icon, Countdown, Tooltip, MicroLabel, PingPill, DifficultyTag, Modal, useTicker } from './components.js';
+import { Sprite, LpTower, GIcon, LocalSprite, Img } from './gameComponents.js';
 import { data, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { reducedMotion } from './device.js';
 import { serverNow } from '../store.js';
 import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
 import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
+import { MatchControlNotice } from './matchControl.js';
+import { uniteBudgetInfo } from './gameLogic/phases.js';
 import { hotkeyLabelOf } from './settings.js';
 import { t, tParts, N_ } from '../../../shared/i18n.js';
+import { uniteRelayRound } from '../battle/observe.js';
 import { UnofficialMark, ruleLine } from './pluginTag.js';
 import { TestMark } from './testConsole.js';
 
@@ -89,6 +94,7 @@ export function SpectatorPill({ spectators, myId, isHost, onRemove }) {
  */
 export function PhaseCapsule({ pub, hud, miss = null }) {
   const phase = pub?.phase;
+  const relayRound = uniteRelayRound(pub);
   if (isBossPhase(phase)) {
     // the battle on screen first: its snapshot carries the live pool (the local simulation's own damage on top of the
     // server's b.pool, or the server's 20 Hz stream); m.public.bossHp refreshes at ~1 Hz and lags the leader's death
@@ -96,7 +102,7 @@ export function PhaseCapsule({ pub, hud, miss = null }) {
     const frac = bossFrac(boss);
     return html`<div class="capsule capsule--boss" role="status">
       <${Sprite} k="hudPanel/icon_boss" class="capsule__icon" fallback=${html`<${GIcon} name="skull" class="capsule__icon" />`} />
-      ${hud?.total != null ? html`<span class="capsule__kills num"><b>${hud.resolved ?? hud.killed ?? 0}</b>/${hud.total}</span>` : null}
+      ${hud?.total != null ? html`<span class="capsule__kills num"><b key=${hud.resolved ?? hud.killed ?? 0}>${hud.resolved ?? hud.killed ?? 0}</b>/${hud.total}</span>` : null}
       <div class="bossbar" title=${boss ? `${fmtNum(boss.hp)} / ${fmtNum(boss.max)}` : t('敌方领袖')}>
         <div class="bossbar__fill" style=${`width:${frac == null ? 100 : frac * 100}%`}></div>
         <span class="bossbar__txt num">${frac == null ? t('敌方领袖') : bossPctText(frac)}</span>
@@ -107,8 +113,8 @@ export function PhaseCapsule({ pub, hud, miss = null }) {
     return html`<div class=${cx('capsule', 'capsule--combat', phase === PHASE.UNITE && 'capsule--unite')} role="status">
       <${Sprite} k=${phase === PHASE.UNITE ? 'hudPanel/icon_coop' : 'hudPanel/icon_battle'} class="capsule__icon"
         fallback=${html`<${Icon} name="sword" class="capsule__icon" />`} />
-      <span class="capsule__kills num"><b>${hud?.resolved ?? hud?.killed ?? 0}</b>/${hud?.total ?? '--'}</span>
-      ${phase === PHASE.UNITE ? html`<span class="capsule__tag">${t('联防')}</span>` : null}
+      <span class="capsule__kills num"><b key=${hud?.resolved ?? hud?.killed ?? 0}>${hud?.resolved ?? hud?.killed ?? 0}</b>/${hud?.total ?? '--'}</span>
+      ${phase === PHASE.UNITE ? html`<span class="capsule__tag">${relayRound === 2 ? t('联防 {round}/2', { round: relayRound }) : t('联防')}</span>` : null}
       ${phase === PHASE.UNITE && Number.isFinite(miss) ? html`<${MissTag} n=${miss} />` : null}
     </div>`;
   }
@@ -392,13 +398,16 @@ export function checkButtons({ pen, penAvail, infoOpen }) {
   return { left, right };
 }
 
-/** One official 🔍 button: the sprite when installed, a CSS look-alike (icon + chevrons) otherwise. */
+/** One official 🔍 button: the sprite when installed, a CSS look-alike (icon + chevrons) otherwise.
+ *  The sprite is an <img> (not a CSS background): one that fails to load falls back to the look-alike, so the
+ *  button is never a blank, still-clickable box (local-assets paths, a stale client cache, an old WebView). */
 function CheckBtn({ sprite, cls, label, chev, on, disabled, onClick, testid }) {
   const url = localAsset('ui/battle', sprite);
+  const look = html`<${Icon} name="search" />${chev ? html`<span class="enemybtn__chev">${chev}</span>` : null}`;
   return html`<button type="button" class=${cx(cls, 'tapx', url && 'has-sprite', chev && 'is-wide', on && 'is-on')}
-      style=${url ? `--chk-sprite:url("${url}")` : ''} aria-label=${label} aria-disabled=${disabled ? 'true' : 'false'}
+      aria-label=${label} aria-disabled=${disabled ? 'true' : 'false'}
       data-sprite=${sprite} data-testid=${testid} onClick=${onClick}>
-    ${url ? null : html`<${Icon} name="search" />${chev ? html`<span class="enemybtn__chev">${chev}</span>` : null}`}
+    ${url ? html`<${Img} src=${url} class="chkbtn__art" fallback=${look} />` : look}
   </button>`;
 }
 
@@ -437,13 +446,55 @@ export function OvertimeWarning({ ot }) {
   </div>`;
 }
 
+/**
+ * 挂机移出 warning (server Match afkRemoveRounds; m.private afkWarn): the player made no substantive move last round, so
+ * one more idle prep removes them from the match. Shown through 机变 and 休整期 until any real action clears it.
+ */
+export function AfkWarning({ pub, priv }) {
+  if (!priv?.afkWarn || (pub?.phase !== PHASE.PREP && pub?.phase !== PHASE.SP_DRAFT)) return null;
+  return html`<div class="otwarn otwarn--afk" role="alert" data-state="afk">
+    <${Icon} name="warn" class="otwarn__icon" />
+    <span class="otwarn__tag">AFK</span>
+    <span class="otwarn__txt">${t('本回合仍无操作将被移出对局')}</span>
+  </div>`;
+}
+
 /** Two-bar pause glyph (the official battle pause button). */
 function PauseGlyph() {
   return html`<svg class="pausebtn__glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4.5v16H6zm7.5 0H18v16h-4.5z" /></svg>`;
 }
 
 /**
- * Solo pause / resume control (g.pause): pressed while paused.
+ * 快进 toggle (g.matchControl 'fast'): pressed while the battle runs faster than the 1× base — the same toggle look as
+ * the pause button, so a tap that turns it off reads as the same kind of action.
+ * @param {{ active: boolean, busy?: boolean, onToggle: () => void }} props
+ */
+export function FastButton({ active, busy = false, onToggle }) {
+  const label = active ? t('快进（关闭）') : t('快进');
+  return html`<${Tooltip} text=${active ? t('快进中（2×），点击恢复 1×') : t('快进（2× 播放）')} placement="bottom">
+    <button type="button" class=${cx('pausebtn', 'tapx', active && 'is-on', busy && 'is-busy')} aria-pressed=${active ? 'true' : 'false'}
+        aria-label=${label} disabled=${busy} data-testid="fast" onClick=${() => onToggle?.()}>
+      <${Icon} name="fastForward" class="pausebtn__glyph" />
+    </button>
+  <//>`;
+}
+
+/**
+ * 跳过 (g.matchControl 'skip'): a one-shot 60× run, not a toggle — it stays disabled once the battle is already at 60×
+ * (the server refuses a second request, ui/matchStatus.js skipAvailable).
+ * @param {{ canSkip: boolean, busy?: boolean, onSkip: () => void }} props
+ */
+export function SkipButton({ canSkip, busy = false, onSkip }) {
+  return html`<${Tooltip} text=${canSkip ? t('跳过（60× 播放）') : t('已在 60× 播放')} placement="bottom">
+    <button type="button" class=${cx('pausebtn', 'tapx', 'is-skip', busy && 'is-busy')} aria-label=${t('跳过')}
+        disabled=${!canSkip || busy} data-testid="skip" onClick=${() => onSkip?.()}>
+      <${Icon} name="skipForward" class="pausebtn__glyph" />
+    </button>
+  <//>`;
+}
+
+/**
+ * Pause / resume control (g.pause): pressed while paused.
  * @param {{ paused: boolean, busy?: boolean, onToggle: () => void }} props
  */
 export function PauseButton({ paused, busy = false, onToggle }) {
@@ -455,6 +506,17 @@ export function PauseButton({ paused, busy = false, onToggle }) {
       ${paused ? html`<${Icon} name="play" class="pausebtn__glyph" />` : html`<${PauseGlyph} />`}
     </button>
   <//>`;
+}
+
+/** A frozen stage budget / round-start balance. The changing real-time countdown stays separate. */
+export function UniteBudgetNote({ pub }) {
+  const budget = uniteBudgetInfo(pub);
+  if (!budget) return null;
+  const total = Math.round(budget.total * 100) / 100, remaining = Math.round(budget.remaining * 100) / 100;
+  return html`<div class="gtop__budget" data-testid="unite-budget" data-total=${budget.total} data-remaining=${budget.remaining}>
+    <span>${t('联防总预算：{total} 游戏秒', { total })}</span>
+    <span>${t('本轮起始剩余：{remaining} 游戏秒', { remaining })}</span>
+  </div>`;
 }
 
 /**
@@ -470,6 +532,8 @@ export function PauseButton({ paused, busy = false, onToggle }) {
  *   onReady:(r:boolean)=>void, readyBusy?:boolean, readyCount?:number, playerCount?:number,
  *   pen?:boolean, penAvail?:boolean, onPen?:(on:boolean)=>void, config?: any, frozenAt?: number|null,
  *   pause?: { show: boolean, paused: boolean, busy?: boolean, onToggle: () => void } | null,
+ *   playback?: { show: boolean, fast: boolean, canSkip: boolean, busy?: boolean, onFast: () => void, onSkip: () => void } | null
+ *     (ui/matchStatus.js fastActive / skipAvailable): the 快进 toggle and the one-shot 跳过, rendered left of the pause button
  *   live?: { pending: number, unite: boolean, left?: number|null } | null,
  *   spectators?: any[]|null, myId?: any, isHost?: boolean, onRemoveSpectator?: ((playerId: any) => any)|null, held?: boolean }} props
  *   spectators: the room's spectator seats (room.state) — the 观战席 capsule beside the latency (SpectatorPill; the host removes)
@@ -480,7 +544,7 @@ export function PauseButton({ paused, busy = false, onToggle }) {
  *   held: the HUD waits hidden under 协议启动！ — a phase change's capsule scene waits for it (useCapsuleFx)
  */
 export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, onReady, readyBusy, readyCount, playerCount, pen = false, penAvail = false, onPen = () => {},
-  config = null, frozenAt = null, pause = null, live = null, spectator = false,
+  config = null, frozenAt = null, pause = null, playback = null, live = null, spectator = false,
   spectators = null, myId = null, isHost = false, onRemoveSpectator = null, room = null, held = false }) {
   const phase = pub?.phase;
   const boss = isBossPhase(phase);
@@ -561,11 +625,16 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
         ${frozenSecs != null
           ? html`<${Countdown} seconds=${frozenSecs} total=${total ?? undefined} size="md" label="PAUSED" />`
           : html`<${Countdown} deadline=${pub?.deadline} total=${total ?? undefined} size="md" />`}
+        ${playback && playback.show ? html`<${SkipButton} canSkip=${playback.canSkip} busy=${playback.busy} onSkip=${playback.onSkip} />
+          <${FastButton} active=${playback.fast} busy=${playback.busy} onToggle=${playback.onFast} />` : null}
         ${pause && (pause.show || pause.paused) ? html`<${PauseButton} paused=${!!pause.paused} busy=${pause.busy} onToggle=${pause.onToggle} />` : null}
       </div>
+      ${pub?.matchControl ? html`<${MatchControlNotice} pub=${pub} />` : null}
       <${OvertimeWarning} ot=${ot} />
+      <${AfkWarning} pub=${pub} priv=${priv} />
       ${showReady ? html`<${ReadyToggle} priv=${priv} onToggle=${onReady} busy=${readyBusy} readyCount=${readyCount} total=${playerCount} />` : null}
     </div>
+    <${UniteBudgetNote} pub=${pub} />
   </header>`;
 }
 

@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_3_21-archet.js — 空弦 (char_332_archet) kit, tier 3.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-3 kits: ../shared/tier3.js; kit contract and rules: ../README.md.
 
 import { canTargetEnemy } from '../../../targeting.js';
@@ -96,7 +97,7 @@ export default {
           battle.every(num(t0.interval, 2.5), () => {
             if (!alive(unit) || !isLeader(battle, unit, 'archetTactics')) return;
             for (const a of battle.allies(unit.ownerId)) {
-              if (a.kind === 'op' && a.def?.profession === 'SNIPER' && a.skill?.spType === 'attack') giveSp(a, num(t0.sp, 1), 'talent');
+              if (nativeOperator(a) && a.def?.profession === 'SNIPER' && a.skill?.spType === 'attack') giveSp(a, num(t0.sp, 1), 'talent');
             }
           }, { owner: unit });
         } },

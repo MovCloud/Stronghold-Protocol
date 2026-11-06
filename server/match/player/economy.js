@@ -24,8 +24,13 @@ export class PlayerEconomy {
   spend(n) {
     const v = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
     if (v > this.funds) return false;
+    // console money (server/admin.js applyState, ps.adminFunds) stays out of the settlement statistics: what the
+    // player spends is paid from the parked amount first, so stats.gold grows by the earned money only (消耗资金,
+    // the 挥金如土 title stat); the mechanics count every payment either way
+    const fromAdmin = Math.min(this.adminFunds || 0, v);
+    if (fromAdmin > 0) this.adminFunds -= fromAdmin;
     this.funds -= v;
-    this.stats.gold += v;
+    this.stats.gold += v - fromAdmin;
     this.round.spent += v;
     this.dirty();
     return true;
@@ -68,7 +73,7 @@ export class PlayerEconomy {
 
   _rollChessSlot() {
     // the slotted 自选 pieces join the draw once the 调度中心 reaches their slot's level (player/diy.js diyRollEntries)
-    const id = this.m.pool.roll(this.m.rngShop, { maxTier: this.shop.level, extra: this.diyRollEntries() });
+    const id = this.pool.roll(this.m.rngShop, { maxTier: this.shop.level, extra: this.diyRollEntries() });
     return id ? { kind: 'chess', id, basePrice: this.gd.chessPrice(id), frozen: false, sold: false } : null;
   }
 
@@ -82,7 +87,7 @@ export class PlayerEconomy {
       bias = new Set();
       for (const [id, st] of Object.entries(bonds)) if (st && st.active) bias.add(id);
     }
-    const id = this.m.pool.rollItem(this.m.rngShop, this.shop.level, this.m.itemPool, bias);
+    const id = this.pool.rollItem(this.m.rngShop, this.shop.level, this.itemPool, bias);
     return id ? { kind: 'item', id, basePrice: this.gd.itemPrice(id), frozen: false, sold: false } : null;
   }
 

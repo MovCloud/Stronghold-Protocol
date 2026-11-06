@@ -74,6 +74,16 @@ export class RehearsalScore {
 }
 
 /**
+ * [ASSUMED] AI search budget only (docs/research/ioleta-adaptive-default.md); no game rule.
+ * @param {{ stage?: unknown, tickBudget?: unknown }} [o]
+ * @returns {{ stage: number, tickBudget: number }}
+ */
+export function rehearsalLimits(o = {}) {
+  const int = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+  return { stage: int(o && o.stage), tickBudget: int(o && o.tickBudget) };
+}
+
+/**
  * One rehearsal run: the candidate battles in their order, stepped and scored by {@link RehearsalScore}. A candidate is
  * a factory (`() => battle`) the run calls when its turn comes — the caller keeps building them inside its slices, so a
  * `Battle`'s construction (a whole battle's setup) belongs to the same slice budget as its stepping instead of happening

@@ -6,7 +6,7 @@ async function fixture(t,testRoom=false,enabled=true){
   const srv=await startServer({port:0,host:'127.0.0.1',quiet:true,botRehearsal:0}),clients=[];
   t.after(async()=>{for(const c of clients)await c.terminate().catch(()=>{});await srv.close();});
   if(testRoom){srv.lobby.testMode='local';srv.lobby.setTestHost('127.0.0.1');}
-  const player=async(name,token)=>{const c=await TestClient.connect(srv.url.replace('http','ws')+'/ws');clients.push(c);const w=await c.hello(name,token,{delta:1});c.id=w.playerId;c.token=w.token;return c;};
+  const player=async(name,token)=>{const c=await TestClient.connect(srv.url.replace('http','ws')+'/ws');clients.push(c);const w=await c.hello(name,token,{stateDelta:1});c.id=w.playerId;c.token=w.token;return c;};
   const host=await player('Host');assert.equal((await host.request({t:'room.create',mode:'coop',difficulty:'NORMAL',...(testRoom?{test:true}:{})})).t,'ok');const room=[...srv.lobby.rooms.values()][0];
   if(enabled)assert.equal((await host.request({t:'room.setAiTakeover',on:true})).t,'ok');
   const mate=await player('Mate');await mate.request({t:'room.join',code:room.code,testAck:true});await mate.request({t:'room.ready',ready:true});

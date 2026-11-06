@@ -49,6 +49,7 @@ export function cycleField(fields, current, dir = 1) {
  */
 export function watchTarget(p, pub, myId) {
   if (!isObj(p)) return { reason: t('无效的目标') };
+  if (p.pendingDeath) return { reason: t('该队友正在等待救援，暂时无法查看其阵地') };
   if (p.alive === false) return { reason: t('该队友已被淘汰，无法查看其阵地') };
   const combat = isCombatPhase(pub?.phase);
   const fieldId = (combat && typeof p.fieldId === 'string' && p.fieldId) || ownFieldId(p.playerId);
@@ -103,8 +104,8 @@ export function fieldLabel(field, pub, myId) {
 }
 
 /**
- * Active emote bubbles: playerId → { id, seq, at } for emotes younger than ttl.
- * @param {Array<{seq:number, playerId:string, id:string, at:number}>} emotes
+ * Active avatar bubbles: the latest emote or chat per player, younger than ttl.
+ * @param {Array<{seq:number, playerId:string, id?:string, text?:string, at:number}>} emotes
  * @param {number} now
  * @param {number} [ttl]
  */
@@ -113,7 +114,8 @@ export function activeBubbles(emotes, now, ttl = 3000) {
   for (const e of Array.isArray(emotes) ? emotes : []) {
     if (!isObj(e) || !(now - e.at < ttl) || e.at > now + 1000) continue;
     const cur = out.get(e.playerId);
-    if (!cur || cur.seq < e.seq) out.set(e.playerId, { id: e.id, seq: e.seq, at: e.at });
+    if (!cur || cur.seq < e.seq) out.set(e.playerId, { id: e.id, seq: e.seq, at: e.at, ttl,
+      ...(typeof e.text === 'string' ? { text: e.text } : {}) });
   }
   return out;
 }

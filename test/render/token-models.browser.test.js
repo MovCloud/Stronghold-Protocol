@@ -1,5 +1,5 @@
 // test/render/token-models.browser.test.js — the 40 original summon models extracted from the local client (tools/local-extract/
-// extract.py TOKEN_SPINES → data/assets.json tokens[id].spineLocal, docs/ASSETS.md "Token models from the local client")
+// extract.py TOKEN_SPINES → data/assets.json tokens[id].spineLocal, docs/development/ASSETS.md "Token models from the local client")
 // drawn on the prep board of the dev render demo (public/dev/render-demo.html) in headless Chrome: every summon placed on
 // a board tile draws its official model (the local entry, not the avatar diamond), on its own idle clip (the mapped ones
 // too: 电弧's 戴乌 C_Skill1_Idle, 酒神's 本能的召唤 Loop, 战术锚点 Default), really puts pixels over its tile, and faces
@@ -41,7 +41,7 @@ describe('the local-client summon models on the prep board (headless Chrome)', {
   });
 
   test('every summon draws its official model on its idle clip, over its tile, facing its deploy direction', async (t) => {
-    const page = await browser.newPage();
+    const page = await browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
     const problems = [];
     let least = { drawn: Infinity };
     page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });

@@ -86,7 +86,7 @@ export function StandInTags({ view, priv, getChess, backups, diyData = null }) {
     ${items.map((it) => {
       const p = pos[it.uid];
       return p ? html`<span key=${it.uid} class=${`sitag sitag--${it.area}${it.diy ? ' sitag--diy' : ''}`} data-uid=${it.uid} data-diy=${it.diy ? '1' : undefined} data-standin=${it.diy ? undefined : '1'}
-        title=${it.diy ? t('自选编队：{name}', { name: it.name }) : it.tip}
+        title=${it.diy ? t('自选编队：{0}', { 0: (it.name) ?? '' }) : it.tip}
         style=${`left:${p.x.toFixed(1)}px;top:${p.y.toFixed(1)}px`}>${it.label}</span>` : null;
     })}
   </div>`;

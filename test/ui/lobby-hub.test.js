@@ -65,7 +65,7 @@ test('the entries: 独立模拟 / 同盟模拟 keep the .mode-card hook and open
   for (const id of ['solo', 'coop']) {
     const opened = [];
     const wrap = HubEntry({ card: MODES[id], onOpen: (m) => opened.push(m) });
-    assert.ok(textOf(byClass(wrap, 'hub-entry__group')[0]).includes(MODES[id].points[0]), 'its line above it');
+    assert.equal(byClass(wrap, 'hub-entry__group').length, 0, 'no detail line above the button');
     const v = buttons(wrap)[0];
     assert.ok(hasClass(v, 'mode-card') && hasClass(v, 'hub-entry'));
     assert.equal(v.props['data-mode'], id);
@@ -285,10 +285,13 @@ test('选择同盟方式 creates the room itself: the lobby never stacks 选择�
   assert.match(lobbySrc, /<\$\{ProtocolSelect\} roomMode="solo"/, '选择模拟协议 stays before 独立模拟');
 });
 
-test('no server-only features: accounts, friends, federation, matchmaking, 无限火力, Android', () => {
-  for (const re of [/accounts\.js/, /friends\.js/, /federation/, /matchmaking/i, /match\.queue/, /randomMode/, /AndroidNative/, /__onRoomFound/, /room\.list/]) {
+test('no server-only features: accounts, friends, federation, 无限火力, Android (fork: 多人匹配 is a fork feature, so matchmaking stays)', () => {
+  for (const re of [/accounts\.js/, /friends\.js/, /federation/, /match\.queue/, /randomMode/, /AndroidNative/, /__onRoomFound/, /room\.list/]) {
     assert.doesNotMatch(lobbySrc, re, String(re));
   }
+  // (fork) the lobby's third entry 多人匹配 is the fork's own queue (ui/matchFlow.js + ui/matchmaking.js); upstream
+  // has no client-side matchmaking at all, so its ban on the word cannot apply to the fork.
+  assert.match(lobbySrc, /from '\.\.\/ui\/matchmaking\.js'/, 'fork 多人匹配 queue');
 });
 
 test('lobby.css: text follows 文字大小 (var(--t)), no !important, no :has()', () => {

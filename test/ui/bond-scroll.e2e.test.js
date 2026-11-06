@@ -28,6 +28,8 @@ test('all bonds remain reachable by arrows, keyboard and native scrolling', { sk
       await page.waitForFunction(n => document.querySelectorAll('.bslot').length === n, {}, count);
       const bounds = await page.$eval('.bstrip', el => ({ width: el.clientWidth, all: el.scrollWidth }));
       assert.ok(bounds.all > bounds.width);
+      // The arrows are drawn only for a tape wider than its band, one frame after the resize is measured.
+      await page.waitForSelector('.bstrip-scroll__arrow:last-child');
       await page.click('.bstrip-scroll__arrow:last-child');
       await page.waitForFunction(() => document.querySelector('.bstrip').scrollLeft > 0);
       await page.$eval('.bstrip', el => { el.scrollLeft = el.scrollWidth; });
@@ -67,16 +69,32 @@ test('all bonds remain reachable by arrows, keyboard and native scrolling', { sk
           await draw(bonds.map(b => ({ ...b, layers: b.layers + 1 })));
           const afterUpdate = { created, disconnected };
           const strip = host.querySelector('.bstrip');
-          const result = { all: strip.querySelectorAll('.bslot').length, width: strip.clientWidth, scroll: strip.scrollWidth,
+          // The band is centred (align-items:center), so a fixed-width host no longer bounds the strip — the clamp the
+          // layout really applies is the viewport one on .gm__bond-list. Assert that clamp: the point of this block is
+          // that a bounded, scrollable strip disconnects its observer.
+          const clamp = window.innerWidth - 2 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+          const result = { all: strip.querySelectorAll('.bslot').length, width: strip.clientWidth, scroll: strip.scrollWidth, clamp,
             initial, afterUpdate };
           render(null, host);
-          return { ...result, afterUnmount: disconnected };
+          const afterUnmount = disconnected;
+          // A strip that fits its container gets no arrows at all: a disabled arrow still takes its 44 px and reads as
+          // a control the user can press (user report 2026-11-05).
+          render(html`<div class="gm__bond-list"><${BondStrip} bonds=${bonds.slice(0, 2)} layersDisabled=${true} onOpen=${() => {}} /></div>`, host);
+          await new Promise(r => setTimeout(r, 100));
+          const fitStrip = host.querySelector('.bstrip');
+          // The room the tape may occupy: the same limit the scroller measures (the list's max-width, the band's
+          // width). A few px of overflow can come from inside the discs themselves, so compare with the room, not
+          // with the tape's own box.
+          const fitRoom = Math.min(clamp, host.clientWidth);
+          const fit = { arrows: host.querySelectorAll('.bstrip-scroll__arrow').length, content: fitStrip.scrollWidth, room: fitRoom };
+          return { ...result, afterUnmount, fit };
         } finally {
           globalThis.ResizeObserver = NativeObserver;
           render(null, host); host.remove();
         }
       });
-      assert.equal(frozen.all, count); assert.ok(frozen.width <= 300 && frozen.scroll > frozen.width);
+      assert.equal(frozen.all, count); assert.ok(frozen.width <= frozen.clamp && frozen.scroll > frozen.width);
+      assert.ok(frozen.fit.content <= frozen.fit.room && frozen.fit.arrows === 0, 'a strip that fits its container shows no arrows at all');
       assert.equal(frozen.initial, 1);
       assert.deepEqual(frozen.afterUpdate, { created: 1, disconnected: 0 }, 'layer updates reuse the observer');
       assert.equal(frozen.afterUnmount, 1, 'unmount disconnects the observer');

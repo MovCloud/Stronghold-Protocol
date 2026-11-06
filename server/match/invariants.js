@@ -1,5 +1,5 @@
 // server/match/invariants.js — engine invariants (DESIGN §11) as a non-throwing check. Used by the test harness
-// (i18n-ignore-file: developer reports in English with the game's terms, never shown to players — docs/I18N.md)
+// (i18n-ignore-file: developer reports in English with the game's terms, never shown to players — docs/development/I18N.md)
 // (test/match/harness.js checkInvariants asserts the list is empty) and by tools/matchrun.mjs --check sweeps.
 //
 // collectViolations(m) → string[] (empty when every invariant holds):
@@ -19,7 +19,7 @@
 //            merge: audit.js checks it per merge)
 //   bonds    ps.bonds equals a fresh computeBonds() (every mutation recomputed them); every bond's layers 0 … BOND_LAYER_CAP
 //   shop     slot count follows the rolled layout; ids known; banned chess never offered by the shop / rewards
-//   elim.    an eliminated player owns nothing (board, hand, temp, shop, offers, bounties, funds)
+//   elim.    a finalized eliminated player owns nothing; a valid SETTLE pending death retains checked holdings
 //   choice   a player's open 教鞭 choice (`personalChoice`) is one of an alive, not-Ready player in the PREP of its own round,
 //            with one to three different cards
 //   match    phase known; teamLp / boss pool within range; combat fields match the alive players
@@ -40,7 +40,7 @@ export function collectViolations(m, { limit = 25 } = {}) {
   const out = [];
   const fail = (msg) => { if (out.length < limit) out.push(msg); };
   const gd = m.gd;
-  const held = new Map();
+  const holdings = new Map((m.poolGroups || []).map(g => [g.pool, new Map()]));
   const uids = new Set();
   const banned = new Set(m.bannedChess || []);
   const note = (ps, p) => {
@@ -55,6 +55,9 @@ export function collectViolations(m, { limit = 25 } = {}) {
 
   for (const ps of m.players.values()) {
     const id = ps.playerId;
+    const pool = m.poolFor(ps);
+    if (!holdings.has(pool)) holdings.set(pool, new Map());
+    const held = holdings.get(pool);
     // the player's view of the data (its slotted 自选 slots are its operators) and the copies its 自选 pieces hold
     const pgd = ps.gd || gd;
     const diyHeld = new Map();
@@ -75,7 +78,12 @@ export function collectViolations(m, { limit = 25 } = {}) {
       if (!(Number.isFinite(v) && v >= 0 && (!(BOND_LAYER_CAP > 0) || v <= BOND_LAYER_CAP))) fail(`${id}: ${b} layers ${v}`);
     }
 
-    if (!ps.alive) {
+    // Only an unresolved, never-revived current SETTLE death may retain its original holdings.
+    const pending = ps.pendingDeath === true && !ps.alive && ps.lp === 0 && !ps.left && !ps.revived
+      && m.revivalEnabled === true && m.phase === PHASE.SETTLE && m.teamLp == null && !m.ended && !m.disposed
+      && m._revival?.round === m.round && m._revival.windowOpen === true;
+    if (ps.pendingDeath && !pending) fail(`${id}: invalid pending death`);
+    if (!ps.alive && !pending) {
       if (ps.board.size) fail(`${id}: eliminated but keeps ${ps.board.size} board pieces`);
       if (ps.hand.some(Boolean) || ps.temp.some(Boolean)) fail(`${id}: eliminated but keeps hand/temp pieces`);
       if (ps.shop.slots.length || ps.offers.length || ps.bounties.length) fail(`${id}: eliminated but keeps shop/offers/bounties`);
@@ -170,8 +178,8 @@ export function collectViolations(m, { limit = 25 } = {}) {
     } catch (e) {
       fail(`${id}: computeBonds threw ${e && e.message}`);
     }
-    // shop
-    if (ps.alive) {
+    // Pending holdings receive the same complete shop/reward checks as a living player's holdings.
+    if (ps.alive || pending) {
       const layout = ps.shop.layout;
       if (layout && ps.shop.slots.length !== layout.chess + layout.item) fail(`${id}: ${ps.shop.slots.length} shop slots for layout ${layout.chess}+${layout.item}`);
       ps.shop.slots.forEach((s, i) => {
@@ -199,27 +207,33 @@ export function collectViolations(m, { limit = 25 } = {}) {
     for (const [base, n] of diyHeld) if (!(ps.diyStock && ps.diyStock.has(base)) && n !== 0) fail(`${id}: 自选 slot ${base} without stock holds ${n} copies`);
   }
 
-  // shared pool accounting
-  for (const [base, e] of m.pool.entries) {
-    if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`pool ${base}: balance ${e.left} cap ${e.cap}`);
-    const h = held.get(base) || 0;
-    if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
+  // Shared or player-local pool accounting; no personal pool can borrow another seat's holdings.
+  for (const [pool, held] of holdings) {
+    for (const [base, e] of pool.entries) {
+      if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`pool ${base}: balance ${e.left} cap ${e.cap}`);
+      const h = held.get(base) || 0;
+      if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
+    }
+    for (const [base, n] of held) if (!pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
   }
-  for (const [base, n] of held) if (!m.pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
 
-  // Displayed shop cards and item rewards may overdraw; itemPool.debt is that overage (#624). Fixed gift families
+  // Displayed shop cards and item rewards may overdraw; each stock's debt is that overage (#624). Fixed gift families
   // may overdraw without a debt entry. debt > over is always a missed repay or a debt recorded for a piece not kept.
-  // The chess pool above also permits explicit overdraw (Mimic, displayed operator cards).
-  if (m.itemPool && gd.raw.items) {
-    for (const [id, rec] of Object.entries(gd.raw.items)) {
-      if (!rec || rec.isGolden) continue;
-      const cap = m.itemPool.cap(id);
-      if (!Number.isInteger(cap)) continue;
-      const h = m.itemPool.held(id);
-      const over = Math.max(0, h - cap);
-      const debt = m.itemPool.debtOf(id);
-      if (debt > over) fail(`item ${id}: debt ${debt} > overage ${over} (held ${h}, cap ${cap})`);
-      if (!gd.isUnlimitedGiftItem(id) && over > debt) fail(`item ${id}: held ${h} > cap ${cap} without debt ${debt}`);
+  // The chess pool above also permits explicit overdraw (Mimic, displayed operator cards). Equipment stock is per
+  // chess-pool group (Match itemPoolFor).
+  const itemPools = new Set(m.playerItemPools ? m.playerItemPools.values() : m.itemPool ? [m.itemPool] : []);
+  if (gd.raw.items) {
+    for (const stock of itemPools) {
+      for (const [id, rec] of Object.entries(gd.raw.items)) {
+        if (!rec || rec.isGolden) continue;
+        const cap = stock.cap(id);
+        if (!Number.isInteger(cap)) continue;
+        const h = stock.held(id);
+        const over = Math.max(0, h - cap);
+        const debt = stock.debtOf(id);
+        if (debt > over) fail(`item ${id}: debt ${debt} > overage ${over} (held ${h}, cap ${cap})`);
+        if (!gd.isUnlimitedGiftItem(id) && over > debt) fail(`item ${id}: held ${h} > cap ${cap} without debt ${debt}`);
+      }
     }
   }
 

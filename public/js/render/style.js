@@ -69,6 +69,8 @@ export const COLORS = Object.freeze({
   // the ammo bar's yellow cells (b.snap `ammo`) and 伺夜's 狼影 pips (b.snap `wolves`)
   ammo: 0xffd04a,
   wolf: 0xe8f0ff,
+  // the Ave Mujica Fever gauge (render/units.js _updateFever): the official grey note filling in pink
+  feverEmpty: 0x6f6a72, feverFill: 0xff5f9e,
   // 秘术师's stored attack energies (b.snap `energy`): a violet no other HUD state uses — the purse's gold coin and its
   // count are told apart from the orb and its count at a glance
   energy: 0xb07dff,
@@ -195,6 +197,21 @@ export function statusIconSuppressed(key, statuses) {
   if (key !== 'ab:refraction' && key !== 'refraction') return false;
   if (!statuses) return false;
   return typeof statuses.has === 'function' ? statuses.has('silence') : Array.isArray(statuses) && statuses.includes('silence');
+}
+
+/** Statuses whose value is a share (0.3 = 30 %): 脆弱 and its kinds, 减速, 虚弱, 防御力降低, 抵抗. */
+const SHARE_STATUS = new Set(['fragile', 'artsFragile', 'physFragile', 'elemFragile', 'slow', 'weaken', 'defDown', 'resist']);
+
+/**
+ * The number on a status icon (b.snap `st` value, server/sim/snapshot.js statusView): a share as a whole percent ("30%"),
+ * 攻击速度降低 / 法术抗性降低 as points ("30"), 麻痹 as its stacks ("3"); null for a status without a shown value.
+ */
+export function statusValueLabel(key, value) {
+  if (!Number.isFinite(value)) return null;
+  if (SHARE_STATUS.has(key)) return `${Math.round(Math.abs(value) * 100)}%`;
+  if (key === 'aspdDown' || key === 'resDown') return String(Math.round(Math.abs(value)));
+  if (key === 'palsy') return value >= 1 ? String(Math.round(value)) : null;
+  return null;
 }
 
 /** Icon key (textures STATUS_KEYS) for a b.ev status key or flag name; null when it has no icon. */

@@ -790,7 +790,11 @@ export class UnitView {
   // ---- loading ---------------------------------------------------------------------------------------------
 
   _frameColor() {
-    if (this.isEnemy) return this.isBoss ? ENEMY_FRAME.boss : this.tier >= 2 ? ENEMY_FRAME.elite : ENEMY_FRAME.normal;
+    if (this.isEnemy) {
+      // 2V2 对抗期: the opponent PLACED this one — a pale red frame marks it (the P<n> badge under it names who sent it)
+      if (Number.isInteger(this.info.confrontSeat)) return 0xff9a86;
+      return this.isBoss ? ENEMY_FRAME.boss : this.tier >= 2 ? ENEMY_FRAME.elite : ENEMY_FRAME.normal;
+    }
     if (ICE_TOKENS.has(this.info.defId)) return ICE_FRAME;
     if (this.golden) return 0xffc600;
     return TIER_COLORS[this.tier] || TIER_COLORS[1];
@@ -814,15 +818,17 @@ export class UnitView {
   _loadPicture(replace = false) {
     const a = this.ctx.assets;
     const url = this._pictureUrl();
+    // a skin's picture that does not load: the operator's own (display only — the skin never changes the unit)
+    const defaultUrl = a?.picture ? a.picture(this.info.avatar) || a.picture(this.info.spine) : null;
     const old = replace && this._pic && this._pic.state === 'img' ? this._pic : null;
-    // the key carries the skinId too (docs/SKINS.md): a switch otherwise keeps the previous appearance's portrait
+    // the key carries the skin too (docs/SKINS.md): a switch otherwise keeps the previous appearance's portrait
     this._pic = { key: String(this.info.avatar || this.info.defId || 'unknown') + (this.info.skin ? `|${this.info.skin}` : ''), color: this._frameColor(), img: null, state: 'none', shown: null, t0: nowMs(), url, prev: !!old };
     if (!url || !a.image) return;
     const cached = typeof a.imageNow === 'function' ? a.imageNow(url) : null;
     if (cached) { this._pic.img = cached; this._pic.state = 'img'; return; }
     this._pic.state = 'wait';
     const pic = this._pic;
-    Promise.resolve().then(() => a.image(url)).then((img) => {
+    Promise.resolve().then(() => a.image(url)).then(img => img || (defaultUrl && defaultUrl !== url ? a.image(defaultUrl) : null)).then((img) => {
       if (img) { pic.img = img; pic.state = 'img'; } else pic.state = 'none';
     }, () => { pic.state = 'none'; });
   }
@@ -879,7 +885,7 @@ export class UnitView {
   _modelEntry(back = this._wantsBack()) {
     const a = this.ctx.assets;
     const id = this.info.spine || this.info.defId;
-    // 皮肤 (docs/SKINS.md): `info.skin` is the owner's chosen appearance; sparkineEntry falls back to the operator's own
+    // 皮肤 (docs/SKINS.md): `info.skin` is the owner's chosen appearance; spineEntry falls back to the operator's own
     // model when the manifest holds no such skin (or no model for it), so a view always resolves something to draw
     return a && a.spineEntry && id ? a.spineEntry(id, this.info.skin ? { back, skin: this.info.skin } : { back }) || null : null;
   }
@@ -888,10 +894,14 @@ export class UnitView {
   _loadSpine(retry = false) {
     const a = this.ctx.assets;
     if (!a || !a.spineEntry || !a.spine) return;
+    const um = this.ctx.settings?.unitModels;
+    if (um === 'off') return; // [UNITMODELS] 不加载角色模型：沿用头像 / 稀有度菱形 fallback（已加载的由 refreshModel 清掉）
     const id = this.info.spine || this.info.defId;
     const back = this._wantsBack();
     const entry = this._modelEntry(back);
-    if (!entry || this.ctx.settings?.quality === 'low' && this.isEnemy && !this.isBoss && this.ctx.crowded?.()) return;
+    // [UNITMODELS] 低画质 + 敌人 + 拥挤时跳模型，但「强制加载」(on) 除外
+    const crowdSkip = um !== 'on' && this.ctx.settings?.quality === 'low' && this.isEnemy && !this.isBoss && this.ctx.crowded?.();
+    if (!entry || crowdSkip) return;
     this.entryBack = back;
     this._resolved = entry; // what the manifest named (the model drawn may be its `fallback`)
     this._acquireSpine(entry, id, retry);
@@ -934,6 +944,27 @@ export class UnitView {
   }
 
   /**
+   * [UNITMODELS] Apply 设置「角色模型」(ctx.settings.unitModels): 'off' cancels any in-flight load and drops the model now,
+   * so the avatar-in-rarity-diamond fallback shows (like a model that never loaded); 'on' / 'auto' (re)starts a load when
+   * none shows. render/app.js calls it for every view when 画面质量 →「角色模型」changes.
+   * @param {'auto'|'on'|'off'} m
+   */
+  refreshModel(m) {
+    if (this.destroyed) return;
+    if (m === 'off') {
+      if (this.actor || this._spineBusy) {
+        this._spineReq = (this._spineReq || 0) + 1; // cancel the in-flight load (its resolve sees a stale request)
+        this._spineBusy = false;
+        this._dropActor();
+        this.swapT = 1; this.fallback.alpha = 1; this.fallback.visible = true;
+        this._ensurePicture();
+      }
+      return;
+    }
+    if (!this.actor && !this._spineBusy) { this._retryAt = 0; this._loadSpine(true); }
+  }
+
+  /**
    * Load `entry` and show it. Every acquire is paired with exactly one release: a superseded / failed / post-destroy
    * load releases its own entry; the displayed model's entry (`_actorEntry`) is released when that model is replaced or
    * destroyed. A model that fails to load falls back to the entry's `fallback` (an optional local-client model,
@@ -971,9 +1002,10 @@ export class UnitView {
       } catch (err) {
         console.warn('[render] spine build failed', id, err?.message || err);
         this._releaseEntry(entry);
+        if (entry.fallback) this._acquireSpine(entry.fallback, id, retry);
         // a cosmetic plugin's model the renderer cannot build falls back like one that did not load (assets.js `failed`:
         // the manifest changes, retryAssets loads the installation's); the installation's own: no change
-        try { a.failed?.(entry.skel); } catch { /* ignore */ }
+        else { try { a.failed?.(entry.skel); } catch { /* ignore */ } }
         return;
       }
       // a Front ⇄ Back swap (setDir, or knocked out / standing again: _syncModel) replaces the previous model in place:
@@ -1120,6 +1152,23 @@ export class UnitView {
     this.ctx.layers.groundFx.addChild(this.blockIcon);
     this.countText = null;
     this.ammoText = null;          // 设置「弹药数量」: the magazine's count under the ammo bar (_updateAmmoCount)
+    // 2V2 对抗期: an enemy the OPPONENT placed carries a P<n> badge under its feet (its frame is pale red too, see
+    // _frameColor) — display only, driven by the spawn's confrontSeat.
+    this.sentText = null;
+    this.sentRing = null;
+    if (this.isEnemy && Number.isInteger(this.info.confrontSeat)) {
+      // 狩猎模拟: a monster the OPPOSITE team sent carries a pale-red ground ring (and the P<n> badge under it)
+      // — `_frameColor` only tints the model-less fallback portrait, so the ring is what actually reads on the field.
+      this.sentRing = new P.Graphics();
+      this.sentRing.lineStyle(4, 0xff9a86, 0.95);
+      this.sentRing.drawCircle(0, 0, 1);
+      this.ctx.layers.groundFx.addChild(this.sentRing);
+      this.sentText = new P.Text(`P${this.info.confrontSeat + 1}`, {
+        fontFamily: 'Bender, Oxanium, sans-serif', fontSize: 20, fontWeight: '700', fill: '#ff9a86', stroke: '#2a0f0c', strokeThickness: 5,
+      });
+      this.sentText.anchor.set(0.5);
+      this.hud.addChild(this.sentText);
+    }
     this.itemPips = [];
   }
 
@@ -1827,8 +1876,9 @@ export class UnitView {
     this.placed = true;
     const s = p.s;
     // fades
+    // below 0: still waiting for its arrival (the 联防 beam-in, render/app.js queueBeam) — hidden until then
     if (this.fadeIn < 1) this.fadeIn = Math.min(1, this.fadeIn + dt * 4);
-    let alpha = this.fadeIn;
+    let alpha = Math.max(0, this.fadeIn);
     if (this.down) {
       // knocked down: the Die clip ends and holds its last frame (the actor keeps its clock), no fade
       this.dieT += dt;
@@ -2097,6 +2147,17 @@ export class UnitView {
     if (this.countText && this.countText.visible) {
       this.countText.scale.set(clamp(s / 90, 0.5, 1.2));
       this.countText.position.set(x + s * 0.32, this.screen.y - s * 0.12);
+    }
+    if (this.sentText) {
+      // the 狩猎模拟 badge sits under the enemy's feet (the opponent placed it)
+      this.sentText.scale.set(clamp(s / 90, 0.5, 1.2));
+      this.sentText.position.set(x, this.screen.y + s * 0.52);
+      this.sentText.alpha = alpha;
+    }
+    if (this.sentRing) {
+      this.sentRing.position.set(x, this.screen.y);
+      this.sentRing.scale.set(s * 0.38, s * 0.19);
+      this.sentRing.alpha = alpha * 0.9;
     }
     for (let i = 0; i < this.itemPips.length; i++) {
       const pip = this.itemPips[i];

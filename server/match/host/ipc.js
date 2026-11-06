@@ -1,10 +1,11 @@
 // Parent-side validation, independent of the child API. [ASSUMED] Limits allow full battle event batches.
-import { S2C } from '../../../shared/protocol.js';
+import { S2C, S2C_FORK } from '../../../shared/protocol.js';
 
 export const HOST_IPC_LIMITS = Object.freeze({ message: 16 * 1024 * 1024, reply: 1024 * 1024, log: 4000, error: 300, depth: 64, nodes: 500000 });
 const object = v => !!v && typeof v === 'object' && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));
 const str = (v, n) => typeof v === 'string' && v.length <= n && Buffer.byteLength(v) <= n;
-const matchFrames = new Set(S2C.filter(t => t.startsWith('m.') || t.startsWith('b.')));
+// S2C_FORK (m.state / m.damage / m.removed / m.notice / b.sync / b.ext / b.damage) relays like the published frames.
+const matchFrames = new Set([...S2C, ...S2C_FORK].filter(t => t.startsWith('m.') || t.startsWith('b.')));
 
 /** Bound traversal before serializing; reject cycles/non-JSON values and never invoke accessors. */
 export function boundedJson(value, limit) {

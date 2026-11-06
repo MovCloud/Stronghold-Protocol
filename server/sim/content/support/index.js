@@ -1,7 +1,7 @@
 // server/sim/content/support/index.js — shared helpers of content wave B (bonds, garrisons, items, bands, choices).
 //
 // Battle side and prep side read the same frozen game data (server/data.js). Everything here is pure and deterministic;
-// battle helpers only go through the public Battle API (docs/SIM.md §6). Wave-B submodules import from this file and
+// battle helpers only go through the public Battle API (docs/development/SIM.md §6). Wave-B submodules import from this file and
 // never edit it; module-specific helpers live in the submodules.
 //
 // Conventions shared by every wave-B module (details in docs/CONTENT.md):
@@ -42,6 +42,13 @@ export function gameData() {
   if (!DATA) {
     try { DATA = getData({ log: QUIET }) || {}; } catch { DATA = {}; }
   }
+  return DATA;
+}
+/** Install a full, immutable data set once at thread bootstrap (never switch data between battles). */
+export function initializeGameData(data) {
+  if (!data || typeof data !== 'object' || !Object.isFrozen(data)) throw new TypeError('immutable full game data required');
+  if (DATA && DATA !== data) throw new Error('game data already initialized with a different dataset');
+  DATA = data;
   return DATA;
 }
 /** Tests only: swap the data object (null → reload the singleton). Also drops derived caches. */

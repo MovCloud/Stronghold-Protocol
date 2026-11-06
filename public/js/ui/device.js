@@ -22,8 +22,9 @@
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { pwaInstall } from '../pwa.js';
-import { html, Icon, Button } from './components.js';
+import { html, Icon, Modal, Button, Fragment } from './components.js';
 import { t } from '../../../shared/i18n.js';
+import { updateManagementViewport } from './managementScale.js';
 
 /** A touch held this long without moving opens the detail (contextmenu) on DOM controls. */
 export const LONG_PRESS_MS = 520;
@@ -133,6 +134,25 @@ export function useMediaQuery(query, win = globalThis) {
 }
 
 /**
+ * A media query's live match (re-renders when it changes: rotation, window resize, a new input device).
+ * @param {string} query
+ */
+export function useMedia(query) {
+  const [on, setOn] = useState(() => mq(globalThis, query));
+  useEffect(() => {
+    let m = null;
+    try { m = globalThis.matchMedia?.(query); } catch { m = null; }
+    if (!m) return undefined;
+    const update = () => setOn(!!m.matches);
+    update();
+    if (typeof m.addEventListener === 'function') { m.addEventListener('change', update); return () => m.removeEventListener('change', update); }
+    if (typeof m.addListener === 'function') { m.addListener(update); return () => m.removeListener(update); } // Safari < 14
+    return undefined;
+  }, [query]);
+  return on;
+}
+
+/**
  * Keep a class on <html> while a component is mounted and `on` holds (replaces CSS :has(), which Firefox ESR 115 and
  * Safari < 15.4 lack): the match screen sets sp-in-match, the connection banner sp-conn.
  * @param {string} name
@@ -208,9 +228,18 @@ export const fullscreen = {
     if (!el) return false;
     try {
       if (typeof el.requestFullscreen === 'function') await el.requestFullscreen({ navigationUI: 'hide' });
-      else if (typeof el.webkitRequestFullscreen === 'function') el.webkitRequestFullscreen();
-      else return false;
+      else if (typeof el.webkitRequestFullscreen === 'function') {
+        el.webkitRequestFullscreen();
+        if (!this.active(win)) await new Promise(resolve => {
+          const d = win.document;
+          let timer;
+          const finish = () => { clearTimeout(timer); d.removeEventListener('webkitfullscreenchange', finish); d.removeEventListener('webkitfullscreenerror', finish); resolve(); };
+          d.addEventListener('webkitfullscreenchange', finish); d.addEventListener('webkitfullscreenerror', finish);
+          timer = setTimeout(finish, 1500);
+        });
+      } else return false;
     } catch { return false; }
+    if (!this.active(win)) return false;
     // Android Chrome: a landscape game may lock the orientation while fullscreen (refused elsewhere — ignored)
     try { await win.screen?.orientation?.lock?.('landscape'); } catch { /* not allowed here */ }
     return true;
@@ -242,15 +271,33 @@ export function useFullscreen() {
 }
 
 /** Fullscreen toggle (hidden where the browser has no element fullscreen, e.g. iPhone Safari). */
-export function FullscreenButton({ class: cls = '' }) {
+export function FullscreenButton({ class: cls = '', showUnavailable = false }) {
   const on = useFullscreen();
   const [ok] = useState(() => fullscreen.supported());
-  if (!ok) return null;
-  const label = on ? t('退出全屏') : t('全屏');
-  return html`<button type="button" class=${`fsbtn tapx ${cls}`} aria-label=${label} title=${label} aria-pressed=${on ? 'true' : 'false'}
-      onClick=${() => fullscreen.toggle()}>
-    <${Icon} name=${on ? 'collapse' : 'expand'} />
-  </button>`;
+  const [busy, setBusy] = useState(false);
+  const [help, setHelp] = useState(null);
+  if (!ok && !showUnavailable) return null;
+  const label = ok ? (on ? t('退出全屏') : t('全屏')) : t('查看全屏说明');
+  const toggle = async () => {
+    if (!ok) { setHelp('unsupported'); return; }
+    if (busy) return;
+    setBusy(true);
+    // `on` follows the fullscreenchange event (useFullscreen), so no extra set here
+    try { if (!await fullscreen.toggle()) setHelp('denied'); }
+    finally { setBusy(false); }
+  };
+  return html`<${Fragment}>
+    <button type="button" class=${`fsbtn tapx ${cls}`} aria-label=${label} title=${label} aria-pressed=${on ? 'true' : 'false'}
+        aria-haspopup=${ok ? undefined : 'dialog'} disabled=${busy} onClick=${toggle}>
+      <${Icon} name=${on ? 'collapse' : 'expand'} />
+    </button>
+    <${Modal} open=${!!help} title=${t('全屏模式')} micro="DISPLAY MODE" ariaLabel=${t('全屏模式说明')} trapFocus=${true}
+        class="fullscreen-help" onClose=${() => setHelp(null)} actions=${html`<${Button} onClick=${() => setHelp(null)}>${t('知道了')}<//>`}>
+      <p>${help === 'unsupported' ? t('当前浏览器不支持网页原生全屏。部分手机浏览器（包括部分 iPhone 浏览器）无法由网页隐藏地址栏。') : t('浏览器未允许进入全屏。请直接点击全屏按钮重试，或检查浏览器权限。')}</p>
+      <p>${t('如果浏览器菜单提供“添加到主屏幕”，可以尝试从主屏幕以独立窗口打开。系统状态栏是否隐藏仍由浏览器与系统决定。')}</p>
+      <p>${t('我们不会把普通网页模式标记为“已经全屏”。')}</p>
+    <//>
+  <//>`;
 }
 
 /**
@@ -304,10 +351,12 @@ export function installDeviceSupport(win = globalThis) {
   const setVh = () => {
     const h = win.visualViewport?.height || win.innerHeight || 0;
     if (h > 0) root.style.setProperty('--sp-vh', `${h / 100}px`);
+    updateManagementViewport(win);
   };
   setVh();
   on(win, 'resize', setVh, { passive: true });
   on(win.visualViewport, 'resize', setVh, { passive: true });
+  on(win.visualViewport, 'scroll', setVh, { passive: true });
 
   // rotation: the new viewport size settles a few frames late on iOS → one more resize after it settles
   let rotTimer = 0;
@@ -367,6 +416,12 @@ export function installDeviceSupport(win = globalThis) {
     updateRotateHintPwaI18n(doc);
     offs.push(pwaInstall.subscribe((available) => { pwaBtn.hidden = !available; }));
     on(pwaBtn, 'click', () => { pwaInstall.request(); });
+  }
+
+  const fullscreenBtn = doc?.getElementById?.('rotate-hint-fullscreen');
+  if (fullscreenBtn) {
+    fullscreenBtn.hidden = !fullscreen.supported(win);
+    on(fullscreenBtn, 'click', () => { fullscreen.enter(win); });
   }
 
   installed = () => { for (const off of offs.splice(0)) { try { off(); } catch { /* ignore */ } } clearTimeout(rotTimer); installed = null; };

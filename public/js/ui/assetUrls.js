@@ -1,7 +1,9 @@
-// Asset URL resolution against data/assets.json (docs/ASSETS.md). Pure: every function takes the
+// Asset URL resolution against data/assets.json (docs/development/ASSETS.md). Pure: every function takes the
 // manifest object (or null) and returns a URL string or null — callers draw their own fallback
 // (glyph, CSS shape) when null. Only URLs present in the manifest are ever returned, so the client
 // never requests files the asset pipeline did not produce (no 404 noise in the console).
+
+import { appearanceEntry } from './skinAssets.js';
 
 const str = (v) => (typeof v === 'string' && v ? v : null);
 const obj = (v) => (v && typeof v === 'object' ? v : null);
@@ -20,14 +22,33 @@ export function uiUrl(m, key) {
   return str(obj(obj(m)?.ui)?.[key]);
 }
 
+// (fork, docs/OUTFITS.md) The player's own outfit choice: `charId → skinId | null`, set by ui/outfits.js. An operator in
+// an outfit shows the outfit's avatar / portrait instead of its own (normal and elite alike: the official client's rule —
+// an outfit replaces the E2 art too); without a choice (or the outfit's art) nothing changes.
+let outfitPick = null;
+/** @param {((charId: string) => string|null) | null} fn */
+export function setOutfitPicker(fn) { outfitPick = typeof fn === 'function' ? fn : null; }
+// `o.outfit` (a skinId, or null = the default look) overrides the own choice: another player's unit (ui/detailPanel.js).
+function outfitArt(m, chess, kind, o) {
+  const id = o && 'outfit' in o ? o.outfit : outfitPick && str(chess?.charId) ? outfitPick(chess.charId) : null;
+  return id ? str(obj(obj(obj(m)?.outfits)?.chars)?.[id]?.[kind]) : null;
+}
+
 /**
  * Operator avatar for a chess record (golden → E2 art when present).
  * @param {any} m manifest
  * @param {any} chess chess.json record (or { assets: { avatar } })
+ * @param {{ outfit?: string|null }} [o] viewer options (an explicit outfit overrides the player's own choice)
  */
-export function chessAvatarUrl(m, chess, { skin = null } = {}) {
-  const picture = skinPicture(m, chess, skin, 'avatar');
-  if (picture) return picture;
+export function chessAvatarUrl(m, chess, o = {}) {
+  // An explicit `o.skin` (upstream) is the appearance this record wears — another player's choice, so it wins over the
+  // viewer's own outfit. Then the fork's own outfit choice (docs/OUTFITS.md), then the record's own skin.
+  const skin = str(o?.skin);
+  if (skin) { const p = skinPicture(m, chess, skin, 'avatar'); if (p) return p; }
+  const of = outfitArt(m, chess, 'avatar', o);
+  if (of) return of;
+  const appearance = appearanceEntry(m, chess?.charId || chess?.assets?.spine, chess?.skin);
+  if (str(appearance?.avatar)) return appearance.avatar;
   const chars = obj(obj(m)?.chars);
   const id = str(chess?.assets?.avatar) || str(chess?.charId);
   if (!chars || !id) return null;
@@ -47,10 +68,19 @@ export function chessAvatarUrl(m, chess, { skin = null } = {}) {
  * Half-body portrait (180×360) for a chess record (golden → E2 portrait when present).
  * @param {any} m
  * @param {any} chess
+ * @param {{ skin?: string|null, outfit?: string|null }} [o] viewer options (an explicit skin or outfit overrides the
+ *   player's own choice)
  */
-export function chessPortraitUrl(m, chess, { skin = null } = {}) {
-  const picture = skinPicture(m, chess, skin, 'portrait');
-  if (picture) return picture;
+export function chessPortraitUrl(m, chess, o = {}) {
+  // Same priority as chessAvatarUrl: an explicit `o.skin` (upstream) is the appearance this record wears — another
+  // player's choice, so it wins over the viewer's own outfit. Then the fork's own outfit choice (docs/OUTFITS.md),
+  // then the record's own skin. `skinPicture` also covers the portrait-only `illust` fallback.
+  const skin = str(o?.skin);
+  if (skin) { const p = skinPicture(m, chess, skin, 'portrait'); if (p) return p; }
+  const of = outfitArt(m, chess, 'portrait', o);
+  if (of) return of;
+  const appearance = appearanceEntry(m, chess?.charId || chess?.assets?.spine, chess?.skin);
+  if (str(appearance?.portrait)) return appearance.portrait;
   const chars = obj(obj(m)?.chars);
   const id = str(chess?.assets?.portrait);
   if (!chars) return null;
@@ -71,6 +101,57 @@ export function chessPortraitUrl(m, chess, { skin = null } = {}) {
   const byChar = chess?.charId ? chars[chess.charId] : null;
   if (!byChar) return null;
   return (chess?.isGolden ? str(byChar.portraitE2) : null) || str(byChar.portrait);
+}
+
+/**
+ * The operator's OWN 立绘 of a chess record: `e2` asks for the 精英二 one (`_2`), which falls back to the 原始 one
+ * when the operator has no E2 art (1★/2★ have none) — that fallback is why the picker can offer the tile at all.
+ * @param {any} m manifest @param {any} chess chess record @param {boolean} [e2]
+ */
+export function chessOwnPortraitUrl(m, chess, e2 = false) {
+  const chars = obj(obj(m)?.chars);
+  const rec = obj(chars?.[str(chess?.charId)]);
+  if (!rec) return null;
+  return (e2 ? str(rec.portraitE2) || str(rec.portrait) : str(rec.portrait)) || null;
+}
+
+/**
+ * 商店立绘 (docs/SKINS.md): the 180×360 art the shop card and the operator detail card draw for `chess` under this
+ * browser's choice —
+ *   * absent / `''` → the operator's own portrait, exactly as before the feature (`chessPortraitUrl`: E2 for an
+ *     elite chess, which is what the card has always shown);
+ *   * `PORTRAIT_E2`  → the 精英二 立绘 explicitly, even for a chess that is not elite;
+ *   * a skinId      → that skin's 立绘.
+ * Anything unknown (a skin this install does not have, a stale id) falls back to the operator's own portrait, so a
+ * choice can never leave a card blank.
+ * @param {any} m manifest @param {any} chess chess record @param {string|null|undefined} choice
+ */
+export function shopPortraitUrl(m, chess, choice) {
+  const pick = str(choice);
+  if (!pick) return chessPortraitUrl(m, chess);
+  if (pick === PORTRAIT_E2) return chessOwnPortraitUrl(m, chess, true) || chessPortraitUrl(m, chess);
+  return skinPortraitUrl(m, chess, pick) || chessPortraitUrl(m, chess);
+}
+
+/**
+ * The 精英二 立绘 choice's value in the local 商店立绘 map (ui/skins.js). Every real skinId starts with `char_`
+ * (data/skins.json — `isSkinId` in shared/protocol.js is looser), so this cannot collide with one; and even a
+ * collision would only fall back to the operator's own portrait (`shopPortraitUrl`).
+ */
+export const PORTRAIT_E2 = 'e2';
+
+/**
+ * 干员皮肤 (docs/SKINS.md): the tall 立绘 (180×360 — the same frame `chessPortraitUrl` fills) of a chosen skin, or
+ * null when nothing is chosen / this install has no 立绘 for that skin. The skin is looked up through the operator
+ * (`chars[charId].skins[skinId]`), so a portrait chosen for one chess shows for every chess of that operator.
+ * @param {any} m manifest @param {any} chess chess record @param {string|null} skin
+ */
+export function skinPortraitUrl(m, chess, skin) {
+  const id = str(skin);
+  const charId = str(chess?.charId);
+  if (!id || !charId) return null;
+  const skins = obj(obj(obj(m)?.chars)?.[charId])?.skins;
+  return str(obj(obj(skins)?.[id])?.portrait);
 }
 
 /** Skill icon of a chess record (manifest `skills[iconId]`, else the empty skill sprite). */

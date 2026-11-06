@@ -65,12 +65,11 @@ function viewState(c) {
 async function soloToPrep(c, diff) {
   await c.open();
   await c.enter('煌');
-  await c.click('.mode-card', '独立模拟');
-  await c.click('.diff-card', diff);
-  await c.click('.create-box button', '开始独立模拟');
+  await c.createSolo(diff);
   await c.waitFor((s) => !!s.room, 'solo room');
-  if (!(await c.st()).phase) await c.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+  if (!(await c.st()).phase) await c.roomStart({ timeout: 20000 });
   await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+  await c.settled('.brief-go'); // (a click during its entrance falls through)
   await c.click('.brief__foot .btn--primary', '准备就绪');
   await c.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
   await c.click('.dband', null, { nth: 1 });
@@ -260,8 +259,9 @@ describe('user playtest #2 item 6 — 前往查看 → 返回战场 in combat (r
       await c.createCoop();
       await c.click('button', '添加 AI 队友');
       await sleep(500);
-      await c.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await c.roomStart({ timeout: 20000 });
       await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+      await c.settled('.brief-go'); // (a click during its entrance falls through)
       await c.click('.brief__foot .btn--primary', '准备就绪');
       await c.waitFor((s) => s.phase === 'BAND_DRAFT' && s.draft?.turn === s.me || s.phase === 'PREP', 'my band pick', 60000);
       if ((await c.st()).phase === 'BAND_DRAFT') {
@@ -390,11 +390,11 @@ describe('user playtest #2 item 10 — boss-round prep on the boss field (real s
       await guest.open(`?room=${room.code}`);
       await guest.enter('阿米娅');
       await guest.waitFor((s) => s.room?.code === room.code, 'guest joined');
-      await guest.click('.room-bar__right button', '准备就绪');
+      await guest.roomReady();
       await sleep(400);
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
       for (const c of [host, guest]) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
-      for (const c of [host, guest]) await c.click('.brief__foot .btn--primary', '准备就绪');
+      for (const c of [host, guest]) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
       // the draft first (a client still in the briefing would count as done without picking: its turn then runs out —
       // Match.BAND_TURN_SECONDS, 50 s each since the 2026-10-10 official-play report)
       for (const c of [host, guest]) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);
@@ -466,18 +466,11 @@ describe('user playtest #2 item 10 — boss-round prep on the boss field (real s
         assert.equal(await c.page.$('.spov__order'), null);
         assert.equal(await c.page.evaluate(() => globalThis.__SP__.store.get().match.public.deadline), deadline);
       }
-      await host.page.reload({ waitUntil: 'networkidle0' });
+      await host.page.reload({ waitUntil: 'load' });
       await host.page.waitForSelector('.spov[aria-label="教鞭选择"]', { timeout: 20000 });
       assert.deepEqual(await choiceOf(host), hostChoice, 'refresh reuses the ID and cards');
       assert.deepEqual(await choiceOf(guest), guestChoice, 'the teammate keeps its own candidates');
-      await host.page.evaluate(async () => { await (await import('/js/ui/lang.js')).switchLang('en'); });
-      await host.page.waitForSelector('.spov[aria-label="Pointing Stick Choice"]');
-      assert.match(await host.page.$eval('.spov__title', (el) => el.textContent), /Pointing Stick · Tactical Training/);
-      assert.equal(await host.page.$eval('[data-testid="ready-why"]', (el) => el.textContent), 'Complete the Pointing Stick choice first');
-      assert.equal(await guest.page.$eval('.spov', (el) => el.getAttribute('aria-label')), '教鞭选择', 'language stays per client');
-      assert.deepEqual(await choiceOf(host), hostChoice, 'language switch does not replace the offer');
-      await host.page.evaluate(async () => { await (await import('/js/ui/lang.js')).switchLang('zh'); });
-      await host.page.waitForSelector('.spov[aria-label="教鞭选择"]');
+      assert.equal(await guest.page.$eval('.spov', (el) => el.getAttribute('aria-label')), '教鞭选择');
       const refused = await host.page.evaluate(async (id) => {
         try { await globalThis.__SP__.net.request('g.choice', { idx: 0, choiceId: id }); return null; }
         catch (e) { return e.code; }

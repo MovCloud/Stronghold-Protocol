@@ -64,7 +64,9 @@ test('theme grammar: colours, times and easings; urls and expressions are refuse
 test('the theme allowlist covers exactly the root colour, time and easing tokens', () => {
   const cssDir = path.join(ROOT, 'public/css');
   const defaults = {};
-  for (const name of fs.readdirSync(cssDir).filter((n) => n.endsWith('.css'))) {
+  // admin.css is public/admin.html's self-contained palette (its header says that page never loads the game
+  // shell's CSS): its tokens are not game theme tokens, so the allowlist check skips it.
+  for (const name of fs.readdirSync(cssDir).filter((n) => n.endsWith('.css') && n !== 'admin.css')) {
     const text = fs.readFileSync(path.join(cssDir, name), 'utf8');
     for (const block of text.matchAll(/:root\s*\{([^}]+)\}/g)) {
       for (const [, token, value] of block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {

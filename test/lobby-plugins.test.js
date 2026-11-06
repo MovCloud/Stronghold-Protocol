@@ -162,11 +162,11 @@ describe('room.setPlugins (P1a: cosmetic plugins)', () => {
     host.clearInbox();
     guest.clearInbox();
     fs.writeFileSync(path.join(tmp, 'plugins', 'fresh', 'f.png'), png(2, 2, [2, 2, 2, 255]));
-    srv.packs.rescan();
+    await srv.packs.rescan();
     const toast = await host.waitFor('m.toast', (m) => m.msgid === '房间插件「{names}」的文件在服务器上变了，请在插件面板中点「重新应用」');
     assert.deepEqual([toast.kind, toast.params?.names], ['warn', 'fresh']);
     await guest.expectNone('m.toast', () => true, 150);
-    srv.packs.rescan();
+    await srv.packs.rescan();
     await host.expectNone('m.toast', () => true, 150);
     // 「重新应用」: the same list → the set of the files as they are now
     assert.equal((await host.request({ t: 'room.setPlugins', plugins: [{ id: 'fresh' }] })).t, 'ok');
@@ -185,7 +185,7 @@ describe('room.setPlugins (P1a: cosmetic plugins)', () => {
     await host.waitFor('room.state', (s) => s.inMatch === true);
     host.clearInbox();
     fs.writeFileSync(path.join(tmp, 'plugins', 'later', 'l.png'), png(2, 2, [6, 6, 6, 255]));
-    srv.packs.rescan();
+    await srv.packs.rescan();
     await host.expectNone('m.toast', (m) => m.msgid === MSG, 200);
     host.send({ t: 'g.infoReady' }); // the stub match ends once every human is ready
     await host.waitFor('room.state', (s) => s.inMatch === false);
@@ -573,12 +573,12 @@ describe('room content sets (P1c: gameplay plugins)', () => {
     await ok(host, { t: 'room.setPlugins', plugins: [{ id: 'data-demo' }] });
     await host.waitFor('room.state', (s) => s.content?.vanilla === false);
     await ok(host, { t: 'room.card', charId: OP });
-    await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card === OP);
+    await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.charId === OP);
     await ok(host, { t: 'room.leave' });
     // a new vanilla room checks the card again when the player takes the seat (server/lobby.js humanSeat)
     const plain = await room(host, 'solo');
     assert.ok(!('card' in seatOf(plain, host.id)), 'a room without the operator shows no card for it');
-    assert.equal(srv.registry.byId(host.id).card, OP, 'the session keeps it (the page sends the card it can show: installCardSync)');
+    assert.equal(srv.registry.byId(host.id).card?.charId, OP, 'the session keeps it (the page sends the card it can show: installCardSync)');
     await refuse(host, { t: 'room.card', charId: OP }, ERR.BAD_MSG);
     await ok(host, { t: 'room.leave' });
   });

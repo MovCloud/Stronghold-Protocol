@@ -7,19 +7,35 @@
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { DELAYS } from './common.js';
+import { STATE_COALESCE } from '../../wireHints.js';
 import { wireMessage } from '../../../shared/i18n.js';
 
+const stateScopes = new WeakMap();
+/** The replace mark shared by throttled state frames of one phase/round (outboundPump coalescing). */
+function stateScope(match) {
+  let scope = stateScopes.get(match);
+  if (!scope || scope.phase !== match.phase || scope.round !== match.round || scope.setupRevision !== match.setupRevision) {
+    scope = { phase: match.phase, round: match.round, setupRevision: match.setupRevision };
+    stateScopes.set(match, scope);
+  }
+  return scope;
+}
+
 export class MatchMessaging {
-  sendTo(playerId, msg) {
+  /** @param {string} [wire] JSON.stringify(msg) when the caller already has it: a host may deliver it as is */
+  sendTo(playerId, msg, wire) {
     if (this.disposed) return false;
     const ps = this.players.get(playerId) || this.spectators.get(playerId);
     if (!ps || ps.isBot || ps.left) return false;
-    try { return !!this.sendFn(playerId, msg); } catch (e) { this.reportError('send', e); return false; }
+    try { return !!(typeof wire === 'string' ? this.sendFn(playerId, msg, wire) : this.sendFn(playerId, msg)); }
+    catch (e) { this.reportError('send', e); return false; }
   }
 
-  broadcast(msg) {
+  /** @param {string} [wire] JSON.stringify(msg), encoded once for every member */
+  broadcast(msg, wire) {
     if (this.disposed) return;
-    try { this.broadcastFn(msg); } catch (e) { this.reportError('broadcast', e); }
+    try { if (typeof wire === 'string') this.broadcastFn(msg, wire); else this.broadcastFn(msg); }
+    catch (e) { this.reportError('broadcast', e); }
   }
 
   /** @param {string|{ msgid: string, params?: object }} text a string or msg() (shared/i18n.js) */
@@ -56,15 +72,17 @@ export class MatchMessaging {
    * A player's state changed: its m.private and (throttled, deduplicated) m.public (level, board, bonds…) — in a boss
    * round's prep also its pair partner's m.private, which shows this board on its other half (bossMate, item 51).
    */
+  // `_privDirty` is created after the player states (the PlayerState constructor may already mark itself dirty —
+  // setSkins does, seat.skins carrying a choice into a new match), so the guard is load-bearing, not defensive
   markPrivate(ps) {
-    if (!ps) return;
+    if (!ps || !this._privDirty) return;
     this._privDirty.add(ps);
     this._pubDirty = true;
     const m = this._bossMateOf(ps);
     if (m) this._privDirty.add(m.mate);
   }
 
-  /** Send pending m.private (per player, only when changed) and m.public (throttled ≤ 10/s). */
+  /** Send pending m.private (per player, only when changed) and m.public (normally throttled ≤ 8/s). */
   flush(forcePublic = false) {
     if (this.disposed) return;
     if (this._privDirty.size) {
@@ -76,6 +94,7 @@ export class MatchMessaging {
       }
     }
     if (this._pubDirty || forcePublic) this._maybeSendPublic(forcePublic);
+    if (this._damageDirty) this._flushDamage();
   }
 
   _sendPrivate(ps, force) {
@@ -84,7 +103,10 @@ export class MatchMessaging {
     const json = JSON.stringify(view);
     if (!force && json === ps._lastPriv) return;
     ps._lastPriv = json;
-    this.sendTo(ps.playerId, view);
+    // Coalescing scope (outboundPump): throttled privates of one phase/round share a replace mark;
+    // forced privates (match end, remakes) are critical and never coalesce.
+    if (!force) view[STATE_COALESCE] = stateScope(this);
+    this.sendTo(ps.playerId, view, json);
   }
 
   _maybeSendPublic(force) {
@@ -107,8 +129,12 @@ export class MatchMessaging {
     const json = JSON.stringify(rest);
     if (!force && json === this._lastPubJson) return;
     this._lastPubJson = json;
+    // Coalescing scope (outboundPump): throttled publics of one phase/round share a replace mark;
+    // forced publics are critical and never coalesce.
+    if (!force) view[STATE_COALESCE] = stateScope(this);
     // Snapshot building / serialization can take time; throttle from the actual broadcast, not its start.
     this._lastPubAt = this.sched.now();
-    this.broadcast(view);
+    // The dedupe key omits serverNow; the frame itself is encoded once here instead of once per member.
+    this.broadcast(view, JSON.stringify(view));
   }
 }

@@ -36,7 +36,7 @@ export function transferAiSeat(lobby, room, applicantId, botId) {
   ps.aiTakeoverRound = m.round;
   session.aiTakeoverFrom = applicantId; m.markPublic(); ps.dirty();
   resetStateDelta(conn.ws);
-  lobby.network.onHelloMsg(conn, { t: 'hello', version: PROTOCOL_VERSION, delta: stateDeltaVersion(conn.ws), name: session.name, token: session.token }, lobby.now());
+  lobby.network.onHelloMsg(conn, { t: 'hello', version: PROTOCOL_VERSION, stateDelta: stateDeltaVersion(conn.ws), name: session.name, token: session.token }, lobby.now());
   lobby.broadcastState(room); return { ok: true };
 }
 // [ASSUMED] Any electorate change cancels rather than lowering the approval threshold.

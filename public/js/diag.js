@@ -6,7 +6,7 @@
 // the prose and an exact string value in the attached battle JSON, so a name never rewrites a longer id. The battle
 // on screen can be attached as its BattleSpec (the b.start a browser receives: player ids, no names), which the dev
 // tools replay. The report's `traffic:` line sums what this page downloaded (Resource Timing `transferSize`: bytes
-// on the wire, 0 for a response from the browser cache) by the categories of shared/assetPaths.js trafficCategory,
+// on the wire, 0 for a response from the browser cache) by the categories of shared/traffic.js trafficCategory,
 // other sites apart as `external` (host bandwidth, layer 0; the server's own counters: /healthz?traffic=1).
 //
 //   recordError(source, err, detail?)  source: 'error' (uncaught) | 'rejection' (unhandled promise) | 'sim' (a content
@@ -25,7 +25,7 @@
 // gameplay plugins (P1c), `MODDED cs=… plugins=…`.
 
 import { APP_VERSION } from '../../shared/constants.js';
-import { TRAFFIC_CATEGORIES, trafficCategory } from '../../shared/assetPaths.js';
+import { TRAFFIC_CATEGORIES, trafficCategory } from '../../shared/traffic.js';
 import { DEFAULT_VERSION } from '../../shared/versions.js';
 import { roomVersion, shownVersion } from './versions.js';
 
@@ -102,11 +102,30 @@ export function clearErrorLog() { log.length = 0; total = 0; dropped = 0; }
 /** @type {Map<string, { requests: number, bytes: number, cached: number }>} category → totals */
 const traffic = new Map();
 let trafficMeter = null;
+let ownOriginCache = null;
+
+/**
+ * The origins whose downloads are this page's own: the page itself plus, when one is configured, the assets CDN
+ * (`globalThis.__spAssetCdn.base`, shared/assetCdn.js) — the art, Spine models and audio of a CDN install are this
+ * page's traffic, not another site's. Cached: the set cannot change while the page lives.
+ * @param {string | undefined} origin the page's origin
+ */
+function ownOrigins(origin = globalThis.location?.origin) {
+  if (ownOriginCache && ownOriginCache.page === origin) return ownOriginCache.set;
+  const set = new Set(origin ? [origin] : []);
+  const base = globalThis.__spAssetCdn?.base;
+  if (typeof base === 'string' && base) {
+    try { set.add(new URL(base).origin); } catch { /* a malformed base is ignored (assetCdn.js validates it) */ }
+  }
+  ownOriginCache = { page: origin, set };
+  return set;
+}
 
 /**
  * Add one Resource Timing entry (a PerformanceResourceTiming, or the page's own navigation entry) to the totals: bytes
- * on the wire (`transferSize`; headers included, 0 when the browser cache answered — counted as `cached`). A same-origin
- * URL counts under trafficCategory(path), another site's under `external`; data: / blob: URLs are not downloads.
+ * on the wire (`transferSize`; headers included, 0 when the browser cache answered — counted as `cached`). A URL of
+ * this page or of its assets CDN counts under trafficCategory(path), another site's under `external`; data: / blob:
+ * URLs are not downloads.
  * @param {{ name?: string, transferSize?: number, decodedBodySize?: number }} entry
  * @param {string} [origin] the page's origin
  */
@@ -115,7 +134,7 @@ export function recordResourceEntry(entry, origin = globalThis.location?.origin)
   let u;
   try { u = new URL(entry.name, origin || 'http://localhost'); } catch { return; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-  const cat = origin && u.origin !== origin ? 'external' : trafficCategory(u.pathname);
+  const cat = ownOrigins(origin).has(u.origin) ? trafficCategory(u.pathname) : 'external';
   let t = traffic.get(cat);
   if (!t) traffic.set(cat, (t = { requests: 0, bytes: 0, cached: 0 }));
   const bytes = Number(entry.transferSize) || 0;
@@ -315,7 +334,7 @@ export function buildDiagnostics(input) {
     c.attempt ? `retry ${c.attempt}` : null, c.lastError ? `last error ${messageOf(c.lastError)}` : null)}`);
   const pub = state.match?.public || null;
   const room = state.room || null;
-  lines.push(`where: ${join(pub?.phase ? `phase ${pub.phase}` : room ? 'room' : state.session?.entered ? 'lobby' : 'title',
+  lines.push(`where: ${join(pub?.phase ? `phase ${pub.phase}` : room ? 'room' : state.session?.entered === false ? 'name dialog' : 'lobby',
     Number.isFinite(pub?.round) ? `round ${pub.round}` : null, room?.mode ? `mode ${room.mode}` : null,
     room?.difficulty ? `difficulty ${room.difficulty}` : null,
     Array.isArray(pub?.players) ? `players ${pub.players.length}` : Array.isArray(room?.seats) ? `seats ${room.seats.filter(Boolean).length}` : null)}`);

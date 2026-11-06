@@ -1,4 +1,4 @@
-// test/net-online-cap.test.js — SP_MAX_ONLINE / the `maxOnline` option (server/net.js).
+// test/net-online-cap.test.js — the online cap (server/onlineLimit.js limits file, Network.serverFull in server/net.js).
 //
 // The cap is an admission decision for a *new* player, not a socket limit and not a way to evict anyone: a token that
 // still resolves resumes (even when the cap is reached), an expired token no longer counts as a resume, a second
@@ -7,13 +7,26 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { startServer } from '../server/index.js';
 import { TestClient } from './helpers/wsClient.js';
 
-/** Start a server on a free port, run `fn({ url })`, and always close it. */
+/**
+ * Start a server on a free port, run `fn({ url })`, and always close it.
+ * The fork has no `maxOnline` option: the online cap comes from the limits file (server/onlineLimit.js), so the cap the
+ * tests below describe is supplied as that file. The admission behaviour is the same, only its source differs.
+ */
 async function withServer(opts, fn) {
-  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, ...opts });
+  const { maxOnline, ...rest } = opts;
+  let limitFile = null;
+  if (maxOnline !== undefined) {
+    limitFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sp-limit-')), 'limits.json');
+    fs.writeFileSync(limitFile, JSON.stringify({ limit: maxOnline }));
+  }
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, onlineLimitFile: limitFile, ...rest });
   const url = `ws://127.0.0.1:${srv.port}/ws`;
   try {
     return await fn({ srv, url });

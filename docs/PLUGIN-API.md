@@ -77,6 +77,7 @@ replacement. No route or frozen plugin grammar member is added; the stable surfa
 | `manifest.field.data` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
 | `manifest.field.description` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
 | `manifest.field.dsl` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
+| `manifest.field.emotes` | stable | 0.3.1 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
 | `manifest.field.enemies` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
 | `manifest.field.englishName` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |
 | `manifest.field.entry` | stable | 0.3.0 | `shared/plugins/manifest.js#MANIFEST_FIELDS` |

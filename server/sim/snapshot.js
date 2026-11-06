@@ -3,7 +3,7 @@
 // b.snap  = { fieldId, t, units: [[id, x, y, hp, maxHp, sp, spMax, flags, anim]], dp, killed, total, resolved }
 //   (hp of a countdown summon — unit.countdown, content/tokens.js startCountdown — is maxHp × the share of its life left)
 // UnitInfo = { id, kind, side, ownerId, defId, name, tier, golden, spine, avatar, x, y, facing, dir, maxHp, motion?, boss?, uid?,
-//   form?, skillIndex?, ammoSkill?, moduleId?, items?, standInFor?, diy?, skin? }  (ammoSkill = an ally whose skill is an ammo
+//   form?, skillIndex?, ammoSkill?, moduleId?, items?, standInFor?, diy?, skin?, potential?, cultivate? }  (ammoSkill = an ally whose skill is an ammo
 //   magazine: the HP bar shows its rounds as cells, b.snap `ammo`; standInFor = the replaced operator's charId of a 补位
 //   stand-in; diy = a 自选 piece's pick { charId, skillIndex, uniEquipId } — defId is its slot, spine / avatar the operator's;
 //   skin = the owning player's chosen skinId, docs/SKINS.md — the client draws that appearance instead of the operator's,
@@ -18,16 +18,18 @@
 // ally's = 隐匿 / 迷彩 whatever it blocks.
 
 import { UF, ANIM } from '../../shared/constants.js';
+import { unitStatsEntry } from '../../shared/protocol.js';
 import { DIE_ANIM_TIME, ATTACK_ANIM_TIME, DEPLOY_ANIM_TIME } from './constants.js';
 import { enemyStealthed } from './targeting.js';
 
 const r2 = (v) => Math.round(v * 100) / 100;
 const r1 = (v) => Math.round(v * 10) / 10;
 
-/** Static per-unit info sent on spawn / in m.field. */
-export function unitInfo(u) {
+/** Static per-unit info sent on spawn / in m.field. Opening metadata may supply already-computed stats. */
+export function unitInfo(u, stats = null) {
   const d = u.def || {};
-  const interval = u.s?.interval;
+  // `stats` is the already-computed cache (fieldMeta's detail DTO): reading it must not force a lazy `_recalc`
+  const interval = (stats && typeof stats === 'object' ? stats : u.s)?.interval;
   const atkInterval = Number.isFinite(interval) && interval > 0 ? Math.round(interval * 1000) / 1000 : undefined;
   // Seed from the first published value, before a later buff can change the interval.
   if (u._rateSent === undefined) u._rateSent = atkInterval;
@@ -55,7 +57,7 @@ export function unitInfo(u) {
     y: r2(u.y),
     facing: u.facing ?? 1,
     dir: u.dir ?? 'RIGHT',
-    maxHp: Math.max(1, Math.round(u.s.maxHp)),
+    maxHp: Math.max(1, Math.round((stats && typeof stats === 'object' ? stats : u.s).maxHp)),
     motion: u.motion === 'FLY' ? 'FLY' : undefined,
     boss: u.isBoss ? true : undefined,
     // the unit's current model form (an enemy's content/enemies/helpers.js setForm, a 傀儡师's 替身 — render/units.js FORMS): a
@@ -239,13 +241,17 @@ export function moteView(u) {
 /** Upper bound of the mote count a snapshot may carry (the sim's own caps: 3, six while S2 runs). */
 export const MOTE_MAX = 9;
 
-/** Units included in a snapshot: deployed & visible, plus recently dead ones (DIE animation). */
-export function snapshotUnits(units, t) {
+/** Units included in a snapshot: deployed & visible, plus recently dead ones (DIE animation).
+ * Optional detail DTOs follow the exact same selection, using only the stats already read by the tuple.
+ */
+export function snapshotUnits(units, t, unitStats = null) {
   const out = [];
   for (const u of units) {
     if (u.hidden) continue;
-    if (u.alive && u.deployed) out.push(unitTuple(u, t));
-    else if (!u.alive && t - u.deathAt < DIE_ANIM_TIME && u.deathAt > -Infinity) out.push(unitTuple(u, t));
+    if ((u.alive && u.deployed) || (!u.alive && t - u.deathAt < DIE_ANIM_TIME && u.deathAt > -Infinity)) {
+      out.push(unitTuple(u, t));
+      if (unitStats) unitStats.push(unitStatsEntry(u, u._s || null));
+    }
   }
   return out;
 }

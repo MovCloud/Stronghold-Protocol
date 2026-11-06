@@ -17,6 +17,7 @@
 import { compileEffect } from './effect.js';
 import { FX_LIST_URL, loadFxList } from './available.js';
 import { setIndexVersion } from './mounts.js';
+import { assetFetch, loadAssetImage } from '../../importedAssets.js';
 import { mergePluginFx } from './pluginLibrary.js';
 const MAX_PARALLEL = 8;
 
@@ -84,7 +85,7 @@ export class FxLibrary {
    */
   constructor(opts = {}) {
     this.assets = opts.assets || null;
-    this._defaultFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : null;
+    this._defaultFetch = assetFetch;
     this.fetch = opts.fetch || this._defaultFetch;
     this.listUrl = opts.listUrl || FX_LIST_URL;
     this.list = isObj(opts.list) ? opts.list : null;
@@ -317,13 +318,8 @@ export class FxLibrary {
       return { image, flipped: true };
     }
     if (typeof Image === 'undefined') return null;
-    const image = await new Promise((resolve, reject) => {
-      const im = new Image();
-      im.crossOrigin = 'anonymous';
-      im.onload = () => resolve(im);
-      im.onerror = () => reject(new Error(`fx image ${url}`));
-      im.src = url;
-    });
+    const image = await loadAssetImage(url);
+    if (!image) throw new Error(`fx image ${url}`);
     return { image, flipped: false };
   }
 

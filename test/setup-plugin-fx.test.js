@@ -4,10 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fxFixture } from './helpers/fxFixtures.js';
+import { tryFileLink } from './helpers/links.js';
 import { installedFxReferences, officialFxReferences } from '../server/plugins/fxReferences.js';
 import { checkPluginFx, pluginFxExtractionAllowed } from '../tools/setup.mjs';
 
-test('setup notices installed official references absent from data/index, without reading scripts or links', t => {
+// Windows has `python` but not always `python3` (the Store alias exits 9009); the same fallback as the other Python tests.
+const PY = ['python3', 'python'].find((bin) => spawnSync(bin, ['--version']).status === 0);
+
+test('setup notices installed official references absent from data/index, without reading scripts or links', { skip: !PY && 'no python3' }, t => {
   const f = fxFixture(t);
   f.put('plugins/demo/plugin.json', { operators: ['ops.json'], assets: 'assets.json', entry: { sim: 'evil.js' } });
   f.put('plugins/demo/ops.json', [{ fx: { unit: 'char_4217_makoto' } }, { origin: { charId: 'char_9001_test' }, art: { assets: { spine: 'char_9002_test' } } }, { charId: 'char_9003_test' }]);
@@ -18,13 +22,15 @@ test('setup notices installed official references absent from data/index, withou
   f.put('public/assets/local/fx/index.json', { units: { char_4217_makoto: {} } });
   assert.deepEqual(checkPluginFx(f.root), ids.slice(1));
   f.put('plugins/linked/plugin.json', { operators: ['linked.json'] });
-  fs.symlinkSync(path.join(f.root, 'plugins/demo/ops.json'), path.join(f.root, 'plugins/linked/linked.json'));
+  if (!tryFileLink(path.join(f.root, 'plugins/demo/ops.json'), path.join(f.root, 'plugins/linked/linked.json'))) {
+    t.skip('this OS refuses file links without a privilege'); return;
+  }
   assert.deepEqual(installedFxReferences(f.root), ids);
   const r = spawnSync(process.execPath, ['tools/local-extract/plugin-fx.mjs', f.root], { encoding: 'utf8' });
   assert.equal(r.status, 0); assert.deepEqual(JSON.parse(r.stdout), ids, 'extractor uses exactly the setup reference reader');
   f.put('.cache/gamedata/excel/character_table.json', { char_4217_makoto: { skills: [{ skillId: 'skcom_synthetic' }] } });
   const source = `import sys, json\nsys.path.insert(0, ${JSON.stringify(path.resolve('tools/local-extract'))})\nimport fx\nprint(json.dumps(fx.game_data(${JSON.stringify(f.root)})))`;
-  const py = spawnSync('python3', ['-c', source], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  const py = spawnSync(PY, ['-c', source], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   assert.equal(py.status, 0, py.stderr);
   const discovered = JSON.parse(py.stdout);
   assert.deepEqual(discovered.chars, ids); assert.deepEqual(discovered.skills.char_4217_makoto, ['skcom_synthetic']);

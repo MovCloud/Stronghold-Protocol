@@ -53,7 +53,9 @@
 // Pure logic, no Preact / DOM: Node-testable (test/ui/stats.test.js); localStorage is touched only by loadStats /
 // saveStats / their helpers.
 
+import { parseLegacyBackup } from '../history/legacyBackup.js';
 import { PHASE } from '../../../shared/constants.js';
+import { MAX_PLAYER_CAPACITY } from '../../../shared/playerCapacity.js';
 import { sanitizeName } from './playerName.js';
 import { DEFAULT_VERSION, versionById } from '../../../shared/versions.js';
 
@@ -69,6 +71,11 @@ export const FULL_KEEP = 30;
 export const MAX_CHARS = 800_000;
 /** Largest export file the page reads. */
 export const IMPORT_MAX_CHARS = 8_000_000;
+
+const listeners = new Set();
+export function subscribeStats(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+const notifyStats = () => { for (const listener of listeners) listener(); };
+if (typeof window !== 'undefined') window.addEventListener('storage', (e) => { if (e.key === FULL_KEY) notifyStats(); });
 
 const FULL_KEY = `sp.pref.${STATS_PREF_KEY}`;
 const DAMAGED_KEY = `${FULL_KEY}.damaged`;
@@ -87,9 +94,10 @@ const vsOf = (v) => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : nul
 export function contentOf(c) {
   if (!isObj(c) || c.vanilla === true || !vsOf(c.cs)) return null;
   const list = (Array.isArray(c.plugins) ? c.plugins : [])
+    .filter((p) => typeof p === 'string' || ['content', 'script', 'trusted'].includes(p?.class))
     .map((p) => (typeof p === 'string' ? p : isObj(p) && typeof p.id === 'string' ? `${p.id}@${typeof p.version === 'string' ? p.version : '?'}` : null))
     .filter((x) => typeof x === 'string' && x.length <= 80).slice(0, 32);
-  return { cs: c.cs, plugins: list };
+  return list.length ? { cs: c.cs, plugins: list } : null;
 }
 /** Did the record's match play gameplay plugins (unofficial)? @param {any} rec */
 export const isModdedRecord = (rec) => !!(isObj(rec) && rec.content);
@@ -137,7 +145,7 @@ const bool = (v, d = false) => (typeof v === 'boolean' ? v : d);
 const str = (v, max = 64) => (typeof v === 'string' && v.length ? v.slice(0, max) : null);
 
 // per-record bounds (an imported file is foreign data: nothing a row holds may grow without limit)
-const MAX_PLAYERS = 6; // the game seats 4
+const MAX_PLAYERS = MAX_PLAYER_CAPACITY; // preserve every supported seat, still bounded for foreign records
 const MAX_LINEUP = 12;
 const MAX_ITEMS = 4;
 const MAX_BONDS = 24;
@@ -380,8 +388,9 @@ export function loadStats() {
 }
 
 /**
- * The stored records for a glance (the lobby's 成就统计 card): read and migrated in memory only — nothing is written back
- * and an unreadable or newer value reads as no records, so the 统计数据 page still finds it and says so.
+ * The stored records for a glance (the lobby's 成就统计 card and the trophies of 名片, ui/playerCard.js): read and
+ * migrated in memory only — nothing is written back and an unreadable or newer value reads as no records, so the
+ * 统计数据 page still finds it and says so.
  * @returns {any[]}
  */
 export function peekStatsRecords() {
@@ -415,6 +424,7 @@ export function compactRecord(rec) {
     playerId: self.playerId, seat: self.seat, alive: self.alive, victory: self.victory, roundsPassed: self.roundsPassed,
     eliminatedRound: self.eliminatedRound, bandId: self.bandId, title: self.title, left: self.left, stats: self.stats,
     ...(Number.isInteger(self.aiTakeoverRound) ? { aiTakeoverRound: self.aiTakeoverRound } : {}),
+    // (the trophies and the experience add up across every record: 名片 / 成就统计 and the settlement's LV, screens/settle.js)
     trophies: self.trophies,
     reward: self.reward,
     ...(usedBondIds.length ? { usedBondIds } : {}),
@@ -473,6 +483,7 @@ export function saveStats(stats) {
       const ls = globalThis.localStorage;
       if (!ls) return false; // no storage at all (disabled by the browser)
       ls.setItem(FULL_KEY, JSON.stringify({ v: STATS_VERSION, records: recs }));
+      notifyStats();
       return true;
     } catch { /* quota or storage disabled — fall through to shrinking */ }
     if (recs.length <= 8) return false; // a small history that still does not fit is foreign quota pressure
@@ -499,9 +510,12 @@ export function roomModeOf(modeId, roomMode) {
  * without players (the error-path settlement) or matches the local player did not take part in (spectator
  * seats get every result pushed too — eliminated players, who ARE in players[], keep recording).
  * @param {any} res raw m.result payload
- * @param {{ myId?: string|null, roomMode?: string|null, vs?: string|null, content?: any, version?: string|null, now?: number }} ctx
+ * @param {{ myId?: string|null, roomMode?: string|null, vs?: string|null, content?: any, version?: string|null,
+ *   lastRound?: number|null, now?: number }} ctx
  *   vs: the room's visual set (room.state.content.vs); content: room.state.content (its content set when it played
- *   gameplay plugins); version: the official version it played (null / 第二期下半: left out) — see the header
+ *   gameplay plugins); version: the official version it played (null / 第二期下半: left out) — see the header.
+ *   lastRound: the match's own last round (m.public.lastRound) — m.result never carries it, so a re-viewed match would
+ *   otherwise fall back to the 14-round default (normalizeResult).
  * @returns {any|null}
  */
 export function buildRecord(res, ctx = {}) {
@@ -517,7 +531,7 @@ export function buildRecord(res, ctx = {}) {
     end: 'settled',
     victory: bool(r.victory),
     roundsPassed: int(r.roundsPassed, 0),
-    lastRound: num(r.lastRound),
+    lastRound: num(r.lastRound ?? ctx.lastRound),
     hiddenReached: bool(r.hiddenReached),
     hiddenCleared: bool(r.hiddenCleared),
     reason: str(r.reason),
@@ -709,7 +723,8 @@ function storeRecord(rec) {
  * Record a finished match end-to-end (load → append → save). Returns the built record, or null when
  * nothing was stored (no players / not my match / replay).
  * @param {any} res raw m.result payload
- * @param {{ myId?: string|null, roomMode?: string|null, vs?: string|null, now?: number }} [ctx]
+ * @param {{ myId?: string|null, roomMode?: string|null, vs?: string|null, content?: any, now?: number,
+ *   lastRound?: number|null }} [ctx] — see buildRecord
  * @returns {any|null}
  */
 export function recordResult(res, ctx = {}) {
@@ -755,6 +770,9 @@ export function mergeStats(a, b) {
  *   not be read; name = newest usable imported self nickname (the caller only adopts it when its current name is empty)
  */
 export function importStats(raw, current) {
+  if (raw?.format === 'stronghold-match-history') {
+    raw = { v: STATS_VERSION, records: parseLegacyBackup(JSON.stringify(raw)).map((r) => buildRecord(r.result, { myId: r.playerId, now: r.endedAt })).filter(Boolean) };
+  }
   if (isObj(raw) && raw.kind != null && raw.kind !== 'local-stats') {
     const err = new Error('not a stats export'); // the page shows its own text
     err.code = 'stats-bad-file';

@@ -24,11 +24,16 @@ test('the official effectChoose sprites, all in the asset list; no drawn stand-i
   assert.equal(P.TURN_POPUP_MS, 1200);
 });
 
-test('screens/game.js: the disc on the shared draft\'s own turn and in solo (the maintainer, 2026-10-22), with the 轮到你 sound, once the art is in, never with reduced motion', () => {
+test('screens/game.js: the disc on my turn in the shared draft (a concurrent one too) and in solo (the maintainer, 2026-10-22), with the 轮到你 sound, once the art is in, never with reduced motion', () => {
   const g = read('public/js/screens/game.js');
-  // (solo: the draft is the player's from its start — the same test as the timer ticks' myPick)
-  assert.match(g, /const spMine = !!sp && \(solo \|\| sp\.turnPid === myId\) && !sp\.pickOf\.has\(myId\);/);
-  assert.match(g, /const myPick = sp && \(solo \|\| sp\.turnPid === myId\) && !sp\.pickOf\.has\(myId\);/);
+  const c = read('public/js/ui/choiceOverlay.js');
+  // The turn logic is choiceOverlay's turnPopupDue (this fork: it also covers a concurrent draft), extended to solo as
+  // the draft opens; the match screen renders the disc, so the overlay itself must not (one disc, not two).
+  assert.match(c, /return !!sp && !personal && draftMyTurn\(sp, myId, solo\) && sp\.pickOf\.get\(myId\) == null;/);
+  assert.doesNotMatch(c, /<\$\{TurnPopup\}/, 'the overlay does not render the disc');
+  assert.match(g, /const spMine = turnPopupDue\(sp, \{ myId, solo \}\);/);
+  // (solo: the draft is the player's from its start — the same test as the timer ticks myPick)
+  assert.match(g, /const myPick = sp && draftMyTurn\(sp, myId, solo\) && !sp\.pickOf\.has\(myId\);/);
   assert.doesNotMatch(g, /!!sp && !solo/, 'no co-op-only disc');
   const tp = read('public/js/ui/turnPopup.js');
   assert.doesNotMatch(tp, /a shared draft only/);

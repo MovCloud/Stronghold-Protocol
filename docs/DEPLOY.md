@@ -9,7 +9,7 @@
 |---|---|
 | 服务器 CPU | 战斗在各玩家浏览器里模拟（DESIGN §14），服务器只负责回合、经济和校验：**每个房间每个作战回合约 1 ms CPU**。AI 队友 / 掉线玩家的战场由服务器模拟：作战开始时 3 个 AI 战场在开发机上约 0.2–0.5 s CPU，小主机上可能要几秒（分成 8 ms 小片执行，不会卡住其他房间）。`SP_VERIFY=all` 会复算每个真人战场，CPU 明显增加，小主机建议保持 `off` 或 `sample`。AI 布阵的试算也会消耗 CPU；原版房间可设 `SP_BOT_REHEARSAL=host`，让房主浏览器代算（见下面）。 |
 | 服务器内存 | 空闲约 100 MB，每个进行中的对局再增加几 MB。 |
-| 网络 | 4 人对局中服务器每回合下行约 0.25 MB（DESIGN §14 实测；0.2.6 起 1 KB 以上的 WebSocket 消息用 permessage-deflate 压缩，实测一局单人对局的服务器消息从 173 KB 降到 60 KB，约为原来的三分之一）。首次进入游戏时浏览器要从主机下载所需的图片 / Spine 模型 / 音频（按需加载，之后走浏览器缓存），公网隧道带宽小时第一次会慢一些。0.2.6 起服务器启动后在后台给素材算内容哈希（第一次约 1–20 秒，看机器和硬盘；之后只检查大小和修改时间），下发的素材清单里每个地址带上哈希：浏览器把图片、模型和音频缓存一年，服务器更新、重新解压或 Docker 重建之后，玩家只重新下载内容真的变了的文件。哈希存在 `.cache/asset-hashes.json`，删掉会重新计算；目录不可写（例如只读的容器）时只在内存里算。 |
+| 网络 | 4 人对局中服务器每回合下行约 0.25 MB（DESIGN §14 实测；设 `SP_WS_COMPRESSION=on` 可以对状态和战斗流消息启用 permessage-deflate 压缩，本 fork 默认关闭；上游 0.2.6 默认压缩 1 KB 以上的消息，实测一局单人对局的服务器消息从 173 KB 降到 60 KB）。首次进入游戏时浏览器要从主机下载所需的图片 / Spine 模型 / 音频（按需加载，之后走浏览器缓存），公网隧道带宽小时第一次会慢一些。0.2.6 起服务器启动后在后台给素材算内容哈希（第一次约 1–20 秒，看机器和硬盘；之后只检查大小和修改时间），下发的素材清单里每个地址带上哈希：浏览器把图片、模型和音频缓存一年，服务器更新、重新解压或 Docker 重建之后，玩家只重新下载内容真的变了的文件。哈希存在 `.cache/asset-hashes.json`，删掉会重新计算；目录不可写（例如只读的容器）时只在内存里算。 |
 | 磁盘 | 素材约 720 MB（`public/assets`，含中文约 65 MB、日文约 85 MB、英文约 71 MB、韩文约 80 MB、本土语言约 18 MB 的干员语音）+ 依赖约 125 MB（`node_modules`；整合包只带运行依赖，约 65 MB）；可选的本地提取约 40 MB（`.venv-extract`）+ 约 330 MB（贴图、各战场官方场景和官方战斗特效，见第 6 节）。完整包解压后约 1.16 GB。 |
 | 玩家设备 | 支持 WebGL 的现代浏览器（Chrome / Edge / Firefox / Safari 最新版），电脑或手机平板（横屏）。老旧设备可在设置里调低画质或访问 `/?board=2d`。 |
 
@@ -25,12 +25,12 @@
 
 ### 1.1 安装与首次启动
 
-1. 安装 Node.js 22 LTS 和 Git（在 PowerShell 或「终端」里；用下面的整合包时不需要 Git）：
+1. 安装 Node.js 24 LTS 和 Git（在 PowerShell 或「终端」里；用下面的整合包时不需要 Git）：
    ```powershell
    winget install OpenJS.NodeJS.LTS
    winget install Git.Git
    ```
-   装完**关闭并重新打开**终端，`node -v` 应显示 v22 或更高（winget 的 LTS 目前是 v24.x，同样可用）。没有 winget 时从 <https://nodejs.org/zh-cn/download> 和 <https://git-scm.com/download/win> 下载安装。
+   装完**关闭并重新打开**终端，`node -v` 应显示 v24.x（只支持 Node.js 24；winget 的 LTS 目前就是 v24.x）。没有 winget 时从 <https://nodejs.org/zh-cn/download> 和 <https://git-scm.com/download/win> 下载安装。
 2. 下载，三选一。建议放在一个固定、短、**不在 OneDrive 同步范围内**的目录，例如 `C:\Stronghold-Protocol`：
    - **完整包（推荐）**：在仓库的 [Releases](https://github.com/sganggs/Stronghold-Protocol/releases) 页面下载最新版本的 `Stronghold-Protocol-v<版本>.zip`（约 800 MB，解压后约 1.16 GB；已含运行依赖、前端库和全部素材，包括中文、日文、英文、韩文和本土语言的干员语音和官方 3D 棋盘、各战场官方场景、官方战斗特效等本地客户端素材），解压后把里面的 `Stronghold-Protocol` 文件夹放到上述位置。不需要 Git，首次启动也不用再下载素材。素材版权归上海鹰角网络 / Yostar，仅限非商业使用，见 [NOTICE.md](../NOTICE.md)。
    - **精简包**：同一页面的 `Stronghold-Protocol-v<版本>-lite.zip`（约 25 MB）。代码、运行依赖和前端库与完整包相同，但不带素材：美术、Spine 模型、音频（含全部干员语音）、字体、表情和「玩法说明」教程图在首次启动时由 setup 从公开镜像下载（约 720 MB，显示进度，可中断续传；镜像设置见下面的「国内镜像下载」）。官方 3D 棋盘等本地客户端素材需要用本机客户端提取，或从同一版本的完整包复制（第 6 节）。适合下载大文件不方便、或想先下一个小包的情况；放置方式同完整包。
@@ -268,7 +268,9 @@ docker run -d --name stronghold -p 3000:3000 --restart unless-stopped \
   -v "$PWD/public/assets:/app/public/assets:ro" stronghold-protocol
 ```
 
-镜像从源码（`git clone`）构建，Releases 的整合包不含 `Dockerfile`。镜像基于 `node:22-alpine`，多阶段构建，只含生产依赖（包括 `ses@2.3.0` 和 `acorn@8.18.0`）；`public/vendor`（含 `ses.umd.js` / `acorn.mjs`）在构建时生成。构建阶段会删掉外部 AI / 语言模型集成的文件并写入 `server/release-without-llm`，与发布包同一道门（§35.66）：镜像里的服务器忽略 `SP_BOT_STRATEGY=external` 及相关变量，用内置 AI。`node_modules` 是镜像安装目录里的实际文件，不是指向镜像外的符号链接，脚本沙箱子进程可以在 `--allow-fs-read` 范围内读取。`.dockerignore` 排除了 `public/assets`（不会把宿主机素材打进构建上下文）；`public/fonts`、`data/assets.json` 和 `data/local-assets.json` 若存在会被复制进去。环境变量同 README（`-e SP_VERIFY=sample` 等）。健康检查：`GET /healthz`。
+镜像从源码（`git clone`）构建，Releases 的整合包不含 `Dockerfile`。镜像基于 `node:24-alpine`，多阶段构建，只含生产依赖（包括 `ses@2.3.0` 和 `acorn@8.18.0`）；`public/vendor`（含 `ses.umd.js` / `acorn.mjs`）在构建时生成。构建阶段会删掉外部 AI / 语言模型集成的文件并写入 `server/release-without-llm`，与发布包同一道门（§35.66）：镜像里的服务器忽略 `SP_BOT_STRATEGY=external` 及相关变量，用内置 AI。`node_modules` 是镜像安装目录里的实际文件，不是指向镜像外的符号链接，脚本沙箱子进程可以在 `--allow-fs-read` 范围内读取。`.dockerignore` 排除了 `public/assets`（不会把宿主机素材打进构建上下文）；`public/fonts`、`data/assets.json` 和 `data/local-assets.json` 若存在会被复制进去。环境变量同 README（`-e SP_VERIFY=sample` 等）。健康检查：`GET /healthz`。
+
+**前端打包（本 fork）**：镜像另有一个构建阶段，用开发依赖里的 Vite 运行 `npm run build`，把界面层（`public/js`、`public/css`）打成 `public/build/` 里带内容哈希的文件，运行阶段只复制结果（Vite 不进运行镜像），并默认 `SP_CLIENT=build`：首页使用打包版本，`/build/assets/` 下的文件可长期缓存。`/shared`、`/sim`、`/data`、两个 Web Worker、启动脚本、图标、字体和 Pixi 仍按原路径提供，所以 `public/js` 也照常保留在镜像里。设 `-e SP_CLIENT=source` 可改回源码页面。不用 Docker 时，`npm run build` 后以 `SP_CLIENT=build npm start` 启动；没有打包结果时会退回源码页面并在日志里提示。
 
 **持久化插件**：把命名卷或宿主机目录挂到 `/app/plugins`，例如加 `-v stronghold-plugins:/app/plugins`。
 镜像在 `/app/plugin-resources` 保留只读的 `_template/`、`README.md` 和 `AGENTS.md`，用
@@ -338,7 +340,7 @@ volumes:
 | 3D 棋盘没出现 | 需要本地提取的棋盘贴图（`node tools/doctor.mjs` 会显示「3D 棋盘可用」），以及支持 WebGL2 的浏览器。没有客户端的服务器可以从同一版本的整合包复制本地素材（第 6 节） |
 | 素材地址里的 `~` 加一串字母数字 | `/assets/~<哈希>/…` 是 0.2.6 起的带版本地址（见第 0 节「网络」），浏览器可以长期缓存，属于正常现象。怀疑它导致问题时，可以用 `SP_ASSET_INDEX=0` 启动服务器临时关闭（清单改回普通地址），并请在 issue 里说明 |
 | 想知道开服电脑上传了多少流量 | 浏览器打开 `http://localhost:3000/healthz?traffic=1`（换成你的端口）：`traffic.http` 是服务器启动以来各类内容（`assets` 图片和模型、`audio` 音频、`code` 页面和脚本、`data` 游戏数据和素材清单）发出的字节数和请求数（压缩后的实际字节，`notModified` 是只回了「没变」的 304），`traffic.ws` 是 WebSocket 的线上字节（`wireOut` / `wireIn`，压缩后）和压缩前的消息字节（`payloadOut` / `payloadIn`）。数字只在内存里，重启后从 0 开始；只有本机和局域网（含虚拟局域网地址）的访问能看到，公网访问者（包括经隧道 / 反代转发来的）只拿到普通的 `/healthz`。玩家那边：设置 →「问题反馈」复制的诊断里有一行 `traffic:`，是这个页面从打开起下载的字节数（`cached` 是浏览器缓存直接给的，不占流量；`external` 是其他网站，例如 Google 字体） |
-| 断线 | 同盟模拟 10 分钟内、独立模拟 24 小时内（`config.constants.singleReconnectTime`；第一期数据没有这项，24 小时是沿用的便利 [ASSUMED]）用同一浏览器重新打开页面，自动回到原座位。同盟掉线期间按原阵容自动作战、到时自动准备（不会代为购买；想让 AI 代打请用「离开模拟 → 暂离（AI 托管）」）；第二期独立模拟不计时，等你回来。第一期独立模拟的休整与机变按每轮计时，断线后仍可在这 24 小时内回来 |
+| 断线 | 同盟模拟在对局结束前（所有博士都掉线时为 10 分钟内）、独立模拟 24 小时内（`config.constants.singleReconnectTime`；第一期数据没有这项，24 小时是沿用的便利 [ASSUMED]）用同一浏览器重新打开页面，自动回到原座位。同盟掉线的前 2 回合按原阵容自动作战、到时自动准备（不会代为购买），仍未回来则由 AI 托管，重连后自动解除；想主动让 AI 代打请用「离开模拟 → 暂离（AI 托管）」；独立模拟不计时（第二期；第一期的休整与机变按每轮计时，除非开启「不限时」），等你回来，断线后仍可在这 24 小时内回来 |
 
 ## 6. 本地客户端素材（可选）
 
@@ -515,7 +517,64 @@ Node 22 的 `--permission` **不限制网络**（TCP/UDP/DNS/监听均可能可�
 网络命名空间限制出站与内网访问，并设置 OS 内存/CPU 限额。父进程已对日志、启动错误、发送帧、RPC 回复等 IPC
 做形态和长度复核（DESIGN §32.11），但 Node 在复核前已解码 IPC，不能据此声称免疫内存炸弹或消息洪泛。
 
-## 11. 官方版本（0.3.2 起）
+## 11. 断点续玩：重启后接着打（可选，Valkey）
+
+默认所有房间、会话和对局只在内存里，重启服务器会让进行中的对局全部结束。设置 `SP_REDIS_URL`
+指向一个 [Valkey](https://valkey.io/)（与 Redis 协议兼容，Redis 也可以）后，服务器会把对局「存档」，
+重启后玩家用同一个浏览器重新连上就回到原来的房间和对局。不设这个变量时什么都不连接，行为与以前完全相同。
+（思路来自 [xinhai-ai/Stronghold-Protocol](https://github.com/xinhai-ai/Stronghold-Protocol) 的 Redis 断点续玩，本服按自己的单机/集群结构重写。）
+
+```bash
+docker run -d --name stronghold-valkey --restart unless-stopped -v stronghold-valkey:/data \
+  valkey/valkey:9.1.2-alpine3.24 valkey-server --appendonly yes --maxmemory 2gb --maxmemory-policy volatile-ttl
+SP_REDIS_URL=redis://127.0.0.1:6379/0 npm start
+```
+
+| 变量 | 含义 |
+|---|---|
+| `SP_REDIS_URL` | `redis://[用户名:密码@]主机[:端口][/库号]`（TLS 用 `rediss://`，也接受 `valkey://` / `valkeys://`）。不设 = 关闭 |
+| `SP_REDIS_PASSWORD_FILE` | 从文件读密码（文件内容即密码），密码不必出现在环境变量里；优先于 URL 里的密码 |
+| `SP_REDIS_PREFIX` | 键前缀，默认 `sp:`；几套服务器共用一个 Valkey 时各用各的前缀 |
+| `SP_PERSIST_SAVE_MS` | 定时存档间隔，默认 10000（毫秒） |
+
+**恢复到哪里**：对局只在「安全阶段」存档——确认信息、选策略、机变、回合开始、休整期（AI 队友的准备做完之后），
+以及每个休整期结束、战斗开始之前那一刻。战斗中重启的对局回到这一回合的休整期结束时：干员、装备、资金、LP、
+卡池和随机数都和当时一样，这一回合的战斗重新打一次。恢复后的休整期至少有 20 秒，真人玩家先回到自己的棋盘、
+不处于「准备」状态；选策略、机变的倒计时重新开始；投票重抽开局取消；独立模拟的暂停不保留。
+
+**会话**：在房间里（等待中、对局中或观战）的玩家身份、令牌、名字、编队设置都会保存，回来时是同一个玩家、
+同一个座位。重启时在线的玩家，重连期限（同盟 10 分钟，独立模拟 24 小时）从重启时重新计算；期限内没回来的座位
+在恢复的对局里按「离开」处理（交给 AI 规则）。不在任何房间里的访客、匹配队列、尚未开始的匹配邀请、上一局的
+结算回放不保存（排队的玩家重新排队即可）。带玩法插件的房间不保存。
+
+**集群**：协调器保存会话、房间和每局所在的分配；每个 game 节点把自己跑的对局按分配 ID 存档。重启后：
+
+- 只重启协调器：对局还在原节点上跑，新协调器直接接管（不重建、不回退）。
+- 整套一起重启（发版）：协调器把每局交给一个就绪的节点，由它从存档重建（新的分配 ID），节点还没起来时最多等 2 分钟。
+- 协调器正常运行、某个 game 节点重启或失联：它上面的对局由其他节点从存档重建，不再直接关闭房间。
+
+接管或重建的对局里，已经离开的座位（主动离开、重连期限已过、被挂机规则移出，包括等待节点期间离开的）仍是离开状态，
+不再占用这名玩家：他这时在另一局对局里、在观战或已重新排队都不受影响，两局按任何顺序都能恢复。等待期间离开的观战者同样不再随这局恢复。
+
+重建不了的对局（存档缺失、版本不符、等不到节点）会关闭房间，玩家回来时看到「对局服务器已重启，本局模拟已中断」。
+正常关闭（SIGTERM）时先写最后一次存档（战斗中的对局不再存，但会等准备阶段结束时那一份写完），房间不会向玩家发「同盟已关闭」。Valkey 宕机或连不上不会影响对局，只是不存档：
+`/healthz` 的 `persistence` 里有写入/失败/恢复计数（集群另有 `persistence.remote`：接管、重建、失败、等待中），
+game 节点的 `status` RPC 带 `checkpoints` 计数。
+
+**启动时等存储**：主机重启或直接 `systemctl start` 时 Valkey 和服务器同时启动，服务器读存档时 Valkey 可能还没监听或还在
+加载数据（回 `LOADING`）。启动时那一次读取遇到连不上、超时或 `LOADING` 会间隔 0.5 秒起、逐次加倍到 5 秒重试，
+最多等 60 秒（`server/persist/persister.js` `RESTORE_WAIT_MS`），每次重试和结果都写日志；这期间服务器（集群里是协调器）
+不监听端口，恢复完成或放弃后才接受玩家。密码错误、存档无法解码不重试，直接按「没有存档」启动。集群里 game 节点
+按协调器要求读某局存档时存储没响应，回 `NOT_READY`，协调器每秒重试，最多 2 分钟（与等节点就绪相同）。
+
+**版本**：存档有三个格式版本——对局 `SNAPSHOT_VERSION`（`server/match/snapshot.js`）、大厅文档
+`LOBBY_DOC_VERSION`（`server/persist/lobbyState.js`）、节点信封 `NODE_CHECKPOINT_VERSION`（`server/persist/node.js`）。
+新版本读到其他版本的存档时丢弃该局（记日志、计数），不影响启动。**修改了要保存的字段、它们的含义或恢复规则时必须升版本**；
+`Match` / `PlayerState` 新增实例字段时，`test/match/snapshot.test.js` 会要求把它登记为保存、派生或临时字段。
+所有键都有 25 小时有效期（比独立模拟的 24 小时重连期限长），每次写入刷新；对局结束后它的存档会被删除。
+存档压缩后一局约 10–30 KB（4 人到 20 人房后期），建议 `maxmemory` 至少 1 GB，策略 `volatile-ttl`。
+
+## 12. 官方版本（0.3.2 起）
 
 除了现在的「第二期下半」（`act2autochess`），服务器还提供更早的三个官方版本：第二期上半（`act2autochess@V2_1`）、
 第一期下半（`act1autochess`）、第一期上半（`act1autochess@V1_1`）。数据随发布包和 Docker 镜像一起提供（`data/versions/`）。
@@ -539,35 +598,54 @@ Node 22 的 `--permission` **不限制网络**（TCP/UDP/DNS/监听均可能可�
 - `http://localhost:3000/healthz` 在启用了非默认版本时多一项 `versions`（不设置时就会有）：启用的版本、默认版本和版本子进程的数量。空闲时 `workers` 为 0。
 - 也可以在 `startServer({ versions: { enabled, default, maxHosts } })` 里设置（优先于环境变量）。
 
-## 12. 容量与调优（服务端配额）
+## 13. 容量与调优（服务端配额）
 
-以下配额默认写死在代码里，都能用环境变量覆盖；显式传给 `startServer()` 的选项仍然优先，所以测试完全可控。
-启动时会打一行日志，写明实际生效的值：
+以下配额在本 fork 里**默认全部不限制**（`0`）：环境变量只提供启动时的初始值，运行时真正生效的值来自下面「限额文件」；
+显式传给 `startServer()` 的选项仍然优先，所以测试完全可控。栈建好时打一行日志，写明实际生效的值（`0` 一律打印 `unlimited`）：
 
 ```
-[http] limits: rooms 1000 (16/network), matches 8/network, sockets 2000 (64/network)
+[http] limits: rooms unlimited (unlimited/network), matches unlimited/network, sockets unlimited (unlimited/network)
 ```
 
-`0` 在两类配额上含义不同：**全局配额**（`SP_MAX_ROOMS`、`SP_MAX_CONNECTIONS`）取 `0` 是全部拒绝；**按网络配额**
-（带 `_PER_ADDR` 的三个）取 `0` 才是不限制。
+`0` 在**所有**配额上都是不限制 —— `server/lobby.js` 与 `server/net.js` 只在配额为正数时才拦截。
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `SP_MAX_ROOMS` | 1000 | 全局房间数上限（`0` = 全部拒绝）。满员后新建房间返回「服务器内部错误」 |
-| `SP_MAX_ROOMS_PER_ADDR` | 16 | 单个客户端网络同时存在的房间数（`0` = 不限） |
-| `SP_MAX_MATCHES_PER_ADDR` | 8 | 单个客户端网络同时进行的对局数（`0` = 不限） |
-| `SP_MAX_CONNECTIONS` | 2000 | 并发 WebSocket 连接数（`0` = 全部拒绝）。全局满员时新连接在升级阶段返回 **503** |
-| `SP_MAX_CONNECTIONS_PER_ADDR` | 64 | 单个客户端网络的并发连接数（`0` = 不限）。单个网络超限时在升级阶段返回 **429** |
-| `SP_MAX_ONLINE` | 0 | 同时在线的**已认证玩家**上限（`0` = 不限）。满了只拒绝新会话（玩家看到「服务器已满」），重新连回来的 token 照常放行（只限在线人数这一层，见下面「重连不会被拒」的两条前提） |
+| `SP_MAX_ROOMS` | 0（不限） | 全局房间数上限。满员后 `room.create` / `room.start` 回 `ERR.LIMIT` |
+| `SP_MAX_ROOMS_PER_ADDR` | 0（不限） | 单个客户端网络同时存在的房间数 |
+| `SP_MAX_MATCHES_PER_ADDR` | 0（不限） | 单个客户端网络同时进行的对局数 |
+| `SP_MAX_CONNECTIONS` | 0（不限） | 并发 WebSocket 连接数。全局满员时新连接在升级阶段返回 **503** |
+| `SP_MAX_CONNECTIONS_PER_ADDR` | 0（不限） | 单个客户端网络的并发连接数。单个网络超限时在升级阶段返回 **429** |
+| `SP_MAX_BOTS` / `SP_MAX_BOTS_PER_ADDR` | 0（不限） | AI 席位上限（`room.addBot` 回 `ERR.LIMIT`） |
+| `SP_ONLINE_LIMIT_FILE` | 无 | 限额文件的路径；文件不存在即没有在线上限 |
+
+### 限额文件（在线人数与房间配额的真正来源）
+
+`server/onlineLimit.js` 读取一个 JSON 文件，例如
+
+```json
+{ "limit": 3000, "maxRoomsPerAddr": 24, "maxBotsPerAddr": 60, "maintenance": 0 }
+```
+
+- 文件的 mtime 变化时重读（每 `pollMs`＝5 秒在请求路径外 `stat` 一次，只有变化后才真正读文件）。要挂载的是**目录**：编辑器会替换文件的 inode。
+- `limit`（`0`、文件缺失或没有这个键 = 不限）：在线人数达到上限时 `Network.onHelloMsg` 只拒绝**新会话**（`ERR.SERVER_FULL`）；
+  恢复既有会话的 `hello`（重载、重连窗口内）永不被拒，已经在玩的人不会被踢出去。客户端连接横幅显示「当前服务器容量已满」，
+  按 `SERVER_FULL_RETRY_MS = 20_000`（±25% 抖动）自动重试。
+- `ROOM_CAP_KEYS`（`maxRooms`、`maxRoomsPerAddr`、`maxMatchesPerAddr`、`maxBots`、`maxBotsPerAddr`）中文件写了的键替换对应的 lobby 选项
+  （`0` = 不限），只对**下一次** `room.create` / `room.start` / `room.addBot` 生效；文件没写的键保持原选项。已经存在的房间、对局和
+  AI 席位不会被更低的配额关掉。
+- `maintenance`（`0`/`1`，缺失 = `0`）：`1` 时大厅拒绝新的 `room.create` / `room.start` / `queue.join`（`ERR.MAINTENANCE`）并结束匹配，
+  客户端从 presence.state 的 `maintenance: true` 得知；进行中的对局、房间、加入和观战照常，不会移除任何人。不认识这个键的版本会把它
+  当作未知键，也就是整个文件被拒绝（保留之前的配额），所以要先确认运行中的服务器认识这个键，再往线上文件里加。
 
 几点运维提醒：
 
 - **503 / 429 只描述连接数配额。** 全局连接数满了是 **503**，只有单个网络连接数超限才是 **429**；两者都在升级阶段就结束，
-  socket 根本建不起来，也不会进入游戏协议。另外两个配额不在这一层，别混着排查：**在线人数**（`SP_MAX_ONLINE`）满了是
-  `hello` 之后才回的一帧「服务器已满」（已经带着 token 在玩的人不受影响），**房间数**上限满了是游戏内的错误回包。
+  socket 根本建不起来，也不会进入游戏协议。另外两个配额不在这一层，别混着排查：**在线人数**（限额文件的 `limit`）满了是
+  `hello` 之后才回的一帧 `SERVER_FULL`（已经带着 token 在玩的人不受影响），**房间数**上限满了是游戏内的错误回包。
 - 「按网络」的口径来自 `clientAddress()`：只有在 `TRUST_PROXY` 允许时才会信任 `CF-Connecting-IP` / `X-Real-IP` /
   `X-Forwarded-For`，否则整条 NAT / CGNAT 后面的玩家会共用一个配额 —— 家里直连、没有反代时不要打开 `TRUST_PROXY=1`。
-- 写了非法值（非整数、负数）会**告警并保持默认**，不会因为一个拼写错误把保护悄悄去掉。
+- 环境变量写了非法值（非整数、负数）会**告警并保持默认**，非法的限额文件会**保留全部旧值**并只报告一次，不会因为一个拼写错误把保护悄悄去掉。
 - 「重连不会被拒」只在**在线人数**这一层成立，另外两个前提照样生效：**连接数**上限（`SP_MAX_CONNECTIONS`）满了，
   带 token 的连接同样在升级阶段被 **503** 挡住；会话还在另一条 socket 上活着时，`noReplace`（或更旧的 `claimAt`）
   会让这个 `hello` 回「会话已在别处使用」而不是接管，拿不回原来的身份。

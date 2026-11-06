@@ -3,7 +3,7 @@
 //
 // GitHub URLs support a prefix proxy and a jsDelivr fallback. jsDelivr does
 // not serve the voice branch, but the prefix proxy can still be tried there.
-// See docs/ASSETS.md for the full source list and credits.
+// See docs/development/ASSETS.md for the full source list and credits.
 
 export const DEFAULT_GITHUB_PROXY = 'https://gh-proxy.com/';
 
@@ -80,6 +80,26 @@ export function mirrorUrl(url) {
   // jsDelivr does not serve the (huge) voice branch of ArknightsAssets2.
   if (owner === 'ArknightsAssets' && branch === 'voice') return null;
   return `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`;
+}
+
+/**
+ * Return ranked candidate mirror URLs for a raw.githubusercontent.com URL.
+ * Prioritizes high-speed CDN mirrors (jsDelivr, gcore, ghfast) before raw GitHub.
+ * @param {string} url
+ * @returns {string[]}
+ */
+export function mirrorUrls(url) {
+  const m = RAW_RE.exec(String(url));
+  if (!m) return [];
+  const [, owner, repo, branch, path] = m;
+  if (owner === 'ArknightsAssets' && branch === 'voice') {
+    return [`https://ghfast.top/${url}`];
+  }
+  return [
+    `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`,
+    `https://gcore.jsdelivr.net/gh/${owner}/${repo}@${branch}/${path}`,
+    `https://ghfast.top/${url}`,
+  ];
 }
 
 /**

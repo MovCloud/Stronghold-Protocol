@@ -226,7 +226,7 @@ function baseResult(over = {}) {
 }
 
 test('test results never persist and legacy test records stay excluded from every tally', () => {
-  const content = { cs: 'ab'.repeat(32), vanilla: false, plugins: [{ id: 'x', version: '1' }] };
+  const content = { cs: 'ab'.repeat(32), vanilla: false, plugins: [{ id: 'x', version: '1', class: 'content' }] };
   const real = buildRecord(baseResult(), { myId: 'p1', now: 1 });
   const modded = buildRecord(baseResult({ seed: 8 }), { myId: 'p1', now: 8, content });
   assert.equal(buildRecord(baseResult({ test: true }), { myId: 'p1' }), null);

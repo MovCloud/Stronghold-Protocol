@@ -1,4 +1,6 @@
 // Browser/Worker engine loader. Workers receive data and never fetch it (DESIGN §32.11).
+import { DATA_CDN } from '../asset-cdn.js';
+
 export const SIM_DATA_FILES = Object.freeze(['chess', 'enemies', 'tokens', 'stages', 'waves', 'bonds', 'items', 'garrisons', 'bands', 'effects', 'backups']);
 
 function deepFreeze(root) {
@@ -25,15 +27,16 @@ function deepFreeze(root) {
  * fetches instead, exactly as before.
  */
 let loadedScripts = false, loadedTraits = false, traitInstaller = null;
-export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetchFn = (...a) => globalThis.fetch(...a), data = null, cs = null, bounds = null,
+export async function loadBrowserSim({ base = '/sim/', dataCdn = DATA_CDN, dataBase = `${dataCdn.replace(/\/+$/, '')}/data/`, fetchFn = (...a) => globalThis.fetch(...a), data = null, cs = null, bounds = null,
   scripts = [], hashInput = null, nativeVerified = false, deferScripts = false, traitRuntimeVerified = null, reuse = null,
   reuseOwner = null } = {}) {
   // The page's store holds the original content only while `reuseOwner()` returns null: a room's content set may
   // already be in it when a vanilla simulation starts, or be adopted while this load is in flight (content.js).
   // `original()` is checked around every retrieval, so either case falls back to fetching — the behaviour before reuse.
   const original = typeof reuse === 'function' && typeof reuseOwner === 'function' ? () => reuseOwner() === null : null;
-  const [spec, simdata, support] = await Promise.all([
-    import(`${base}spec.js`), import(`${base}simdata.js`), import(`${base}content/support/index.js`),
+  // syncHash.js: the state digest a local display replica compares with the Worker's (server-run combat, b.sync)
+  const [spec, simdata, support, sync] = await Promise.all([
+    import(`${base}spec.js`), import(`${base}simdata.js`), import(`${base}content/support/index.js`), import(`${base}syncHash.js`),
   ]);
   const fetchOnce = async (n) => {
     try {
@@ -75,7 +78,10 @@ export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetc
   } else if (loadedScripts) (await import(base+'content/extensions.js')).resetExtensions();
   if (Object.values(raw.garrisons ?? {}).some(g => g.operatorTrait) || loadedTraits) {
     if (/^file:/i.test(base)) {
-      const { installServerOperatorTraits } = await import(new URL('../../../server/plugins/operatorTraits.js', import.meta.url).href);
+      // (Node only. The path is built at run time so the Vite build — this fork's /js bundle — does not copy the server
+      // module into the page's assets as a `new URL(literal, import.meta.url)` asset.)
+      const serverTraits = ['..', '..', '..', 'server', 'plugins', 'operatorTraits.js'].join('/');
+      const { installServerOperatorTraits } = await import(new URL(serverTraits, import.meta.url).href);
       await installServerOperatorTraits(raw, base);
     } else {
       const expected = traitRuntimeHash(raw);
@@ -94,7 +100,7 @@ export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetc
     loadedTraits = Object.values(raw.garrisons ?? {}).some(g => g.operatorTrait);
   }
   loadedScripts = !deferScripts && scripts.length > 0;
-  return { spec, ds: new simdata.DataSource(raw, null), cs, raw };
+  return { spec, ds: new simdata.DataSource(raw, null), cs, raw, sync };
 }
 
 /**

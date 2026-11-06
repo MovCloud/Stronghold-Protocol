@@ -83,10 +83,10 @@ function makeData(src) {
   };
 }
 
-const QUALITY_RES = { high: 2, medium: 1.5, low: 1 };
+const QUALITY_RES = { high: 3, medium: 2, low: 1 };
 
 /** Pixel-ratio cap of the 3D board canvas per quality (its fill cost is the PBR board, not the sprites). */
-const BOARD_RES = { high: 2, medium: 1.25, low: 1 };
+const BOARD_RES = { high: 2.75, medium: 2, low: 1 };
 
 /**
  * Before a renderer is destroyed: free its GL copies of every texture / buffer / geometry / framebuffer it

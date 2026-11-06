@@ -12,6 +12,9 @@ import { negotiateStateDelta, resetStateDelta } from '../server/stateTransport.j
 
 const socket = () => ({ readyState: 1, bufferedAmount: 0, frames: [], send(data) { this.frames.push(data); } });
 const poison = (obj) => ({ ...obj, toJSON() { throw new Error('main thread re-encoded an already encoded frame'); } });
+// The sequence is a process-wide counter shared by every connection (server/stateTransport.js), so a test can only
+// assert forward movement against the numbers already spent by the connections before it.
+let lastSeq = 0;
 
 test('an encoded frame is sent verbatim and never re-serialized', () => {
   const ws = socket();
@@ -50,6 +53,7 @@ test('a negotiated connection gets a delta and only advances its baseline after 
   assert.equal(patch.t, 'm.state');
   assert.ok(Array.isArray(patch.patch) && patch.patch.length, 'the second frame is a patch');
   assert.ok(!('full' in patch));
+  lastSeq = Math.max(lastSeq, full.seq, patch.seq);
 
   // a socket that refuses the frame must not move the baseline: the next frame is still relative to the last good one
   const dead = { readyState: 3, bufferedAmount: 0, frames: [], send() { throw new Error('closed'); } };
@@ -68,11 +72,13 @@ test('pre-encoded bytes that are not JSON fall back to a full frame instead of b
   assert.equal(send(ws, { t: 'm.public', funds: 10 }, 'not json at all'), true);
   assert.deepEqual(JSON.parse(ws.frames[0]), { t: 'm.public', funds: 10 }, 'the full frame is encoded here instead');
 
-  // and no baseline was taken from the garbage: the next frame starts the connection at seq 1
+  // and no baseline was taken from the garbage: the next frame is a full one. The sequence is shared across
+  // connections and reserved in enqueue order (net-fanout encodes once for every recipient), so only its forward
+  // movement is observable here — the number belongs to the earlier connection's frames.
   assert.equal(send(ws, { t: 'm.public', funds: 11 }, '{"t":"m.public","funds":11}'), true);
   const frame = JSON.parse(ws.frames[1]);
   assert.equal(frame.t, 'm.state');
-  assert.equal(frame.seq, 1);
+  assert.ok(frame.seq > lastSeq, 'the number never rewinds to one already spent');
   assert.ok('full' in frame, 'the first usable frame of the connection is a full one');
 });
 

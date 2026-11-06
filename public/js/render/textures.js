@@ -14,10 +14,13 @@
 
 import { statusIconKey, ORIGINIUM, linearToSrgb255 } from './style.js';
 
+import { cpuCanvas } from './app/pixi.js';
+
 const PIXI = () => globalThis.PIXI;
 
+/** A texture canvas: CPU-backed, so a GPU process restart cannot blank it (app/pixi.js cpuCanvas). */
 export function makeCanvas(w, h) {
-  const c = document.createElement('canvas');
+  const c = cpuCanvas(document.createElement('canvas'));
   c.width = Math.max(1, Math.ceil(w));
   c.height = Math.max(1, Math.ceil(h));
   return c;
@@ -608,6 +611,9 @@ export function tileAtlas(art = null) {
   const P = PIXI();
   const canvas = makeCanvas(ATLAS_W, ATLAS_H);
   const ctx = canvas.getContext('2d');
+  // Keep interior drawing in atlas coordinates; clamp its edges on a small canvas before copying only the gutters.
+  const cell = makeCanvas(CELL, CELL);
+  const cellCtx = cell.getContext('2d');
   const perRow = ATLAS_W / CELL;
   const uv = {};
   let artCount = 0;
@@ -638,10 +644,16 @@ export function tileAtlas(art = null) {
     }
     ctx.restore();
     // clamp gutters: stretch the edge pixels outwards
-    ctx.drawImage(canvas, x, y, INNER, 1, x, cy, INNER, GUTTER);
-    ctx.drawImage(canvas, x, y + INNER - 1, INNER, 1, x, y + INNER, INNER, GUTTER);
-    ctx.drawImage(canvas, x, cy, 1, CELL, cx, cy, GUTTER, CELL);
-    ctx.drawImage(canvas, x + INNER - 1, cy, 1, CELL, x + INNER, cy, GUTTER, CELL);
+    cellCtx.clearRect(0, 0, CELL, CELL);
+    cellCtx.drawImage(canvas, cx, cy, CELL, CELL, 0, 0, CELL, CELL);
+    cellCtx.drawImage(cell, GUTTER, GUTTER, INNER, 1, GUTTER, 0, INNER, GUTTER);
+    cellCtx.drawImage(cell, GUTTER, GUTTER + INNER - 1, INNER, 1, GUTTER, GUTTER + INNER, INNER, GUTTER);
+    cellCtx.drawImage(cell, GUTTER, 0, 1, CELL, 0, 0, GUTTER, CELL);
+    cellCtx.drawImage(cell, GUTTER + INNER - 1, 0, 1, CELL, GUTTER + INNER, 0, GUTTER, CELL);
+    ctx.drawImage(cell, GUTTER, 0, INNER, GUTTER, x, cy, INNER, GUTTER);
+    ctx.drawImage(cell, GUTTER, GUTTER + INNER, INNER, GUTTER, x, y + INNER, INNER, GUTTER);
+    ctx.drawImage(cell, 0, 0, GUTTER, CELL, cx, cy, GUTTER, CELL);
+    ctx.drawImage(cell, GUTTER + INNER, 0, GUTTER, CELL, x + INNER, cy, GUTTER, CELL);
     const e = 0.5; // half-texel inset
     uv[name] = [(x + e) / ATLAS_W, (y + e) / ATLAS_H, (x + INNER - e) / ATLAS_W, (y + INNER - e) / ATLAS_H];
   });
@@ -1221,6 +1233,48 @@ export function diamondTexture(key, img, color, o = {}) {
   _diamonds.set(k, tex);
   while (_diamonds.size > DIAMOND_MAX) _diamonds.delete(_diamonds.keys().next().value);
   return tex;
+}
+
+const _unitIcons = new WeakMap();
+/** Whole-unit art on a transparent square: contain the image, without a portrait frame or clipping mask. */
+export function unitIconTexture(img) {
+  const old = _unitIcons.get(img);
+  if (old) return old;
+  const P = PIXI(), S = DIAMOND_PX;
+  const canvas = makeCanvas(S, S), c = canvas.getContext('2d');
+  const scale = Math.min((S - 16) / img.width, (S - 16) / img.height);
+  const w = img.width * scale, h = img.height * scale;
+  c.drawImage(img, (S - w) / 2, (S - h) / 2, w, h);
+  const texture = new P.Texture(new P.BaseTexture(canvas));
+  _unitIcons.set(img, texture);
+  return texture;
+}
+
+const _unitSprites = new WeakMap();
+/** Full transparent sprite, with empty export margins trimmed once; never cropped through visible artwork. */
+export function unitSpriteTexture(img) {
+  const cached = _unitSprites.get(img);
+  if (cached) return cached;
+  const P = PIXI(), k = Math.min(1, 384 / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * k)), h = Math.max(1, Math.round(img.height * k));
+  const canvas = makeCanvas(w, h), c = canvas.getContext('2d');
+  c.drawImage(img, 0, 0, w, h);
+  let frame;
+  try {
+    const rgba = c.getImageData(0, 0, w, h).data;
+    let left = w, top = h, right = -1, bottom = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (rgba[(y * w + x) * 4 + 3] > 8) {
+      left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+    if (right >= left) {
+      left = Math.max(0, left - 1); top = Math.max(0, top - 1);
+      right = Math.min(w - 1, right + 1); bottom = Math.min(h - 1, bottom + 1);
+      frame = new P.Rectangle(left, top, right - left + 1, bottom - top + 1);
+    }
+  } catch { /* A remote asset can disallow pixel reads; its untrimmed sprite remains usable. */ }
+  const texture = new P.Texture(new P.BaseTexture(canvas), frame);
+  _unitSprites.set(img, texture);
+  return texture;
 }
 
 const _silhouettes = new WeakMap(); // image → texture (field views are mounted once per match: one canvas per image)

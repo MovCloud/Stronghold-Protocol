@@ -120,6 +120,9 @@ test('public/i18n/en.json: valid, English values, placeholders kept, the pilot s
   for (const [k, v] of entries) {
     assert.equal(typeof v, 'string', k);
     assert.ok(v.trim(), `empty translation for ${k}`);
+    // Character lines (public/js/battle/aiDanmakuEvents.js) are kept as the operator says them: an entry equal to its
+    // msgid is an identity entry, not Chinese left untranslated.
+    if (v === k) continue;
     assert.ok(!/[一-鿿]/.test(v.replace(/\{[^{}]*\}/g, '')), `Chinese left in the translation of ${k}: ${v}`);
     const want = new Set([...k.matchAll(/\{([A-Za-z0-9_$]+)\}/g)].map((m) => m[1]));
     const have = new Set([...v.matchAll(/\{([A-Za-z0-9_$]+)(?:\|[^{}]*)?\}/g)].map((m) => m[1]));
@@ -177,7 +180,9 @@ test('tools/i18n.mjs: a ternary inside t() is not extracted; the 0.3.2 call site
     assert.ok(line > 0, `${f}: ${marker}`);
     return (await scanSource(src, f)).msgids.filter((m) => m.line === line).map((m) => m.msgid);
   };
-  assert.deepEqual(await onLine('public/js/screens/loadout.js', 'title=${ioDiy ?'), ['导出自选编队', '导入自选编队']);
+  // (fork) the three tabs share one operatorPresetModel envelope, so the dialog title is no longer per-tab: the call
+  // site is the unified 导出 / 导入干员预设 (ui/operatorPresetModel.js).
+  assert.deepEqual(await onLine('public/js/screens/loadout.js', "title=${io.mode === 'export' ? t('导出干员预设')"), ['导出干员预设', '导入干员预设']);
   assert.deepEqual(await onLine('public/js/ui/pluginPanel.js', 't(CLASS_NAMES[p.class])'), ['脚本（沙箱）', '插件', '非官方']);
 });
 

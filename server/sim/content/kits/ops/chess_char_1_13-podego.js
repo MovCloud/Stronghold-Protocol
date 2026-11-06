@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_1_13-podego.js — 波登可 (char_258_podego) kit, tier 1.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-1 kits: ../shared/tier1.js; kit contract and rules: ../README.md.
 
 import {
@@ -56,7 +57,7 @@ export default {
       },
       talents: [{ install(battle, unit) {
         const v = num(t.atk);
-        if (v) installAura(battle, unit, { key: 'talent:podego', value: v, select: (a) => a.kind === 'op' && a.def.profession === 'SUPPORT', mods: { atkPct: v } });
+        if (v) installAura(battle, unit, { key: 'talent:podego', value: v, select: (a) => nativeOperator(a) && a.def.profession === 'SUPPORT', mods: { atkPct: v } });
         spTimeBonus(battle, unit, spBonus, () => enemyInRange(battle, unit));
       } }],
     };

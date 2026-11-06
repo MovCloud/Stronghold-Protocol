@@ -22,9 +22,10 @@
 // match (research 09 §5, ui/underframe.js): the panel's own 出售 / 销毁 buttons only render for callers that pass
 // `editable` + handlers. `side` 'right' docks the panel at the right edge (the game screen picks the side away from a
 // selected unit's underframe, gameLogic panelSide).
-// Live stats (user playtest #4 item 7 — the card used to show the fixed record numbers): `live` = the unit's current
-// stats (shared/protocol.js unitStatsEntry + `src`) — in battle the browser's own sim (battle/runner.js unitStats; a
-// getter re-read 4× a second: current HP, max HP, ATK, DEF, RES, attack interval, block), in prep the stats the own
+// Panel stats (user playtest #4 item 7 — the card used to show fixed record numbers): `live` = the unit's attributes
+// (shared/protocol.js unitStatsEntry + `src`) — in a battle this browser simulates the sim's current values (src 'live',
+// a getter re-read 4× a second: the owner, 2026-10-14), on a streamed server field its first-tick cache (src 'battle',
+// live HP from the compact snapshot independently). In prep these are the stats the own
 // board's units start their next battle with (m.unitStats: equipment, bonds / layers, 特质, band and 机变 effects). Each
 // value is coloured against the unit's base like the official card — green when it helps (higher, or a shorter attack
 // interval) with the difference beside it, red when it hurts — and a 实时 / 开战时 tag says which it is. The 攻击范围
@@ -48,6 +49,7 @@ import { moduleBadge, fullTraitText } from './loadoutModel.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { morphSlotPolicy } from '../../../shared/plugins/rules.js';
 import { audio } from '../audio.js';
+import { appearanceRecord } from './skinAssets.js';
 import { tokenVariantFor } from './gameLogic/loadout.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -156,21 +158,26 @@ export function liveStat(live, key, fallback, fmt = fmtNum) {
   return { v: fmt(cur), tone, sub, title: base != null ? t('基础 {v}', { v: fmt(base) }) : undefined };
 }
 
-/** The tag of a live stats block: 实时 (battle) / 开战时 (the prep preview). */
+/** The tag of a stats block: 实时 (the local sim, now), 开战时 (a server field's opening values / the prep preview). */
 function LiveTag({ live }) {
   if (!live) return null;
+  if (live.src === 'live') {
+    return html`<span class="dstats__tag is-battle" title=${t('当前作战中的实时数值（绿色为增益，红色为减益）')}>${t('实时')}</span>`;
+  }
   const battle = live.src === 'battle';
-  return html`<span class=${cx('dstats__tag', battle && 'is-battle')} title=${battle ? t('当前作战中的实时数值（绿色为增益，红色为减益）')
-    : t('下一场作战开始时的数值：已计入装备、盟约层数、特质、策略与机变效果（不含技能与作战中的临时效果）')}>${battle ? t('实时') : t('开战时')}</span>`;
+  return html`<span class=${cx('dstats__tag', battle && 'is-battle')} title=${battle ? t('开战时')
+    : t('下一场作战开始时的数值：已计入装备、盟约层数、特质、策略与机变效果（不含技能与作战中的临时效果）')}>${t('开战时')}</span>`;
 }
 
 const fmtInterval = (v) => (Number.isFinite(v) && v > 0 ? `${v.toFixed(2)}s` : '—');
 const fmtRes = (v) => (Number.isFinite(v) ? String(Math.round(v * 10) / 10) : '0');
 
-/** HP bar of the card header: the live HP in battle, else the snapshot's. */
-function hpOf(live, snapHp) {
+/** HP: the local sim's own live entry, else the compact snapshot's (live even when the panel is a server field's opening one). */
+export function hpOf(live, snapHp) {
+  if (live && live.src === 'live' && Number.isFinite(live.hp) && Number.isFinite(live.maxHp)) return { hp: live.hp, max: live.maxHp };
+  if (snapHp) return snapHp;
   if (live && live.src === 'battle' && Number.isFinite(live.hp) && Number.isFinite(live.maxHp)) return { hp: live.hp, max: live.maxHp };
-  return snapHp || null;
+  return null;
 }
 
 function Section({ title, micro, children, class: cls }) {
@@ -399,7 +406,7 @@ export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bond
   // where the English name usually is (「银灰的替补」, [ASSUMED] placement); the chess's tier, bonds, 特质 and sell price
   // still apply (the owner's recall of the official mode, 2026-10-06)
   const si = standIn && standIn.standInFor ? standIn : null;
-  const body = si || chess;
+  const body = appearanceRecord(si || chess, skin);
   // 0.2.2: at the operator's 潜能 / 练度 — the player's settings (`cultOpts.ops`) or a teammate's unit's own
   // (`cultOpts.cultivation`); a stand-in has neither
   const lo = si ? standInLoadout(si, getChess, data.get('backups')) : chessLoadout(chess, loadout, getChess, { ...(cultOpts || {}), effects: data.get('effects') });
@@ -748,6 +755,19 @@ function DeviceDetail({ device, snapHp = null, live = null }) {
  *   resolve to the composed 自选 record (`chess`, the operator) with `diy` = the pick
  */
 export function resolveDetail(target, pieces, { priv = null, backups = data.get('backups') } = {}) {
+  const detail = resolveDetailBase(target, pieces, { priv, backups });
+  if (detail?.type !== 'chess') return detail;
+  const body = detail.standIn || detail.chess;
+  const foreign = !!target.foreign || (target.owner != null && target.owner !== priv?.playerId);
+  const charId = body?.charId;
+  const skin = target.kind === 'unit' ? target.unit?.skin : foreign ? target.skin : (priv?.skins && charId ? priv.skins[charId] : null);
+  // the manifest must still hold that appearance (docs/SKINS.md), else the card draws the operator's own look
+  const m = data.get('assets');
+  const skinOk = typeof skin === 'string' && skin && charId && m?.chars && Object.hasOwn(m.chars, charId) && m.chars[charId].skins && Object.hasOwn(m.chars[charId].skins, skin);
+  return skinOk ? { ...detail, skin } : detail;
+}
+
+function resolveDetailBase(target, pieces, { priv = null, backups = data.get('backups') } = {}) {
   if (!target) return null;
   // a special terrain tile (issue #184): the screen resolved the stage's own numbers already (gameLogic.terrainInfo)
   if (target.kind === 'terrain') return target.terrain && typeof target.terrain === 'object' ? { type: 'terrain', terrain: target.terrain } : null;
@@ -850,7 +870,7 @@ export function selectVoiceKey(detail) {
  *   the player's own operators and shop cards; a teammate's unit gets its owner's choice (gameLogic unitLoadout); null
  *   = the defaults; ops: m.private.ops (0.2.2 潜能 / 练度 of the player's own operators and cards — a unit the detail
  *   resolved as another player's carries its own, `detail.cultOpts`)
- *   live: the unit's live stats (unitStatsEntry + src 'battle' | 'prep') — an object, or a getter the panel re-reads 4×
+ *   live: the unit's live stats (unitStatsEntry + src 'live' | 'battle' | 'prep') — an object, or a getter the panel re-reads 4×
  *   a second (the battle's own sim, battle/runner.js unitStats); null ⇒ the record's numbers
  *   bondTimers: optional getter of the selected unit’s snapshot readouts (#746), sampled with live stats.
  *   voice: whether the panel may speak — 选中干员 (audio.voice 'select') when it opens on an operator the player tapped:
@@ -892,7 +912,7 @@ export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestr
       ${bondTimers ? html`<${BondTimers} rows=${bondTimers()} />` : null}
       ${detail.type === 'chess' ? html`<${ChessDetail} chess=${detail.chess} ownerId=${detail.ownerId} skin=${detail.skin} piece=${detail.piece} snapHp=${snapHp} editable=${editable} onSell=${sellIt}
         bonds=${bonds} offBonds=${offBonds} loadout=${loadout} onBond=${onBond} live=${liveNow} hint=${detail.hint || null} unitItems=${detail.unitItems || null}
-        standIn=${detail.standIn || null} diy=${detail.diy || null} cultOpts=${detail.cultOpts || { ops }} morphMode=${morphMode} onUnequip=${onUnequip} />` : null}
+        standIn=${detail.standIn || null} diy=${detail.diy || null} cultOpts=${detail.cultOpts || { ops }} skin=${detail.skin || null} morphMode=${morphMode} onUnequip=${onUnequip} />` : null}
       ${detail.type === 'item' ? html`<${ItemDetail} item=${detail.item} piece=${detail.piece} editable=${editable} onDestroy=${destroyIt} offBonds=${offBonds} morphMode=${morphMode} unequipAllowed=${unequipAllowed} />` : null}
       ${detail.type === 'enemy' ? html`<${EnemyDetail} enemy=${detail.enemy} snapHp=${snapHp} count=${detail.count} live=${liveNow} />` : null}
       ${detail.type === 'token' ? html`<${TokenDetail} token=${detail.token} piece=${detail.piece} ownerId=${detail.ownerId ?? null} snapHp=${snapHp} live=${liveNow} />` : null}

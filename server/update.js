@@ -1,4 +1,4 @@
-// server/update.js — the update package (docs/DEPLOY.md §1.5 and §7): the boot step that finishes an update extracted
+// server/update.js — the update package (docs/operations/DEPLOY.md §1.5 and §7): the boot step that finishes an update extracted
 // over an install, and the install check `npm run doctor` shows. Node builtins only, so it loads whatever else the
 // install holds.
 //
@@ -10,7 +10,7 @@
 //   {format, app, from: [<base versions>], count, bytes, files: {<path>: {size, sha256}} (what it ships),
 //    removed: [{path, sha256: [<the bytes the bases shipped>]}] (files a base shipped that this version does not)}.
 //
-// The player stops the server, extracts the zip over the install and starts it again. applyPendingUpdate runs before
+// The player stops the server, extracts the zip over the install and starts it again. finishInstallUpdate runs before
 // the server starts (server/http/boot.js runMain — every route: npm start, scripts/launch.mjs, the Windows service's
 // run-server.cmd, NSSM, systemd; scripts/launch.mjs runs it once more before setup):
 //   1. UPDATE.json unreadable or malformed (an unknown format, a path outside the install …) → logged, left in place,
@@ -27,6 +27,7 @@
 // No network, no automatic update: the update zip is a manual download from GitHub Releases, the same trust as the
 // full zip (whose code runs anyway).
 
+import { within } from './pathSafety.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,6 +38,11 @@ export const APPLIED_FILE = '.update-applied.json';
 /** The format of MANIFEST.json and UPDATE.json this code writes and reads. */
 export const UPDATE_FORMAT = 1;
 const META = new Set([MANIFEST_FILE, UPDATE_FILE, APPLIED_FILE]);
+
+/** Production startup: finish an update package extracted over the install. */
+export function finishInstallUpdate(root, { log = console } = {}) {
+  return applyPendingUpdate(root, { log });
+}
 
 /** The art setup downloads or extracts (and the lite zip leaves out): never in MANIFEST.json, never fatal. */
 export const isSetupArt = (rel) => rel.startsWith('public/assets/') || rel.startsWith('public/fonts/')
@@ -182,7 +188,7 @@ export function verifyFiles(root, files) {
   return { checked: files.size, missing, mismatched };
 }
 
-const inside = (root, p) => { const r = path.relative(root, p); return r !== '' && !r.startsWith('..') && !path.isAbsolute(r); };
+const inside = (root, p) => within(root, p, { allowRoot: false });
 
 /**
  * Delete the `removed` files that still hold bytes a base shipped, then the folders that leaves empty. `keep`: the

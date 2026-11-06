@@ -173,6 +173,7 @@ export function createMatchHosts({ contents, log = noopLog, options = {} }) {
 
     forget(matchId) {
       this.matches.delete(matchId);
+      if (!this.matches.size) { this.child?.unref(); this.child?.channel?.unref?.(); this.worker?.unref(); }
       this.armIdle();
     }
 
@@ -251,6 +252,7 @@ export function createMatchHosts({ contents, log = noopLog, options = {} }) {
       if (h.idleTimer) { clearTimeout(h.idleTimer); h.idleTimer = null; }
       const matchId = `${opts.roomCode ?? 'room'}-${opts.matchNo ?? 0}-${++seq}`;
       const proxy = new MatchProxy({ host: h, matchId, opts, log });
+      h.child?.ref(); h.child?.channel?.ref?.(); h.worker?.ref();
       h.matches.set(matchId, proxy);
       return proxy;
     },

@@ -79,11 +79,7 @@ export function lobbyVersion(s) {
 /** A room's version (room.state.version; absent = 第二期下半). @param {any} room */
 export const roomVersion = (room) => (typeof room?.version === 'string' && room.version ? room.version : DEFAULT_VERSION);
 
-/** The solo time rule, as the lobby card and the solo briefing say it (DESIGN §35.23.10). N_ so extract sees them. */
-export const SOLO_TIME_UNLIMITED = N_('休整期与机变阶段不限时');
-export const SOLO_TIME_TIMED = N_('休整每轮 300 秒，机变 150 秒');
-export const SOLO_TIME_SHORT = N_('每轮 300 秒');
-export const SOLO_TIME_ON = N_('不限时');
+/** The solo time rule, as the solo briefing says it (DESIGN §35.23.10). N_ so extract sees them. */
 export const SOLO_BRIEF_UNLIMITED = N_('独立模拟中休整期与机变阶段不限时');
 export const SOLO_BRIEF_TIMED = N_('独立模拟中每轮休整限时 300 秒，机变 150 秒');
 
@@ -103,20 +99,14 @@ export function soloTimedOf(config, versionId) {
 }
 
 /**
- * The solo time msgid, or '' while the page does not yet know (`timed == null`).
+ * The solo time msgid of a room's brief, or '' while the page does not yet know (`timed == null`).
  * `unlimited`: the room's 「不限时」 is on (a timed solo plays untimed).
- * `short` is the phone line: empty for a version whose solo is already untimed (the card keeps 「1 名博士」), else
- * 「每轮 300 秒」 or 「不限时」.
- * @param {'card' | 'short' | 'brief'} kind
  * @param {{ timed?: boolean | null, unlimited?: boolean }} [o]
  * @returns {string}
  */
-export function soloTimeMsgid(kind, { timed = null, unlimited = false } = {}) {
+export function soloTimeMsgid({ timed = null, unlimited = false } = {}) {
   if (timed == null) return '';
-  const free = timed !== true || unlimited === true;
-  if (kind === 'brief') return free ? SOLO_BRIEF_UNLIMITED : SOLO_BRIEF_TIMED;
-  if (kind === 'short') return timed === true ? (free ? SOLO_TIME_ON : SOLO_TIME_SHORT) : '';
-  return free ? SOLO_TIME_UNLIMITED : SOLO_TIME_TIMED;
+  return timed !== true || unlimited === true ? SOLO_BRIEF_UNLIMITED : SOLO_BRIEF_TIMED;
 }
 
 /**

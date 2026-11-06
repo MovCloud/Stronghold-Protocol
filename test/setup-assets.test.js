@@ -23,7 +23,7 @@ async function fixture(t, kind) {
   }
   for (const rel of ['tools/setup.mjs', 'tools/doctor.mjs', 'tools/local-extract/expected.mjs',
     'tools/local-extract/client-candidates.json',
-    'server/update.js', 'server/plugins/fxReferences.js', 'server/plugins/artReferences.js']) {
+    'server/update.js', 'server/pathSafety.js', 'server/plugins/fxReferences.js', 'server/plugins/artReferences.js']) {
     put(rel, fs.readFileSync(path.join(ROOT, rel)));
   }
   put('package.json', '{"type":"module"}');

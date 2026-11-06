@@ -1017,6 +1017,36 @@
         }
       ],
       "description": "Interaction-window JSON paths (API 2); permission offers. Declarations and card sources are checked by plugin check (PLUGINS §10b)."
+    },
+    "emotes": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "overlay.schema.json#/$defs/path"
+            },
+            {
+              "pattern": "\\.[jJ][sS][oO][nN]$"
+            }
+          ]
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "overlay.schema.json#/$defs/path"
+              },
+              {
+                "pattern": "\\.[jJ][sS][oO][nN]$"
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Emote-page JSON path (API 2); one file = one wheel page of 1-6 emotes, named emotes.json. Checked by plugin check (PLUGINS §10c)."
     }
   },
   "additionalProperties": false,
@@ -1111,7 +1141,8 @@
           },
           "slots": false,
           "overrides": false,
-          "offers": false
+          "offers": false,
+          "emotes": false
         },
         "required": [
           "lang",
@@ -1210,6 +1241,11 @@
                 "minItems": 1
               }
             }
+          },
+          {
+            "required": [
+              "emotes"
+            ]
           }
         ]
       }
@@ -1327,6 +1363,11 @@
           },
           {
             "required": [
+              "emotes"
+            ]
+          },
+          {
+            "required": [
               "rules"
             ],
             "properties": {
@@ -1399,7 +1440,8 @@
           "complete": false,
           "machineTranslated": false,
           "numberUnits": false,
-          "slots": false
+          "slots": false,
+          "emotes": false
         },
         "required": [
           "app",
@@ -1541,7 +1583,8 @@
           "machineTranslated": false,
           "numberUnits": false,
           "overrides": false,
-          "offers": false
+          "offers": false,
+          "emotes": false
         },
         "required": [
           "app",
@@ -1630,7 +1673,8 @@
           "complete": false,
           "machineTranslated": false,
           "numberUnits": false,
-          "slots": false
+          "slots": false,
+          "emotes": false
         },
         "required": [
           "app",

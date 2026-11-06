@@ -11,6 +11,7 @@ public/assets/
 public/fonts/
 # tools/local-extract/extract.py → public/assets/local/** and this per-machine manifest
 # (optional: the client and the tests work without it; docs/DEPLOY.md §6 lists what falls back)
+.assets-manifest.json
 # Battlefield scenes (0.2.5): extracted files live under public/assets/local/scene/ (already ignored by
 # public/assets/ above). Downloaded bundles live in .cache/official-scenes/ (already ignored by .cache/ below).
 # The repository never stores those official files.
@@ -19,6 +20,8 @@ data/local-assets.json
 data/local-fx.json
 # download caches, upstream tables, ledgers, reports, setup state
 .cache/
+# Per-server published announcements and command data; never shipped with source.
+/runtime/
 # a worktree that links these folders instead of holding them: git sees a symlink as a file, which the patterns
 # above (trailing slash: directories only) do not match
 /node_modules
@@ -50,6 +53,10 @@ test/e2e/out/
 logs/
 *.log
 
+# --- runtime state & private admin credentials (never shipped with source) -----------------------
+/.state/
+/config/player-admin/
+
 # --- per-machine config (scripts/install-service-windows.ps1) ------------------------------------
 scripts/service.env.cmd
 .env
@@ -63,5 +70,43 @@ desktop.ini
 .idea/
 .vscode/
 .claude/
+
+# --- Stardust deployment: generated dependencies and private runtime material ---------------------
+deploy/stardust/auth/public/three.module.js
+deploy/stardust/auth/public/three.core.js
+deploy/stardust/auth/public/css3d.js
+deploy/stardust/auth/public/bender-regular.woff2
+deploy/stardust/auth/public/altcha-pbkdf2.js
+# optional artwork generated from the supplied AE project; never commit original game art
+deploy/stardust/auth/public/doctor.webp
+deploy/stardust/auth/public/rhodes.webp
+deploy/stardust/auth/public/ae-sphere.json
+deploy/stardust/build/
+# actual deployment receipts stay private; the public directory contains guidance only
+deploy/stardust/releases/*.json
+deploy/stardust/openi-resolver/openi-assets.json
+*.upload.checkpoint.json
+**/.openi/
+**/.modelscope/
+deploy/stardust/**/tls/
+deploy/stardust/**/secrets/
+deploy/stardust/**/auth-secrets/
+**/gate.json
+*.pem
+*.key
+*.p12
+*.pfx
+
 # tools/sim-check.mjs: the corpus and its Node traces for /dev/sim-check.html
 public/dev/simcheck/data/
+# the Vite bundle of the UI layer (npm run build; vite.config.js)
+public/build/
+
+# --- local tool artifacts and build output (never part of the published fork) --------------------
+# Trae working documents (plans, specs, review notes) and the local tool cache (Node distribution,
+# run logs). The release output is build output, not source.
+.trae/
+.tools/
+dist/
+# Agent context and conversation records stay on disk but are not published; they are excluded
+# precisely in .git/info/exclude, so this shared file stays as upstream wrote it.

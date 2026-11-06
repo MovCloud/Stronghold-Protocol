@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createLLMAgent, modelStrategy, parseReply } from '../../tools/ai/llm-agent.mjs';
 import { compactDigest, compactChoices, continuity, focusPlan } from '../../tools/ai/llm-context.mjs';
 import { repairPlan, holdFloor } from '../../tools/ai/llm-plan.mjs';
+import { PHASE } from '../../shared/constants.js';
 
 test('example repair preserves reasoned level holds and drops an unexplained hold', () => {
   const economy = { level: 2, holdLevel: true, why: 'Farm low-tier elites.' };
@@ -230,11 +231,13 @@ test('host feedback observes real successful buys, sales, merges and battle resu
   assert.equal(own.events.find(e => e.type === 'merge').id, elite.id);
   assert.equal(ai.feedbackFor(other).events.length, 0);
   const ownWire = ps.privateView(), pubWire = m.publicView();
+  const wire = (v) => JSON.parse(JSON.stringify(v)); // the observation is JSON-cloned, so undefined-valued keys drop
   const o = aiObservation(m, ps, { kind: 'prep', id: 'o' }, []);
-  assert.deepEqual(o.private, ownWire); assert.deepEqual(o.public, pubWire);
+  assert.deepEqual(o.private, wire(ownWire)); assert.deepEqual(o.public, wire(pubWire));
   assert.equal(o.digest.feedback.through, 3); assert.equal(o.context.matchId, ai.matchId);
   m.lastResults = new Map([[ps.playerId, { leaked: [{}, {}, { counted: false }], layerGains: {} }]]);
-  m.settle(null, null);
+  // this fork's settle runs only out of COMBAT / UNITE (match/settle.js), so the settlement must be entered from combat
+  m.phase = PHASE.COMBAT; m.settle(null, null);
   assert.equal(ai.feedbackFor(ps).lastBattle.leaks, 2);
   assert.equal(ai.feedbackFor(ps).lastBattle.lpLoss, 2);
   assert.equal(ai.feedbackFor(ps).lastBattle.lp, ps.lp);

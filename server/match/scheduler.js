@@ -16,12 +16,82 @@
 // Callbacks are expected to guard themselves; the schedulers still catch and report (onError) so one faulty
 // callback never breaks the queue.
 
+// Shared CPU work queue adapted from xinhai 23d0a929 (GPL-3.0-or-later).
+import { matchWorkQueue } from '../cooperative.js';
+
 const MAX_DELAY = 2 ** 31 - 1;
 const clampDelay = (ms) => {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(MAX_DELAY, n);
 };
+
+/** Per-match timer suspension; the underlying scheduler may be shared by tests. */
+export class SuspendableScheduler {
+  constructor(base, { ownsBase = false } = {}) {
+    this.base = base;
+    this.ownsBase = ownsBase;
+    this.virtual = base.virtual;
+    this.instant = base.instant;
+    this.suspended = false;
+    this.entries = new Set();
+    this.disposed = false;
+    // Keep virtual tools' clock-control API available through the match's facade.
+    for (const key of ['advance', 'runNext', 'runUntil', 'runAll', 'pending', 'nextAt']) {
+      if (typeof base[key] === 'function') this[key] = base[key].bind(base);
+    }
+  }
+  now() { return this.base.now(); }
+  _arm(e) {
+    if (this.suspended || this.disposed) return;
+    e.due = this.now() + e.remaining;
+    const run = () => {
+      e.handle = null;
+      if (!this.entries.has(e) || this.suspended) return;
+      if (!e.every) this.entries.delete(e);
+      else { e.remaining = e.every; this._arm(e); }
+      e.fn();
+    };
+    e.handle = e.work && this.base.setWork ? this.base.setWork(run) : this.base.setTimeout(run, e.remaining);
+  }
+  _add(fn, ms, every = 0, work = false) {
+    if (this.disposed) return null;
+    const e = { fn, remaining: clampDelay(ms), every, work, handle: null, due: 0 };
+    this.entries.add(e);
+    this._arm(e);
+    return e;
+  }
+  setTimeout(fn, ms) { return this._add(fn, ms); }
+  get setWork() { return this.base.setWork ? this._setWork : undefined; }
+  _setWork(fn) { return this._add(fn, 0, 0, true); }
+  setInterval(fn, ms) { return this._add(fn, ms, Math.max(1, clampDelay(ms))); }
+  clearTimeout(e) {
+    if (!e) return;
+    this.base.clearTimeout(e.handle);
+    this.entries.delete(e);
+  }
+  clearInterval(e) { this.clearTimeout(e); }
+  suspend() {
+    if (this.suspended) return;
+    this.suspended = true;
+    for (const e of this.entries) {
+      e.remaining = Math.max(0, e.due - this.now());
+      this.base.clearTimeout(e.handle);
+      e.handle = null;
+    }
+  }
+  resume() {
+    if (!this.suspended) return;
+    this.suspended = false;
+    for (const e of this.entries) this._arm(e);
+  }
+  dispose() {
+    this.disposed = true;
+    for (const e of this.entries) this.base.clearTimeout(e.handle);
+    this.entries.clear();
+    if (this.ownsBase) this.base.dispose();
+  }
+}
 
 export class RealScheduler {
   /** @param {{ now?: () => number, onError?: (e: unknown) => void }} [opts] */
@@ -34,6 +104,7 @@ export class RealScheduler {
     this._timeouts = new Set();
     /** @type {Set<any>} */
     this._intervals = new Set();
+    this._work = new Set();
     this.disposed = false;
   }
 
@@ -58,8 +129,18 @@ export class RealScheduler {
 
   clearTimeout(h) {
     if (!h) return;
+    if (this._work.delete(h)) { matchWorkQueue.remove(h); return; }
     clearTimeout(h);
     this._timeouts.delete(h);
+  }
+
+  /** CPU slices share a process-wide soft budget, including guarded state flushes. */
+  setWork(fn) {
+    if (this.disposed || typeof fn !== 'function') return null;
+    const run = this._wrap(fn);
+    const h = matchWorkQueue.enqueue(() => { this._work.delete(h); run(); });
+    this._work.add(h);
+    return h;
   }
 
   setInterval(fn, ms) {
@@ -78,6 +159,8 @@ export class RealScheduler {
 
   dispose() {
     this.disposed = true;
+    for (const h of this._work) matchWorkQueue.remove(h);
+    this._work.clear();
     for (const h of this._timeouts) clearTimeout(h);
     for (const h of this._intervals) clearInterval(h);
     this._timeouts.clear();

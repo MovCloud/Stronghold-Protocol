@@ -31,6 +31,7 @@ globalThis.fetch = async (url) => {
 const { screenFieldId, bondOwnerId, ownerBonds, withLiveLayers, ownerBoard, stripView, playerBonds, watchedPlayer, playerLayer, screenStrip,
   detailBondOwner, toggleBond, popupView } = await import('../../public/js/ui/watchBonds.js');
 const { BondStrip, BondPopup } = await import('../../public/js/ui/bondStrip.js');
+const { BondsToggle, BondsFlyout } = await import('../../public/js/ui/teamPanel.js');
 const { CombatHud } = await import('../../public/js/ui/combatHud.js');
 const { cameraLayers } = await import('../../public/js/battle/observe.js');
 const { BOND_LAYER_CAP } = await import('../../shared/constants.js');
@@ -354,10 +355,51 @@ describe('§20.15 the strip and the popup say whose bonds they show', () => {
   });
   test('a teammate without bonds: "name 尚未激活盟约" with the tag', () => {
     const v = BondStrip({ bonds: [], owner: 'AI·煌', onOpen() {} });
-    assert.match(textOf(v), /AI·煌 尚未激活盟约/);
+    assert.match(textOf(v), /AI·煌\s*尚未激活盟约/);
     assert.ok([...walk(v)].some((x) => hasClass(x, 'bstrip__owner')));
-    assert.match(textOf(BondStrip({ bonds: [], onOpen() {} })), /部署干员以激活盟约/);
+    // the own strip says the same words (user request 2026-10-25): no 部署干员以激活盟约 hint, no dashed box
+    assert.match(textOf(BondStrip({ bonds: [], onOpen() {} })), /尚未激活盟约/);
+    assert.ok(!/部署干员以激活盟约/.test(textOf(BondStrip({ bonds: [], onOpen() {} }))));
   });
+  test('the roster\'s 盟约 bar: well-formed <button> markup, > closed / < open (user report: a stray "<" crashed the screen)', () => {
+    for (const open of [false, true]) {
+      const bar = BondsToggle({ open, onToggle() {} });
+      // every element name is a real tag: a typo like `<<//>` makes Preact call createElementNS('<') and crash the screen
+      for (const x of walk(bar)) assert.ok(typeof x.type !== 'string' || /^[a-z][a-z0-9-]*$/i.test(x.type), `valid tag, got ${x.type}`);
+      assert.equal(bar.type, 'button');
+      assert.ok(hasClass(bar, 'team__bonds-toggle'));
+      assert.equal(bar.props['aria-expanded'], String(open));
+      assert.equal([...walk(bar)].some((x) => x.props?.name === (open ? 'chevronLeft' : 'chevronRight')), true, open ? '<' : '>');
+      assert.equal(hasClass(bar, 'is-open'), open);
+    }
+  });
+  test('the 盟约 flyout: every seat\'s strip (own row included), the toggle left of the discs, the same discs as the top strip', () => {
+    const players = PUB().players;
+    const closed = BondsFlyout({ players, myId: ME, open: false, onToggle() {} });
+    const shut = [...walk(closed)].find((x) => hasClass(x, 'team__fly'));
+    assert.ok(shut && !hasClass(shut, 'is-open'), 'closed: the bar only');
+    assert.equal(shut.props.children[0].type?.name, 'BondsToggle', 'the toggle is the first child — discs open to its right');
+    assert.equal([...walk(closed)].some((x) => x.type?.name === 'BondStrip'), false, 'no discs until it opens');
+
+    const calls = [];
+    const open = BondsFlyout({ players, myId: ME, open: true, onToggle() {}, onBond: (id, pid) => calls.push([id, pid]) });
+    const fly = [...walk(open)].find((x) => hasClass(x, 'team__fly'));
+    assert.ok(hasClass(fly, 'is-open'));
+    assert.equal(fly.props.children[0].type?.name, 'BondsToggle');
+    const strips = [...walk(open)].filter((x) => x.type?.name === 'BondStrip');
+    assert.equal(strips.length, players.length, 'one group per seat, the viewer\'s own included');
+    assert.deepEqual(strips.map((s) => s.props.bonds).slice(0, 2), [players[0].bonds, players[1].bonds]);
+    assert.equal(strips[0].props.max, 16, 'the flyout has room: no +N cut');
+    const rows = [...walk(open)].filter((x) => hasClass(x, 'team__fly-row'));
+    assert.equal(rows.length, players.length, 'one group per seat, level with that seat\'s roster row');
+    assert.ok(hasClass(rows[0], 'is-self'), 'the own group is marked');
+    assert.ok(!hasClass(rows[1], 'is-self'));
+    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'BondStrip').length, 1, 'the discs sit directly beside the avatar');
+    assert.ok(![...walk(open)].some((x) => hasClass(x, 'team__fly-name')), 'no name column between the avatar and its discs');
+    strips[1].props.onOpen('sargonShip');
+    assert.deepEqual(calls, [['sargonShip', 'p2']], 'a disc opens that player\'s bond popup');
+  });
+
   test('the popup of a teammate\'s bond: "👁 name 的盟约", their count / layers, members from their board', () => {
     const id = ids[0];
     const rec = data.lookup('bonds', id);
@@ -380,14 +422,15 @@ test('§20.15 wiring: the game screen feeds the strip, the popup and the detail 
   assert.match(src, /const strip = screenStrip\(\{[^}]*field, layers, layer, who: watchWho, bondLayers:/, 'the field on screen, the ‹ › layers, the picked teammate');
   assert.match(src, /<\$\{BondStrip\} bonds=\$\{stripBonds\}[^>]*owner=\$\{strip\.name\}/);
   // the popup carries the player it was opened for: the strip's owner from the strip, the unit owner from a card's chip
-  assert.match(src, /const bondPop = popupView\(\{ open: bondOpen, pub, priv, myId, field, units: popOps, live: liveLayers \}\)/);
+  assert.match(src, /const bondPop = popupView\(\{ open: bondOpen, pub, priv, myId, field, units: popOps \|\| spawnedOps, live: liveLayers \}\)/,
+    'the popup falls back to the spawns the events brought when the battle runner has no ops for that player');
   assert.match(src, /battleRunner\.ownerOps\(bondOpen\.ownerId, field\.fieldId\)/, 'a teammate\'s members in play: the battle on screen\'s operators');
   assert.match(src, /<\$\{BondPopup\} bondId=\$\{bondPop\.bondId\} entry=\$\{bondPop\.entry\} priv=\$\{bondPop\.priv\}[^>]*owner=\$\{bondPop\.name\}/);
   assert.match(src, /onOpen=\$\{\(id\) => openBond\(id, strip\.ownerId, 'strip'\)\}/, 'the strip opens its owner\'s bond');
   assert.match(src, /const detailOwner = detailBondOwner\(detailTarget, \{ pub, myId, stripOwnerId: strip\.ownerId \}\)/);
   assert.match(src, /onBond=\$\{\(id\) => openBond\(id, detailOwner, 'detail'\)\}/, 'a card\'s chip opens the same owner\'s bond as its chips show');
-  assert.match(src, /onMember=\$\{\(id, items, standInFor, diy\) => setDetail\(\{ kind: 'chess', id, owner: bondPop\.ownerId, items: items \|\| null, standInFor: standInFor \|\| null, diy: diy \|\| null \}\)\}/,
-    'a member card keeps the popup\'s player (and a 变形同构体 row\'s items, a 补位 row\'s standInFor, a teammate\'s 自选 row\'s pick)');
+  assert.match(src, /onMember=\$\{\(id, items, standInFor, diy, skin\) => setDetail\(\{ kind: 'chess', id, owner: bondPop\.ownerId, items: items \|\| null, standInFor: standInFor \|\| null, diy: diy \|\| null, \.\.\.\(skin \? \{ skin \} : null\) \}\)\}/,
+    'a member card keeps the popup\'s player (and a 变形同构体 row\'s items, a 补位 row\'s standInFor, a teammate\'s 自选 row\'s pick, a skin row\'s 皮肤)');
   assert.match(src, /openId=\$\{bondPop && bondPop\.ownerId === strip\.ownerId \? bondPop\.bondId : null\}/, 'the strip marks only its own owner\'s popup');
   assert.match(src, /setBondOpen\(\(b\) => \(b && b\.from === 'strip' \? null : b\)\)/, 'a strip popup closes when the strip changes hands');
   assert.ok(!/stripBonds\.find\(\(b\) => b\.bondId === bondOpen\)/.test(src), 'no popup entry read from the strip regardless of its owner');

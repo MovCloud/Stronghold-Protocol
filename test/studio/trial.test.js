@@ -61,16 +61,37 @@ test('trial watchdog, concurrency limit, crash, cleanup and script gate', async 
   const r = await real.run({ id: 'disabled-script' }); assert.equal(r.ok, false); assert.equal(r.issues[0].code, 'PLUGIN_SCRIPTS_DISABLED');
 });
 
-async function request(studio, route, { body = {}, key, method = 'POST', ip = '127.0.0.1', host = 'localhost:3000', origin } = {}) {
+async function request(studio, route, { body = {}, key, method = 'POST', ip = '127.0.0.1', host = 'localhost:3000', origin, cookie } = {}) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]);
   req.method = method; req.url = `/studio/api/${route}`; req.socket = { remoteAddress: ip };
-  req.headers = { host, ...(key ? { 'x-sp-studio': key } : {}), ...(origin ? { origin } : {}) };
+  req.headers = { host, ...(key ? { 'x-sp-studio': key } : {}), ...(origin ? { origin } : {}), ...(cookie ? { cookie } : {}) };
   const response = { headers: {}, status: null, body: null, headersSent: false,
     setHeader(k, v) { this.headers[k] = v; }, writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers); this.headersSent = true; },
     end(body) { this.body = body?.toString(); }, destroy() {} };
   await studio.handle(req, response, req.url, '');
   return response;
 }
+test('the console login is the studio\'s other door: a signed-in owner from any address, the LAN rule otherwise', async t => {
+  const f = fixture(t);
+  const studio = createStudio({ registry: f.registry, pluginsDir: path.join(f.dir, 'plugins'), dataDir: path.resolve('data'), publicDir: path.resolve('public'),
+    watch: () => ({ on() {}, close() {} }), isAdmin: (req) => /sp_player_admin=yes/.test(String(req.headers.cookie || '')) });
+  t.after(() => studio.close());
+  // a public address without the console's session: the 404 of a page that does not exist (the address rule still holds)
+  const away = { ip: '8.8.8.8', host: 'game.example.com' };
+  assert.equal((await request(studio, 'info', { method: 'GET', ...away })).status, 404);
+  // signed in at the console: reads answer from any address the console itself is reachable at
+  const info = await request(studio, 'info', { method: 'GET', ...away, cookie: 'sp_player_admin=yes' });
+  assert.equal(info.status, 200, info.body);
+  assert.ok(JSON.parse(info.body).app, 'the studio payload, not an error page');
+  // a change from the console: the page's X-SP-Studio ('-' when it has no key) is enough — the session stands in for the key
+  const made = await request(studio, 'plugins', { key: '-', ...away, cookie: 'sp_player_admin=yes',
+    body: { template: 'meta', id: 'console-door', name: 'console-door' } });
+  assert.equal(made.status, 201, made.body);
+  // the same change without the session is keyless on the LAN (PLUGIN_STUDIO_KEY), and does not exist off it
+  const keyless = await request(studio, 'plugins', { key: '-', body: { template: 'meta', id: 'console-door2', name: 'console-door2' } });
+  assert.equal(keyless.status, 403);
+});
+
 test('trial API runs through LAN/Host/origin/key gates without opening a listening socket', async t => {
   const f = fixture(t); const id = plugin(f);
   const studio = createStudio({ registry: f.registry, pluginsDir: path.join(f.dir, 'plugins'), dataDir: path.resolve('data'), publicDir: path.resolve('public'),

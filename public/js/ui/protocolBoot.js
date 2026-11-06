@@ -30,8 +30,8 @@ let bootArt = null;
  * 请选择策略 band.
  */
 export const bootArtReady = () => bootArt === true;
-
 const waiting = new Set();
+
 /**
  * Calls `fn` once the sprites are in (at once when they already are) and returns the unsubscribe: the band draft's first
  * turn starts before screens/game.js has fetched them. A missing pack never calls it.
@@ -55,9 +55,9 @@ export function preloadBootArt() {
   bootArt = false;
   const urls = ART.map((k) => uiUrl(assets, k));
   if (!urls.every(Boolean)) return;
-  let left = urls.length;
   // held until every sprite is in: an Image nothing refers to may be collected mid-load, which cancels its request
   const imgs = [];
+  let left = urls.length;
   for (const src of urls) {
     const img = new Image();
     imgs.push(img);
@@ -83,6 +83,7 @@ export function preloadBootArt() {
  * @returns {Array<{ x: number, y: number, side: 'l'|'r'|'c', from?: [number, number], to?: [number, number] }>}
  */
 export function bootLayout(n) {
+  if (n > 6) return denseLayout(Math.min(n, BOOT_MAX));
   if (n <= 1) return [{ x: 703, y: 645, side: 'c' }];
   const NODES = [[939, 497], [1008, 513], [905, 548], [968, 575], [930, 610], [1000, 630]];
   return Array.from({ length: Math.min(n, 6) }, (_, i) => {
@@ -93,6 +94,32 @@ export function bootLayout(n) {
     return { x, y, side: right ? 'r' : 'l', from: [right ? x - 10 : x + 525, y + 63], to: NODES[i] };
   });
 }
+/** The most cards the screen draws (this fork's 20-seat rooms). */
+export const BOOT_MAX = 20;
+/** The band the dense card rows keep to (design px): under the ship's top, above 协议启动！ (top 705). */
+export const BOOT_BAND = Object.freeze([150, 690]);
+
+/**
+ * More than six doctors (this fork's 8–20-seat rooms; the owner's report of 2026-10-15 that the rows ran over 协议启动！):
+ * the same two columns, the rows closed up inside BOOT_BAND and each card one line (number, COMPLETE, ✓, avatar) as
+ * tall as its row allows — `h` (design px) is the card's height.
+ * @param {number} n
+ */
+function denseLayout(n) {
+  const rows = Math.ceil(n / 2);
+  const step = (BOOT_BAND[1] - BOOT_BAND[0]) / rows;
+  const h = Math.round(Math.min(127, step * 0.84));
+  const nodeGap = Math.min(30, 240 / rows);
+  return Array.from({ length: n }, (_, i) => {
+    const right = i % 2 === 1;
+    const row = Math.floor(i / 2);
+    const y = Math.round(BOOT_BAND[0] + row * step);
+    const x = right ? 1233 : 172;
+    const ny = Math.round(560 + (row - (rows - 1) / 2) * nodeGap);
+    return { x, y, h, side: right ? 'r' : 'l', from: [right ? x - 10 : x + 525, y + h / 2], to: [right ? 1000 : 920, ny] };
+  });
+}
+
 
 /** An official sprite as a positioned image (no lazy loading: the screen lasts about 2.3 s). */
 function Art({ k, class: cls, mask = false }) {
@@ -108,9 +135,10 @@ function Art({ k, class: cls, mask = false }) {
  * @param {{ players: any[], myId: any, leaving?: boolean }} props
  */
 export function ProtocolBoot({ players, myId, leaving = false }) {
-  const list = (Array.isArray(players) ? players : []).slice(0, 6);
+  const list = (Array.isArray(players) ? players : []).slice(0, BOOT_MAX);
   const spots = bootLayout(list.length);
-  return html`<div class=${cx('pboot', list.length <= 1 && 'pboot--solo', leaving && 'is-leaving')} role="status" aria-live="polite" aria-label=${t('协议启动！')}
+  const dense = list.length > 6;
+  return html`<div class=${cx('pboot', list.length <= 1 && 'pboot--solo', dense && 'pboot--dense', leaving && 'is-leaving')} role="status" aria-live="polite" aria-label=${t('协议启动！')}
       data-testid="protocol-boot">
     <div class="pboot__stage">
       <div class="pboot__scene" aria-hidden="true">
@@ -133,7 +161,7 @@ export function ProtocolBoot({ players, myId, leaving = false }) {
       ${list.map((p, i) => {
         const s = spots[i];
         return html`<div key=${p.playerId ?? i} class=${cx('pboot__card', `pboot__card--${s.side}`, p.playerId === myId && 'is-self')}
-            style=${`--x:${s.x};--y:${s.y};--i:${i}`}>
+            style=${`--x:${s.x};--y:${s.y};--i:${i}${s.h ? `;--h:${s.h}` : ''}`}>
           <span class="pboot__txt">
             <b class="pboot__num num">${String(i + 1).padStart(2, '0')}</b>
             <span class="pboot__done">COMPLETE</span>

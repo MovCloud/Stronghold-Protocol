@@ -12,6 +12,23 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
 
 import { ownerBandId } from '../../public/js/ui/gameLogic.js';
+import { flyOpRec } from '../../public/js/ui/teamPanel.js';
+
+describe('flyOpRec — the record the 盟约 flyout draws an on-field operator with', () => {
+  // data/chess.json is keyed by chess ids (`chess_char_*`); boardOps sends the field record's char id
+  // (`char_*`, the operator it fights as). A chess id needs no composed record; a char id must get one, or the
+  // thumbnail looks up nothing and every tile renders '?' (owner report 2026-10-25).
+  const isChess = (id) => String(id).startsWith('chess_');
+  test('a chess id: null (the thumbnail\'s own lookup resolves it)', () => {
+    assert.equal(flyOpRec({ id: 'chess_char_1_01_a' }, isChess), null);
+  });
+  test('a char id: a record carrying that char id as its art key, plus the elite bit', () => {
+    assert.deepEqual(flyOpRec({ id: 'char_498_inside', golden: 1 }, isChess),
+      { charId: 'char_498_inside', assets: { avatar: 'char_498_inside' }, isGolden: true });
+    assert.deepEqual(flyOpRec({ id: 'char_498_inside' }, isChess),
+      { charId: 'char_498_inside', assets: { avatar: 'char_498_inside' }, isGolden: false });
+  });
+});
 
 describe('ownerBandId — the picked 策略 of a player', () => {
   const pub = { players: [
@@ -38,7 +55,8 @@ describe('the drawer shows the watched player\'s 策略 while scouting', () => {
   test('InfoTab overrides the band and labels it with the owner (source); the detail card has no 策略 section', () => {
     const drawer = read('public/js/ui/enemyDrawer.js');
     assert.match(drawer, /const band = \(bandId \|\| priv\?\.bandId\) \? data\.lookup\('bands', bandId \|\| priv\.bandId\) : null/);
-    assert.match(drawer, /bandOwner \? t\('\{bandOwner\} 的策略', \{ bandOwner \}\) : t\('我的策略'\)/);
+    // The string is i18n-wrapped: the label goes through t() with the owner as an argument.
+    assert.match(drawer, /bandOwner \? t\('\{0\} 的策略', \{ 0: \(bandOwner\) \?\? '' \}\) : t\('我的策略'\)/);
     const panel = read('public/js/ui/detailPanel.js');
     assert.doesNotMatch(panel, /key="band"/, 'no 策略 section on the detail card');
     assert.doesNotMatch(panel, /'band'/, "CHESS_SECTIONS has no 'band' block");

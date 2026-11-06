@@ -59,10 +59,14 @@ test('the official sprites, all in the asset list; no drawn stand-ins; not ready
   assert.equal(B.bossPlateArtReady(), false, 'in Node (no Image) it never turns ready');
 });
 
-test('screens/game.js: the plates once their art is in, else the banners; the endings only in the pause before RESULT', () => {
+test('screens/game.js: the plates once their art is in, else the round plate / banners; the endings only in the pause before RESULT', () => {
   const g = read('public/js/screens/game.js');
-  assert.match(g, /if \(phase === PHASE\.FINAL_ASSAULT && bossPlateArtReady\(\)\) \{ setBanner\(null\); setBossPlate\(\{ kind: 'final', \.\.\.finalPlateRows\(pub\), key: phaseKey \}\); \}/);
-  assert.match(g, /else if \(phase === PHASE\.HIDDEN_CORE && bossPlateArtReady\(\)\) \{ setBanner\(null\); setBossPlate\(\{ kind: 'core', key: phaseKey \}\); \}\n\s+else if [\s\S]*?else if \(b\) setBanner/);
+  // this fork: the boss round's 回合开始 opens with 最终攻势 (the owner's correction of 2026-10-15) and the round after a
+  // 最终攻势 with 隐秘核心已解锁 — each only once the plates' art is in, else that round's plate
+  assert.match(g, /if \(phase === PHASE\.FINAL_ASSAULT\) faRoundRef\.current = pub\?\.round \?\? null;/);
+  assert.match(g, /else if \(roundStart && bossArt && faRoundRef\.current != null && pub\.round > faRoundRef\.current\) \{\n\s+setBanner\(null\);\n\s+setBossPlate\(\{ kind: 'core', key: phaseKey \}\);/);
+  assert.match(g, /\} else if \(roundStart && bossArt && pub\.bossRound > 0 && pub\.round === pub\.bossRound\) \{\n\s+faRoundRef\.current = pub\.round;\n\s+setBanner\(null\);\n\s+setBossPlate\(\{ kind: 'final', \.\.\.finalPlateRows\(pub\), key: phaseKey \}\);/);
+  assert.match(g, /const bossArt = bossPlateArtReady\(\);/);
   assert.match(g, /const endKind = bossPlateArtReady\(\) \? endPlateOf\(phase, pub\) : null;/);
   assert.match(g, /setResultBox\(null\);\n\s+setBossPlate\(\{ kind: 'end', end: endKind, key: `end:\$\{phaseKey\}` \}\);/);
   assert.doesNotMatch(g, /END_PLATE_MS/, 'the settlement is not held back for the plate');

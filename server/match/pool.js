@@ -21,6 +21,32 @@
 // the promotion reward and random grants pass diyStockEntries (the roll's own tier, DESIGN §30.23). Weighted by its
 // copies like any chess, drawn by that player only.
 
+import { isMilestoneBeacon } from './beaconSupply.js';
+
+/** The opening BAN must leave at least this many different shared-shop operators in every tier. */
+export const OPENING_TIER_FLOOR = 8;
+
+/** Shared-shop roster only: a private DIY slot never counts toward the whole team's tier guarantee. */
+export function isOpeningShopChess(gd, id) {
+  const rec = gd.chess(id);
+  return !!rec && rec.visible && !rec.isGolden && !rec.isDiy && !rec.isHidden &&
+    Number.isInteger(rec.tier) && rec.tier >= 1 && rec.tier <= 6 && gd.poolCopies(id) > 0;
+}
+
+/** Shared-shop operator count per tier under a disabled-bond set (tools/audit-opening-pool.mjs, the BAN guarantee). */
+export function openingTierCounts(gd, disabledBonds) {
+  const off = new Set(disabledBonds);
+  const counts = [0, 0, 0, 0, 0, 0];
+  for (const id of gd.visibleChess) {
+    if (!isOpeningShopChess(gd, id)) continue;
+    const rec = gd.chess(id);
+    const bonds = Array.isArray(rec.bonds) ? rec.bonds : [];
+    if (bonds.length && bonds.every((b) => off.has(b))) continue;
+    counts[rec.tier - 1]++;
+  }
+  return counts;
+}
+
 /**
  * Per-match disabled bond set D and banned chess (research 01 A2): D = uniform sample of `core` core bonds and `addon`
  * add-on bonds among weight > 0 bonds that are active in the mode. A visible chess is banned iff every one of its
@@ -29,16 +55,18 @@
  * @param {Function} rng seeded rng (createRng)
  * @returns {{ drawn: string[], staticOff: string[], banned: string[] }}
  */
-export function drawDisabledBonds(gd, rng) {
-  const { core: nCore, addon: nAddon } = gd.bans(gd.difficulty);
+export function drawDisabledBonds(gd, rng, { core, addon } = {}) {
+  const base = gd.bans(gd.difficulty);
+  const nCore = Number.isInteger(core) && core >= 0 ? core : base.core;
+  const nAddon = Number.isInteger(addon) && addon >= 0 ? addon : base.addon;
   const staticOff = [...gd.modeInactiveBonds].filter((b) => gd.bond(b)).sort();
   const eligible = gd.bondIds.filter((b) => {
     const bond = gd.bond(b);
     return bond && Number(bond.weight) > 0 && !gd.modeInactiveBonds.has(b);
   });
-  const core = eligible.filter((b) => gd.bond(b).isCore);
-  const addon = eligible.filter((b) => !gd.bond(b).isCore);
-  const drawn = [...sample(core, nCore, rng), ...sample(addon, nAddon, rng)].sort();
+  const corePool = eligible.filter((b) => gd.bond(b).isCore);
+  const addonPool = eligible.filter((b) => !gd.bond(b).isCore);
+  const drawn = [...sample(corePool, nCore, rng), ...sample(addonPool, nAddon, rng)].sort();
   const off = new Set([...drawn, ...staticOff]);
   const banned = [];
   for (const id of gd.visibleChess) {
@@ -55,23 +83,53 @@ function sample(arr, n, rng) {
   return a.slice(0, Math.max(0, Math.min(n, a.length)));
 }
 
+import { MAX_PLAYER_CAPACITY, poolGroupSizes, poolCopyScale } from '../../shared/playerCapacity.js';
+
+/** Start-of-match seat groups, never rebalanced after a death or leave. The fixed-table co-op rule (SiderLock
+ * 分组卡池): up to five seats share one pool; six or more split by the seat-ordered layout shared/playerCapacity.js
+ * poolGroupSizes gives (6=3+3, 9=4+5, 13=5+4+4, 20=five groups of four …), each group keeping a complete ordinary pool
+ * and only a five-seat group expanding it (poolCopyScale), with its own equipment stock (`itemPool`). `independent`
+ * (disableSharedPool) gives every seat its own. */
+export function createPoolGroups(gd, players, { banned = [], independent = false } = {}) {
+  if (!Array.isArray(players) || players.length < 1 || players.length > MAX_PLAYER_CAPACITY) throw new RangeError('pool groups require 1..20 players');
+  const sorted = players.slice().sort((a, b) => a.seat - b.seat);
+  const sizes = independent ? sorted.map(() => 1) : poolGroupSizes(sorted.length);
+  let offset = 0;
+  return sizes.map((n, i) => {
+    const members = sorted.slice(offset, offset += n);
+    const playerIds = members.map(p => p.playerId);
+    const scale = poolCopyScale(n);
+    return { id: i + 1, playerIds, scale, pool: new SharedPool(gd, { banned, scale }),
+      itemPool: new SharedItemPool(gd, () => members, { scale }) };
+  });
+}
+
 export class SharedPool {
   /**
    * @param {import('./gamedata.js').GameData} gd
-   * @param {{ banned?: Iterable<string> }} [opts]
+   * @param {{ banned?: Iterable<string>, scale?: number }} [opts]
    */
-  constructor(gd, { banned = [] } = {}) {
+  constructor(gd, { banned = [], scale = 1 } = {}) {
+    if (!Number.isFinite(scale) || scale < 1 || scale > 1.5) throw new RangeError('pool scale must be 1..1.5');
     this.gd = gd;
     const ban = new Set(banned);
     /** @type {Map<string, { cap: number, left: number, tier: number }>} */
     this.entries = new Map();
     for (const id of gd.visibleChess) {
       if (ban.has(id)) continue;
-      const cap = gd.poolCopies(id);
+      // A five-seat group scales the pool by 1.25; tier III rounds down to the approved 45, every other tier up
+      // (docs/PLAYER_CAPACITY.md 人数规则; the rule holds for a lone five-player room and a five-seat group alike).
+      const scaled = gd.poolCopies(id) * scale;
+      const cap = scale === poolCopyScale(5) && gd.tierOf(id) === 3 ? Math.floor(scaled) : Math.ceil(scaled);
       if (cap <= 0) continue;
       this.entries.set(id, { cap, left: cap, tier: gd.tierOf(id) });
     }
     this.banned = [...ban].sort();
+    /**
+     * Moves whenever a `left` count moves. The counts are persisted (snapshot.js `doc.poolLeft`), so the persistence
+     * version reads this instead of walking the entries (perf/state-sync priority 3).
+     */
+    this.revision = 0;
   }
 
   /** Whether a base chess is part of this match's pool (visible, not banned). */
@@ -84,7 +142,7 @@ export class SharedPool {
     const e = this.entries.get(baseId);
     if (!e || !(n > 0)) return 0;
     const k = overdraw ? Math.floor(n) : Math.min(Math.max(0, e.left), Math.floor(n));
-    e.left -= k;
+    if (k > 0) { e.left -= k; this.revision++; }
     return k;
   }
 
@@ -93,7 +151,7 @@ export class SharedPool {
     const e = this.entries.get(baseId);
     if (!e || !(n > 0)) return 0;
     const k = Math.min(e.cap - e.left, Math.floor(n));
-    e.left += k;
+    if (k > 0) { e.left += k; this.revision++; }
     return k;
   }
 
@@ -210,23 +268,28 @@ export class SharedPool {
  * copy is free. 整备 and ordinary grants stay limited. Fixed gift families may exceed the cap without a debt entry.
  * Source: the original experiment BV1eLXXBqEgF, 1:30 and 2:30, extended to equipment by the maintainer on
  * 2026-10-14 (#624). [ASSUMED] An item that is consumed, destroyed or removed by elimination no longer occupies
- * stock, consistently with the video's ownership model; this is not a per-match purchase limit. */
+ * stock, consistently with the video's ownership model; this is not a per-match purchase limit.
+ * `players` are the seats of one chess-pool group (createItemPools); `scale` is that group's pool scale. */
 export class SharedItemPool {
-  constructor(gd, players) {
+  constructor(gd, players, { scale = 1 } = {}) {
     this.gd = gd;
     this.players = players;
+    this.scale = scale;
     /** @type {Map<string, number>} base id → copies taken past the cap by an already-displayed card */
     this.debt = new Map();
   }
-  cap(id) { return this.gd.itemPoolCopies(id); }
+  cap(id) {
+    const n = this.gd.itemPoolCopies(id);
+    return n == null || this.scale === 1 ? n : Math.ceil(n * this.scale);
+  }
   need(id) { return this.gd.isGolden(id) ? 2 : 1; }
   held(id) {
     const base = this.gd.baseIdOf(id);
     let count = 0;
     const see = p => {
       if (!p) return;
-      if (p.kind === 'item' && this.gd.baseIdOf(p.id) === base) count += this.need(p.id);
-      for (const item of p.items || []) if (this.gd.baseIdOf(item.id) === base) count += this.need(item.id);
+      if (p.kind === 'item' && !isMilestoneBeacon(p) && this.gd.baseIdOf(p.id) === base) count += this.need(p.id);
+      for (const item of p.items || []) if (!isMilestoneBeacon(item) && this.gd.baseIdOf(item.id) === base) count += this.need(item.id);
     };
     for (const ps of this.players()) {
       for (const p of ps.hand) see(p);
@@ -270,4 +333,16 @@ export class SharedItemPool {
     for (const [id, weight] of pairs) if ((r -= Math.max(0, weight)) < 0) return id;
     return pairs.at(-1)?.[0] || null;
   }
+}
+
+/** Equipment stock per chess-pool group (createPoolGroups): a seat counts only its own group's ownership against the
+ * group's scaled caps, so an experimental room shares equipment the way it shares operators — one stock per group of
+ * seats, per player without a shared pool. An ordinary match has one group: every seat, the measured caps. */
+export function createItemPools(gd, groups, playerOf) {
+  const out = new Map();
+  for (const g of groups) {
+    const pool = new SharedItemPool(gd, () => g.playerIds.map(playerOf).filter(Boolean), { scale: g.scale });
+    for (const id of g.playerIds) out.set(id, pool);
+  }
+  return out;
 }

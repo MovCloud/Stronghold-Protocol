@@ -16,6 +16,7 @@ import {
 } from '../../shared/plugins/offers.js';
 import { PLUGIN_OFFERS_MAX_WINDOW_SEC, PLUGIN_OFFER_SLOTS } from '../../shared/plugins/limits.js';
 import { readPluginFolder } from '../../server/plugins/registry.js';
+import { link } from '../helpers/links.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const tmpdir = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `sp-offers-${tag}-`));
@@ -262,8 +263,9 @@ test('registry rejects invalid option payloads, scripts, missing sources and esc
   const dir = offerFolder(t), source = path.join(dir, 'lib/cards.json');
   fs.unlinkSync(source);
   assert.equal(readPluginFolder(dir).plugin, null);
-  put(path.dirname(dir), 'outside.json', []);
-  fs.symlinkSync(path.join(path.dirname(dir), 'outside.json'), source);
+  const outsideDir = path.join(path.dirname(dir), 'outside');
+  fs.mkdirSync(outsideDir);
+  link(outsideDir, source); // a junction standing in for the data file: refused before it is read
   assert.equal(readPluginFolder(dir).plugin, null);
 });
 

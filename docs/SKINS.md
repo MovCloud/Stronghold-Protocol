@@ -1,5 +1,12 @@
 # 干员皮肤 (Operator skins)
 
+> **This fork (Stardust, 2026-10-18):** the game does not wear these plugin skins. Its 干员外观 are the built-in
+> catalogue (`shared/skins.js`, `room.skins { choices }`, `UnitInfo.skinId`; see [OPERATOR-SKINS.md](OPERATOR-SKINS.md)),
+> and the plugin path below — `room.skins { skins }`, `Match.publicView().players[].skins`, `UnitInfo.skin`, the 皮肤
+> section of `ui/skinPicker.js` — is not wired in. Upstream's helpers stay for the plugin studio and Forge import
+> (`public/js/ui/skins.js`, shared/protocol.js `isSkinSelection` …). 设置「显示其他玩家的皮肤」 was ported onto the
+> catalogue skins (render/app.js `skinOf` reads `UnitInfo.skinId`).
+
 An operator's Spine model and its pictures can be replaced by one of its official alternative outfits (时装). This
 document is the normative reference for that feature; the art itself is **never** downloaded or written by the server —
 it comes from a **cosmetic plugin's overlay** (docs/PLUGINS.md §9), which the server's owner installs in `plugins/` and
@@ -259,3 +266,27 @@ exists) gets no section rather than an empty grid.
 - **A 自选 slot's own record has `charId: null`**, so it wears its **pick's** operator's skin — the slot has no body of
   its own. The picker offers the appearance while picking that operator, and the choice is kept per operator, so
   changing the slot's operator changes the appearance with it.
+
+---
+
+## Appendix (P6, 2026-10-20): the skin registry — cosmetic plugins ATTACH skins, the 皮肤工坊
+
+The overlay above is a server-owner document (a checked composition on `plugins/<id>`). P6 adds the **player-side**
+attachment path, a registry instead of a document:
+
+- `public/js/skinRegistry.js` — `register(pluginId, skins, { manifest })` validates a plugin's skin entries WHOLE
+  (charId must exist in the installation's manifest; skinId unique per global key `<pluginId>/<skinId>`, which no
+  document write can share; every URL inside `/p/<id>/<hash8>/…` or an imported alias) and hangs them onto the
+  cosmetic layers as a synthetic layer (`cosmetics.setSkins`) — composed by the same machinery, broadcast by the same
+  `onChange('manifest')`. `unregister(pluginId)` / `unregisterSkin(pluginId, skinId)` remove entries; a skin being
+  worn then resolves to nothing and every lookup falls back to the operator's own art (the cosmetic-fail semantics).
+- `kind: 'static'` carries the five picture slots; `kind: 'spine'` carries `spine: { model, atlas, … }` and lands in
+  the manifest as `spine: { front }` — the same record shape the detail view's dynamic player consumes
+  (`ui/dynamicIllustration.js`, `assets.js registeredDynamicArt`). NOTE: the product's dynamic art is **Spine skeletal
+  animation** (PRTS spine38; an earlier draft's "L2D" label was a misnomer — nothing in the product or the fork
+  archives uses Cubism/Live2D).
+- `public/js/skinWorkshop.js` (+ `ui/skinWorkshop.js`, 设置 → 皮肤工坊): a player picks picture files or a Spine group
+  (.skel + .atlas + its atlas pages), the files land in Cache Storage at `/p/local/<hash8>/…` (served by both service
+  workers, `shared/assetCache.js pluginObjectKey`), the document persists in localStorage (`sp.pref.localSkins`,
+  the personal-plugins path) and re-registers on page load (`content.js`).
+- Main-line invariance: with nothing registered the synthetic layer is empty and every official path is unchanged.

@@ -19,6 +19,10 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EMOTE_THEMES } from '../../shared/constants.js';
+
+// Core pages only: a plugin emote page adds one more page when a layer installs one (docs/PLUGINS.md §10c).
+const TOTAL_PAGES = EMOTE_THEMES.length;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -73,7 +77,7 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
       page.on('request', (r) => (intercept(r.url()) ? r.respond({ status: 404, body: 'gone' }) : r.continue()));
     }
     const full = url.startsWith('/') ? `${base}${url}` : `${base}/dev/game-mock.html?shot=1&render=${render}&${url}`;
-    await page.goto(full, { waitUntil: 'networkidle0' });
+    await page.goto(full, { waitUntil: 'load' });
     await page.waitForFunction(() => !!document.querySelector('.screen:not(.gload)'), { timeout: 20000 });
     await sleep(url.startsWith('/') ? 600 : 1600);
     return { page, problems };
@@ -87,6 +91,10 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
       if (se.scrollWidth > innerWidth + 1) out.push(`page overflows horizontally (${se.scrollWidth} > ${innerWidth})`);
       if (se.scrollHeight > innerHeight + 1) out.push(`page overflows vertically (${se.scrollHeight} > ${innerHeight})`);
       const root = document.querySelector(sel) || document.body;
+      const lobby = root.querySelector('.lobby-body');
+      const portraitLobby = innerWidth <= 600 && innerHeight > innerWidth;
+      if (!portraitLobby && lobby?.scrollHeight > lobby?.clientHeight + 1) out.push(`lobby needs vertical scrolling (${lobby.scrollHeight} > ${lobby.clientHeight})`);
+      if (lobby?.scrollWidth > lobby?.clientWidth + 1) out.push(`lobby needs horizontal scrolling (${lobby.scrollWidth} > ${lobby.clientWidth})`);
       for (const el of root.querySelectorAll('button, input, [role="button"]')) {
         const r = el.getBoundingClientRect();
         if (r.width < 2 || r.height < 2) continue;
@@ -102,8 +110,8 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
           const cs = getComputedStyle(a);
           if (/(auto|scroll)/.test(cs.overflowX + cs.overflowY)) { scroller = true; break; }
         }
-        if (scroller) continue;
-        if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) continue;
+        if (scroller && (!el.closest('.lobby-screen') || portraitLobby)) continue;
+        if (!el.closest('.lobby-screen') && (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight)) continue;
         if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) {
           out.push(`clipped: ${el.className || el.tagName} ${(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 12)} [${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.right)},${Math.round(r.bottom)}]`);
         }
@@ -126,10 +134,10 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
   }
 
   for (const dev of Object.keys(DEVICES)) {
-    test(`${dev}: title page — fits, touch classes, no zoom gestures, no errors`, async () => {
+    test(`${dev}: first page (the lobby: no title screen since 2026-10-15) — fits, touch classes, no zoom gestures, no errors`, async () => {
       const { page, problems } = await open(dev, '/');
-      await page.waitForSelector('.title-screen', { timeout: 10000 });
-      await page.screenshot({ path: path.join(OUT, `device-${dev}-title.png`) });
+      await page.waitForSelector('.lobby-screen', { timeout: 10000 });
+      await page.screenshot({ path: path.join(OUT, `device-${dev}-first.png`) });
       const st = await page.evaluate(() => ({
         cls: document.documentElement.className,
         rotate: getComputedStyle(document.querySelector('.rotate-hint')).display,
@@ -203,7 +211,7 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
   }
 
   for (const dev of ['iphone14', 'phone-min', 'pixel7', 'ipad']) {
-    test(`${dev}: 交流 pager — every emote cell, dot and ‹ › is hit at its centre; taps send / change the page`, async () => {
+    test(`${dev}: 交流 pager — every emote cell and ‹ › is hit at its centre; taps send / change the page`, async () => {
       const { page, problems } = await open(dev, 'phase=PREP');
       await page.evaluate(() => localStorage.removeItem('sp.pref.emoteTheme'));
       const tapAt = async (p) => { await page.touchscreen.tap(p.x, p.y); await sleep(350); };
@@ -221,23 +229,29 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
           return t?.closest(sel) === el ? null : `${el.getAttribute('aria-label')} → ${t ? `${t.tagName}.${t.className} ${t.getAttribute('aria-label') || ''}` : 'nothing'}`;
         };
         return [...document.querySelectorAll('.ewheel__item')].map((el) => own(el, '.ewheel__item'))
-          .concat([...document.querySelectorAll('.ewheel__dot')].map((el) => own(el, '.ewheel__dot')))
           .concat([...document.querySelectorAll('.ewheel__nav')].map((el) => own(el, '.ewheel__nav')))
           .filter(Boolean);
       });
       assert.deepEqual(hits, [], `${dev}: controls covered by a neighbour's hit area`);
-      // each dot opens its own page — the last one first: dot 1 used to act as ‹ from the last page
-      const dots = await page.$$eval('.ewheel__dot', (els) => els.map((el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }));
-      for (const i of [dots.length - 1, ...dots.keys()]) {
-        await tapAt(dots[i]);
-        assert.equal(await page.$$eval('.ewheel__dot', (els) => els.findIndex((d) => d.classList.contains('is-on'))), i, `${dev}: dot ${i + 1}`);
+      // the numeric pager: › walks forward one page at a time and the readout follows; ‹ walks back and is disabled on page 1
+      const count = () => page.$eval('.ewheel__count', (el) => el.textContent.trim());
+      const navs = await page.$$eval('.ewheel__nav', (els) => els.map((el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }));
+      assert.equal(navs.length, 2, '‹ and ›');
+      assert.equal(await count(), `1/${TOTAL_PAGES}`);
+      for (const i of [2, 3]) {
+        await tapAt(navs[1]);
+        assert.equal(await count(), `${i}/${TOTAL_PAGES}`, `${dev}: › → page ${i}`);
       }
-      await tapAt(dots[0]);
+      await tapAt(navs[0]);
+      assert.equal(await count(), `2/${TOTAL_PAGES}`, `${dev}: ‹ → previous page`);
+      await tapAt(navs[0]);
+      await tapAt(navs[0]);
+      assert.equal(await count(), `1/${TOTAL_PAGES}`, `${dev}: ‹ at the first page stays there`);
       // the bottom corners of page 1 send (they sat under the enlarged ‹ / › hit areas)
       for (const idx of [3, 5]) {
         if (!(await page.$('.ewheel__panel'))) await openWheel();
-        const c = await page.$$eval('.ewheel__item', (els, k) => { const r = els[k].getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, page: document.querySelector('.ewheel__dot.is-on')?.getAttribute('aria-label') }; }, idx);
-        assert.match(c.page, /1\/6/, 'page 1');
+        const c = await page.$$eval('.ewheel__item', (els, k) => { const r = els[k].getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, page: document.querySelector('.ewheel__count')?.getAttribute('aria-label') }; }, idx);
+        assert.match(c.page, new RegExp(` 1/${TOTAL_PAGES}$`), 'page 1');
         await tapAt(c);
         assert.equal(await page.$('.ewheel__panel'), null, `${dev}: a tap on emote #${idx + 1} sends it (the panel closes)`);
         await sleep(1100); // chatCD
@@ -271,7 +285,7 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
   }
 
   for (const dev of ['iphone14', 'phone-min', 'ipad']) {
-    test(`${dev}: title → lobby → room with taps (the on-screen flow before a match fits and responds)`, async () => {
+    test(`${dev}: lobby (个人名片 callsign) → room with taps (the on-screen flow before a match fits and responds)`, async () => {
       // a fresh profile: another device's saved session (same origin) would resume straight into its room
       const ctx = await browser.createBrowserContext();
       const { page, problems } = await open(dev, '/', { ctx });
@@ -286,16 +300,34 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
         await page.touchscreen.tap(r.x, r.y);
         await sleep(350);
       };
-      await tapText('.title-login input');
+      await page.waitForSelector('.lobby-screen', { timeout: 15000 });
+      if (await page.waitForSelector('.announcement-board', { visible: true, timeout: 1500 }).catch(() => null)) {
+        await tapText('.announcement-board .modal__actions button');
+        await page.waitForSelector('.announcement-board', { hidden: true });
+      }
+      // the callsign: 个人名片 → 博士代号, the dialog opens with the current name selected — typing replaces it
+      await tapText('[data-testid="profile-open"]');
+      await page.waitForSelector('.modal__box.prof', { visible: true });
+      await tapText('[data-testid="profile-rename"]');
+      await page.waitForSelector('.name-dialog input', { visible: true });
+      await page.$eval('.name-dialog input', (el) => { el.focus(); el.select(); });
       await page.keyboard.type('凯尔希');
-      await tapText('.title-login button', '开始');
-      await page.waitForSelector('.lobby-screen', { timeout: 15000 }).catch(async (err) => {
+      await tapText('.name-dialog .modal__actions button', '确认');
+      // 保存 applies the draft callsign and closes 个人名片 (关闭 alone would drop it)
+      await tapText('[data-testid="profile-save"]');
+      await page.waitForSelector('.modal__box.prof', { hidden: true });
+      await page.waitForFunction(() => globalThis.__SP__?.net.helloName === '凯尔希', { timeout: 15000 }).catch(async (err) => {
         await page.screenshot({ path: path.join(OUT, `device-${dev}-lobby-FAILED.png`) });
         throw err;
       });
       await sleep(400);
       await page.screenshot({ path: path.join(OUT, `device-${dev}-lobby.png`) });
       assert.deepEqual(await layoutProblems(page), [], `${dev} lobby`);
+      await tapText('.lobby-announcements', '公告');
+      await page.waitForSelector('.announcement-board', { visible: true });
+      assert.equal(await page.$eval('.announcement-board', el => el.getAttribute('aria-label')), '大厅公告板');
+      await tapText('.announcement-board button', '关闭公告');
+      await page.waitForSelector('.announcement-board', { hidden: true });
       await tapText('.mode-card', '同盟模拟');
       await tapText('[data-testid="alliance-create"]');
       await page.waitForSelector('.room-bar__right', { timeout: 15000 });
@@ -348,7 +380,7 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
         for (const [w, h, touch] of [[1280, 720], [1366, 657], [1920, 1080], [2560, 1440], [844, 390, true], [640, 360, true]]) {
           const page = await b.newPage();
           await page.emulate({ viewport: { width: w, height: h, deviceScaleFactor: 1, isMobile: !!touch, hasTouch: !!touch, isLandscape: true }, userAgent: await b.userAgent() });
-          await page.goto(`${base}/dev/game-mock.html?shot=1&render=fallback&phase=PREP`, { waitUntil: 'networkidle0' });
+          await page.goto(`${base}/dev/game-mock.html?shot=1&render=fallback&phase=PREP`, { waitUntil: 'load' });
           await page.waitForSelector('.ewheel__btn');
           await sleep(300);
           const m = await page.$eval('.ewheel__btn', (btn) => {
@@ -375,19 +407,22 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
     }
   });
 
-  test('portrait phone: the rotate hint covers the page', async () => {
+  test('portrait phone: lobby remains usable and only the battlefield requires rotation', async () => {
     const page = await browser.newPage();
     await page.emulate({ viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }, userAgent: IOS_UA });
-    await page.goto(`${base}/`, { waitUntil: 'networkidle0' });
+    await page.goto(`${base}/`, { waitUntil: 'load' });
+    await page.waitForSelector('.lobby-screen', { timeout: 10000 });
     await sleep(400);
+    assert.equal(await page.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'none');
+    await page.evaluate(() => document.documentElement.classList.add('sp-in-match'));
     assert.equal(await page.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'grid');
     await page.screenshot({ path: path.join(OUT, 'device-portrait-rotate.png') });
     await page.close();
     // review regression: a narrow desktop window (half a 1080p screen, portrait monitor) cannot be "rotated" — no hint
     const desk = await browser.newPage();
     await desk.setViewport({ width: 900, height: 1000 });
-    await desk.goto(`${base}/`, { waitUntil: 'networkidle0' });
-    await desk.waitForSelector('.title-screen', { timeout: 10000 });
+    await desk.goto(`${base}/`, { waitUntil: 'load' });
+    await desk.waitForSelector('.lobby-screen', { timeout: 10000 });
     assert.equal(await desk.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'none', 'desktop keeps the game');
     await desk.close();
   });

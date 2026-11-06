@@ -202,6 +202,8 @@ export function createPluginFiles(pluginsDir) {
     try {
       const st = fs.lstatSync(abs, { throwIfNoEntry: false });
       if (st && !st.isFile() && !st.isSymbolicLink()) throw bad(`${name} is not a file`);
+      // Windows cannot rename a plain file over a directory junction. Remove only the link itself.
+      if (process.platform === 'win32' && st?.isSymbolicLink()) fs.unlinkSync(abs);
       fs.renameSync(tmp, abs);
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch { /* gone */ }

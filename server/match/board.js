@@ -159,14 +159,20 @@ export function positionClass(rec) {
  * @param {object|null} rec
  */
 export function placeClass(ps, rec) {
-  if (!rec || !rec.chessId || !ps || typeof ps.fieldRecord !== 'function') return positionClass(rec);
-  let body;
-  try {
-    body = ps.fieldRecord(rec) || rec;
-  } catch {
-    body = rec;
+  // 0.2.0 补位 / 自选: the record the player actually fields (player/basics.js fieldRecord — the stand-in's body, or
+  // the 自选 pick of a slot) decides the placement class; without it, the player's own data view (ps.gd.chess).
+  if (ps && typeof ps.fieldRecord === 'function' && rec && rec.chessId) {
+    let body;
+    try {
+      body = ps.fieldRecord(rec) || rec;
+    } catch {
+      body = rec;
+    }
+    if (body && body !== rec) return positionClass(body);
   }
-  return positionClass(body);
+  const chessId = rec?.chessId || rec?.id;
+  const r = (ps && ps.gd && chessId && typeof ps.gd.chess === 'function') ? (ps.gd.chess(chessId) || rec) : rec;
+  return positionClass(r);
 }
 
 /**

@@ -2,10 +2,10 @@
 // screen and a running match; opt-in, ~15 s):
 //   SP_E2E=1 CHROME_PATH=… node --test test/ui/settings-entry.e2e.test.js
 //
-// After 开始 the lobby's top bar carries a 设置 button left of 玩法说明 (ui/settings.js SettingsButton), and so does the
-// room's after 创建同盟; each opens the very settings modal of the title screen (language, sound, 快捷键 …) and closes
+// The lobby's top bar carries a 设置 button left of 玩法说明 (ui/settings.js SettingsButton), and so does the
+// room's after 创建同盟; each opens the very same settings modal (language, sound, 快捷键 …) and closes
 // with Esc or 完成, leaving the screen as it was. No console / page errors. The modal itself and its contents are covered
-// by the title screen's tests; this file is about the entry. Not in the modal, deliberately: background music in a
+// by test/ui/modal.e2e.test.js and test/ui/i18n.e2e.test.js; this file is about the entry. Not in the modal, deliberately: background music in a
 // hidden tab and the board style (the owner's decision of 2026-10-07 on #238).
 
 import { test, describe, before, after } from 'node:test';
@@ -46,13 +46,14 @@ describe('the settings entry of the lobby and the room', { skip: !ENABLED && 'se
     const problems = [];
     page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    await page.goto(`${base}/`, { waitUntil: 'networkidle0', timeout: 60000 });
-    await page.waitForSelector('input', { timeout: 15000 });
-    await page.type('input', '测试博士');
-    await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => /开始/.test(b.textContent))?.click());
+    await page.goto(`${base}/`, { waitUntil: 'load', timeout: 60000 });
+    // no title screen to type a callsign into since 2026-10-15: the page opens on the lobby
     await page.waitForSelector('.lobby-screen', { timeout: 15000 });
     await sleep(500);
 
+    const announcement = await page.$('.announcement-board .modal__actions button');
+    if (announcement) { await announcement.click(); await page.waitForSelector('.announcement-board', { hidden: true }); }
+    assert.equal(await page.$('.lobby-language'), null, 'language has no duplicate lobby entry');
     assert.ok(await settingsBeforeGuide(page, '.lobby-screen .topbar__tools', 'lobby-guide'), '设置 sits right before 玩法说明 in the lobby\'s top bar');
     assert.equal(await modalText(page), null, 'closed until asked');
     await page.click('.lobby-screen [data-testid="settings-btn"]');
@@ -77,7 +78,7 @@ describe('the settings entry of the lobby and the room', { skip: !ENABLED && 'se
     await page.click('[data-testid="alliance-create"]');
     await page.waitForSelector('.room-screen', { timeout: 15000 });
     await sleep(500);
-    assert.ok(await settingsBeforeGuide(page, '.room-screen .topbar__left', 'room-guide'), '设置 sits right before 玩法说明 in the room\'s top bar');
+    assert.ok(await settingsBeforeGuide(page, '.room-screen .rs-tools', 'room-guide'), '设置 sits right before 玩法说明 in the room\'s top bar');
     await page.click('.room-screen [data-testid="settings-btn"]');
     await page.waitForSelector('.modal', { timeout: 5000 });
     assert.match(await modalText(page), /背景音乐/);

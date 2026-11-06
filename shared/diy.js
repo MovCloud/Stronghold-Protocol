@@ -1,6 +1,6 @@
 // shared/diy.js — 自选编队: a 自选 (DIY) slot filled with an operator. Pure ESM shared by the simulation
 // (server/sim/simdata.js getChess(id, { diy })), the server and the client. Data: data/backups.json `units` / `tokens` /
-// `diy` (docs/DATA.md §18), composed with shared/standIn.js composeUnitRecord into a record shaped like a data/chess.json
+// `diy` (docs/development/DATA.md §18), composed with shared/standIn.js composeUnitRecord into a record shaped like a data/chess.json
 // record, so normalizeChess, resolveLoadout / loadoutRecord and the detail card read it unchanged.
 //
 // The rules (research 0.2.0 §2; PRTS 卫戍协议, 卫戍协议：盟约 下半/PRTS盟约记录; the owner's decisions of 2026-10-05):
@@ -27,6 +27,7 @@
 
 import { composeUnitRecord, unitForm, statusKey } from './standIn.js';
 import { atPotential } from './potential.js';
+import { t } from './i18n.js';
 
 /** The tiers that have 自选 slots. */
 export const DIY_TIERS = Object.freeze([5, 6]);
@@ -70,7 +71,9 @@ function backupsOf(data) {
 }
 /** The data/chess.json record `id` of `data`, or null. @param {DiyData|null|undefined} data @param {string} id */
 function chessOf(data, id) {
-  const r = typeof data?.rawChess === 'function' ? data.rawChess(id) : data?.chess?.[id];
+  const r = typeof data?.rawChess === 'function'
+    ? data.rawChess(id)
+    : (typeof data?.chess === 'function' ? data.chess(id) : data?.chess?.[id]);
   return isObj(r) ? r : null;
 }
 /** The `diy` part of data/backups.json, or null. @param {DiyData|null|undefined} data */
@@ -158,12 +161,12 @@ export function diyPool(tier, { data, kitted = null } = { data: null }) {
  */
 export function checkDiyPick(slotId, pick, data) {
   const slot = diySlot(slotId, data);
-  if (!slot) return { error: `not a 自选 slot: ${slotId}` }; // i18n-ignore: developer detail
+  if (!slot) return { error: t('not a 自选 slot: {slotId}', { slotId }) }; // developer detail
   if (!isObj(pick) || typeof pick.charId !== 'string' || !ID.test(pick.charId)) return { error: `${slot.baseId}: bad pick` };
   const { charId } = pick;
   const diy = diyOf(data);
   const proto = isPrototypePick(data, slot.tier, charId);
-  if (!proto && !(diy.ownedPool ?? []).includes(charId)) return { error: `${charId} is not a tier-${slot.tier} 自选 pick` }; // i18n-ignore: developer detail
+  if (!proto && !(diy.ownedPool ?? []).includes(charId)) return { error: t('{charId} is not a tier-{tier} 自选 pick', { charId, tier: slot.tier }) }; // developer detail
   const want = pick.skillIndex ?? null;
   const wantMod = pick.uniEquipId === undefined || pick.uniEquipId === 'none' ? null : pick.uniEquipId;
   if (want !== null && !(Number.isInteger(want) && want >= 0 && want <= 9)) return { error: `${charId}: bad skill index ${want}` };
@@ -175,7 +178,7 @@ export function checkDiyPick(slotId, pick, data) {
     const lk = lockedSelection(data, slot.tier, charId);
     if (!lk) return { error: `${charId}: no locked selection at tier ${slot.tier}` };
     // omitted / null = its locked selection; another skill, another module or an explicit 'none' is refused
-    if (want !== null && want !== lk.skillIndex) return { error: `${charId}: a prototype carries skill ${lk.skillIndex} (与系统补位时一致)` }; // i18n-ignore: developer detail
+    if (want !== null && want !== lk.skillIndex) return { error: t('{charId}: a prototype carries skill {skillIndex} (与系统补位时一致)', { charId, skillIndex: lk.skillIndex }) }; // developer detail
     if (pick.uniEquipId != null && wantMod !== lk.uniEquipId) return { error: `${charId}: a prototype carries module ${lk.uniEquipId ?? 'none'}` };
     ({ skillIndex, uniEquipId } = lk);
   } else {

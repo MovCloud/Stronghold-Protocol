@@ -3,10 +3,12 @@
 // (server-run streaming, client-side combat), the per-field results and the sim-error log, then 联防 or SETTLE.
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
-import { PHASE, GEO } from '../../../shared/constants.js';
+import { PHASE, GEO, layerGainRoom } from '../../../shared/constants.js';
+import { WorkerFieldRunner } from '../combat/runner.js';
 import { deriveSeed } from '../../sim/rng.js';
 import { withBounties } from '../waves.js';
-import { planUnite } from '../unite.js';
+import { planUnites } from '../unite.js';
+import { uniteWavesHook } from '../uniteWavesHook.js';
 import { FieldRunner, DeadBattle } from '../fields.js';
 import { DELAYS } from './common.js';
 import { previewPlayer } from '../preview.js';
@@ -20,7 +22,8 @@ export class MatchCombat {
     try {
       return new this.BattleClass(full);
     } catch (e) {
-      if (!preview) this.reportError(`battle ${opts.fieldId} construct`, e);
+      if (preview) throw e;
+      this.reportError(`battle ${opts.fieldId} construct`, e);
       return new DeadBattle(full, 'forced');
     }
   }
@@ -49,8 +52,24 @@ export class MatchCombat {
     const wave = preview ? structuredClone(this.wave) : this.wave;
     if (preview) ps = previewPlayer(ps, board);
     const input = ps.battleInput({ side: 'L', colOffset: 0 });
+    // 2V2 事件期: the monster card + the 强力属性 subset apply to the round's NORMAL wave only (not the 狩猎期
+    // placements, whose bounty stays untouched). Applied after withBounties so the host-action re-timing is untouched.
     // the client's list: bounty units inserted among their host action's own units, which are re-timed around them
-    const spawns = withBounties(this.gd, this.round, wave, ps.bounties, ps.playerId).map((s) => ({ ...s, ownerPlayerId: ps.playerId }));
+    let spawns = withBounties(this.gd, this.round, wave, ps.bounties, ps.playerId).map((s) => ({ ...s, ownerPlayerId: ps.playerId }));
+    spawns = this.foeWaveSpawns(spawns);
+    // 2V2 对抗期: every intervention aimed at this player replaces a share of this wave (confront.js; one per attacker).
+    // A preview (the bot rehearsal) must not move the match's rngConfront — applyConfront shuffles with it, and the real
+    // battle draws it after the rehearsal — so the preview draws from a clone.
+    const savedConfront = preview ? this.rngConfront : null;
+    if (preview && savedConfront && typeof savedConfront.clone === 'function') this.rngConfront = savedConfront.clone();
+    try {
+      const subs = typeof this.confrontFor === 'function' ? this.confrontFor(ps) : [];
+      for (const sub of subs || []) spawns = this.applyConfront(spawns, sub, ps);
+    } finally {
+      if (savedConfront) this.rngConfront = savedConfront;
+    }
+    // 同盟狩猎: the system's prey is INSERTED after the event card / 强力属性, so its bounty stays the plan's own value
+    if (this.coopHuntActive()) spawns = this.applyCoopHunt(spawns, ps);
     // `waveSpawns`: the round's own wave before this player's bounties (a copy), so a draw every player shares picks the
     // same units (鸭爵, GitHub #839)
     const waveSpawns = (wave.spawns || []).map((s) => ({ ...s, mods: s.mods ? { ...s.mods } : undefined }));
@@ -82,12 +101,21 @@ export class MatchCombat {
     this.phase = PHASE.COMBAT;
     const alive = this.alivePlayers();
     this.lastResults = new Map();
-    this.fields = alive.map((ps) => ({ fieldId: `n:${ps.playerId}`, kind: 'normal', players: [ps.playerId], battle: this._normalBattle(ps), live: true }));
+    this._normalAliveCount = alive.length;
+    this._uniteRelay = null;
+    if (this.capacityExperiment) this._uniteBudget = null;
+    this.fields = alive.map((ps) => this.combatPool ? this._remoteField(this._normalOpts(ps), [ps.playerId])
+      : { fieldId: `n:${ps.playerId}`, kind: 'normal', players: [ps.playerId], battle: this._normalBattle(ps), live: true });
+    this._beginDamage('normal');
     const limit = this.wave ? this.wave.timeLimit : 60;
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
+    const Runner = this.combatPool ? WorkerFieldRunner : FieldRunner;
+    this.runner = new Runner(this, this.fields, {
+      onTick: (runner) => { if (!runner.remote) this._sampleDamage(); },
+      onDone: (runner) => this.combatDone(runner),
+    });
     this._defaultWatch();
     this.markPublic();
-    this.runner = new FieldRunner(this, this.fields, { onDone: (runner) => this.combatDone(runner) });
     this.runner.start();
   }
 
@@ -95,11 +123,16 @@ export class MatchCombat {
     this.phase = PHASE.COMBAT;
     const alive = this.alivePlayers();
     this.lastResults = new Map();
+    this._normalAliveCount = alive.length;
+    this._uniteRelay = null;
+    if (this.capacityExperiment) this._uniteBudget = null;
     this.watchers.clear();
     const fields = alive.map((ps) => this._ccField({ fieldId: `n:${ps.playerId}`, kind: 'normal', players: [ps.playerId], opts: this._normalOpts(ps) }));
     const limit = this.wave ? this.wave.timeLimit : 60;
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
     this._launch(fields);
+    this._beginDamage('normal');
+    this._flushDamage(true);
     // every fighting human runs its own field; eliminated humans (and spectator seats) keep watching (research 09 §3.1
     // "Keep-watching auto-observes the first available field", switching freely with 前往查看): a replica of the field
     // of the player they follow — the one they last watched, else the first player still in (item 56) — else the first
@@ -124,7 +157,11 @@ export class MatchCombat {
   /** Aggregate a finished field's content/engine errors (battle.errors: unique records) for diagnostics. */
   _collectSimErrors(f, res) {
     this.simErrors += Number(res && res.errors) || 0;
-    const list = f && f.battle && Array.isArray(f.battle.errors) ? f.battle.errors : [];
+    // A released field (M3, `_releaseFieldBattle`): the battle graph is gone, its error records were kept
+    // on the field. A field run in a worker carries them as `f.workerErrors` (same records, same order).
+    const list = f && Array.isArray(f.workerErrors) ? f.workerErrors
+      : f && Array.isArray(f.battleErrors) ? f.battleErrors
+        : f && f.battle && Array.isArray(f.battle.errors) ? f.battle.errors : [];
     for (const e of list) {
       if (!e || typeof e !== 'object') continue;
       const key = `${e.label}|${e.who || ''}|${e.message}`;
@@ -139,22 +176,67 @@ export class MatchCombat {
     }
   }
 
+  /** Consume a normal battle's cumulative gains once; settlement may supply a missing final delta. */
+  _applyBattleLayerGains(ps, gains) {
+    if (!ps || !ps.alive || ps.left || !gains || typeof gains !== 'object') return false;
+    let changed = false;
+    for (const [bondId, n] of Object.entries(gains)) {
+      if (!this.gd.bond(bondId) || !Number.isFinite(n) || !(n > 0)) continue;
+      const total = Math.floor(n);
+      const credited = ps.battleLayerGains[bondId] || 0;
+      if (total <= credited) continue;
+      // Advance the watermark before dispatch: rewards can cause nested onGain/onLayers hooks.
+      ps.battleLayerGains[bondId] = total;
+      const before = ps.layers[bondId] || 0;
+      const add = layerGainRoom(before, total - credited);
+      if (!(add > 0)) continue;
+      ps.layers[bondId] = before + add;
+      this.dispatch(ps, 'onLayers', { bondId, from: before, to: ps.layers[bondId], reason: 'battle' });
+      changed = true;
+    }
+    if (changed) ps.dirty();
+    return changed;
+  }
+
+  /** Authority updates are independent of who watches; old fields and disabled phases cannot award layers. */
+  _syncNormalLayers(field, gains) {
+    if (this.disposed || this.ended || this.phase !== PHASE.COMBAT || field.kind !== 'normal'
+      || !this.fields.includes(field) || field.spec?.flags?.layerGainsEnabled === false
+      || field.battle?.flags?.layerGainsEnabled === false) return;
+    for (const pid of field.players) {
+      const ps = this.players.get(pid);
+      if (this._applyBattleLayerGains(ps, gains?.[pid])) ps.recompute();
+    }
+  }
+
   combatDone(runner) { this._finishCombat((f) => runner.resultOf(f)); }
 
   /** Every normal field has its result: record them, then 联防 or SETTLE. */
   _finishCombat(resultOf) {
     if (this.phase !== PHASE.COMBAT) return;
+    this._sampleDamage(true, true); // save normal totals before the unite phase replaces these Battle objects
+    this._flushDamage(true);
     this._stopClientCombat();
     for (const f of this.fields) {
       const res = resultOf(f);
+      if (!res.synthetic) this._syncNormalLayers(f, Object.fromEntries(
+        Object.entries(res.perPlayer || {}).map(([pid, pp]) => [pid, pp.layerGains || {}])));
       this._collectSimErrors(f, res);
       for (const pid of f.players) {
         const pp = res.perPlayer && res.perPlayer[pid];
-        this.lastResults.set(pid, pp || { killed: 0, total: 0, leaked: [], perfect: true, layerGains: {}, coins: 0, damageDealt: 0, unitsEnd: [], unitStats: [] });
-        // the views show the layers the battle reached until settle() makes them persistent (DESIGN §20.15)
+        const normalResult = pp || { killed: 0, total: 0, leaked: [], perfect: true, layerGains: {}, coins: 0, damageDealt: 0, unitsEnd: [], unitStats: [] };
+        // Keep the full field's provenance: a synthetic fallback must never qualify a rescue donor.
+        this.lastResults.set(pid, res.synthetic || !pp ? { ...normalResult, synthetic: true } : normalResult);
+        // Keep only a legacy/reference result's uncredited remainder as an overlay; live gains must not show twice.
         const ps = this.players.get(pid);
         const gains = pp && pp.layerGains && typeof pp.layerGains === 'object' ? pp.layerGains : null;
-        if (ps && gains && Object.keys(gains).length) { ps.pendingLayerGains = { ...gains }; ps.dirty(); }
+        if (ps && gains) {
+          const pending = Object.fromEntries(Object.entries(gains)
+            .filter(([bondId, n]) => Number.isFinite(n) && Math.floor(n) > (ps.battleLayerGains[bondId] || 0))
+            .map(([bondId, n]) => [bondId, Math.floor(n) - (ps.battleLayerGains[bondId] || 0)]));
+          ps.pendingLayerGains = Object.keys(pending).length ? pending : null;
+          ps.dirty();
+        }
       }
     }
     for (const f of this.fields) f.live = false;
@@ -164,14 +246,17 @@ export class MatchCombat {
   }
 
   /**
-   * After the COMBAT_END pause: 联防 or SETTLE. The plan is made now, from the players still in — a player who quit
+   * After the COMBAT_END pause: 联防 or SETTLE. The plans are made now, from the players still in — a player who quit
    * during the last field or the pause (中途退出 = eliminated, board cleared) is neither a helper nor a leaker whose
-   * enemies re-enter.
+   * enemies re-enter. 2V2: one plan per team (planUnites), run as separate 联防 fields.
    */
   _afterCombat() {
     if (this.phase !== PHASE.COMBAT) return;
-    const plan = planUnite(this, this.lastResults);
-    if (plan) this.startUnite(plan);
-    else this.settle(null, null);
+    // Optional multi-wave 联防 (uniteWaves.js, SiderLock port): uniteWavesHook.planUnites is registered only when the
+    // opt-in module has been imported; the mainline relay planner stays the default. One plan per team and the match
+    // fields one 联防 at a time — coop always has exactly one.
+    const plans = uniteWavesHook.planUnites ? uniteWavesHook.planUnites(this, this.lastResults) : planUnites(this, this.lastResults);
+    if (plans.length) this.startUnite(plans[0]);
+    else this.settle(null, null); // no unite: null (an empty array is truthy and would fool the audit's unite check)
   }
 }

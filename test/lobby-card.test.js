@@ -1,12 +1,14 @@
 // test/lobby-card.test.js — room.card (名片干员, PR #643 split 6) end to end over WebSocket: the wire check, the
-// whitelist (only a visible charId of chess.json — not a hidden preset, a stand-in body or a 自选-only operator), storage
+// whitelist (a chess record's charId or the 自选 owned pool — a stand-in body or an unknown id is refused), storage
 // on the session (it follows the player into the next room) and the seat, room.state seats[].card for every member (human seats with a
-// card only), '' clearing it, and no phase gate (cosmetic: a running match is neither asked nor refused).
+// card only), '' clearing it, the documented change budget (CARD_CHANGES per CARD_WINDOW_MS, RATE beyond), and no phase
+// gate (cosmetic: a running match is neither asked nor refused).
 import { describe, test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { startServer } from '../server/index.js';
 import { StubMatch } from '../server/match/StubMatch.js';
+import { CARD_CHANGES } from '../server/lobby.js';
 import { TestClient } from './helpers/wsClient.js';
 import { ERR } from '../shared/constants.js';
 import { getData } from '../server/data.js';
@@ -16,7 +18,7 @@ const OPERATOR = 'char_498_inside';   // 隐现 (chess.json)
 const OTHER = 'char_1012_skadi2';     // 浊心斯卡蒂 (chess.json)
 const STAND_IN = 'char_600_cpione';   // a 补位 body (backups.units), no chess record
 const DIY_ONLY = 'char_003_kalts';    // a 自选 operator (backups.diy.ownedPool), no chess record
-const HIDDEN = 'char_616_pithst';     // a hidden preset (chess.json visible: false), not in the picker
+const HIDDEN = 'char_616_pithst';     // a hidden preset: a chess record the client picker does not list
 
 function clientPool(getUrl) {
   const open = new Set();
@@ -55,29 +57,34 @@ describe('room.card (lobby, stub match)', () => {
   afterEach(async () => { await pool.closeAll(); });
   after(async () => { await srv?.close(); });
 
-  test('the wire check: a charId or "" passes; a chess id, a number, junk or a missing field is BAD_MSG', async () => {
+  test('the wire check: a charId or "" passes; a chess id, a number or junk is BAD_MSG; a field left out keeps the stored value', async () => {
     const c = await pool.player('Wire');
     await ok(c, { t: 'room.card', charId: OPERATOR });
     await ok(c, { t: 'room.card', charId: '' });
     for (const charId of ['chess_char_1_01_a', 7, null, 'char_498 inside', `char_1_${'x'.repeat(70)}`]) {
       await err(c, { t: 'room.card', charId }, ERR.BAD_MSG);
     }
-    await err(c, { t: 'room.card' }, ERR.BAD_MSG);
+    // every field is optional (network.md §fork lobby): a message that names none changes nothing
+    await ok(c, { t: 'room.card' });
   });
 
-  test('only a visible operator of chess.json: a hidden preset, a stand-in body, a 自选-only operator or an unknown id is refused, the stored card stays', async () => {
+  test('the whitelist is the game data the server knows: a chess record or the 自选 owned pool passes; a stand-in body or an unknown id is refused, the stored card stays', async () => {
     const host = await pool.player('Host');
     await createRoom(host);
     await ok(host, { t: 'room.card', charId: OPERATOR });
-    await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card === OPERATOR);
-    for (const charId of [HIDDEN, STAND_IN, DIY_ONLY, 'char_999_nobody']) {
+    await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.charId === OPERATOR);
+    // network.md §fork lobby additions: the server checks the format and that the id is a chess record's charId or a
+    // member of the 自选 owned pool — it does not ask whether the client's picker lists it.
+    for (const charId of [HIDDEN, DIY_ONLY]) await ok(host, { t: 'room.card', charId });
+    for (const charId of [STAND_IN, 'char_999_nobody']) {
       const r = await err(host, { t: 'room.card', charId }, ERR.BAD_MSG);
       assert.match(JSON.stringify(r), /unknown operator/);
     }
-    // a later room.state still carries the card the refused ones did not replace
+    // a refused message changes nothing: the card the last accepted one set stays
+    await ok(host, { t: 'room.card', charId: OPERATOR });
     await ok(host, { t: 'room.addBot' });
     const st = await host.waitFor('room.state', (s) => s.seats.some((x) => x && x.isBot));
-    assert.equal(seatOf(st, host.id).card, OPERATOR);
+    assert.equal(seatOf(st, host.id).card?.charId, OPERATOR);
   });
 
   test('the server takes every operator the client picker lists (ui/seatArt.js cardOperators), in a room too', async () => {
@@ -85,7 +92,16 @@ describe('room.card (lobby, stub match)', () => {
     assert.ok(list.length > 100);
     const c = await pool.player('All');
     await createRoom(c, 'solo');
-    for (const charId of list) await ok(c, { t: 'room.card', charId });
+    const session = srv.registry.byId(c.id);
+    // The documented budget (network.md §fork lobby additions): CARD_CHANGES changes per CARD_WINDOW_MS per session,
+    // RATE beyond. The first CARD_CHANGES pass, the next one is refused; the bucket is then released per change so the
+    // whole picker list is still walked operator by operator.
+    for (const charId of list.slice(0, CARD_CHANGES)) await ok(c, { t: 'room.card', charId });
+    await err(c, { t: 'room.card', charId: list[CARD_CHANGES] }, ERR.RATE);
+    for (const charId of list.slice(CARD_CHANGES + 1)) {
+      srv.lobby.cardBuckets.delete(session);
+      await ok(c, { t: 'room.card', charId });
+    }
   });
 
   test('every member sees it as room.state seats[].card; "" clears it; bots and card-less seats carry no key', async () => {
@@ -96,7 +112,7 @@ describe('room.card (lobby, stub match)', () => {
     await ok(guest, { t: 'room.join', code: st0.code });
     await guest.waitFor('room.state', (s) => !!seatOf(s, guest.id));
     await ok(host, { t: 'room.card', charId: OPERATOR });
-    const seen = await guest.waitFor('room.state', (s) => seatOf(s, host.id)?.card === OPERATOR);
+    const seen = await guest.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.charId === OPERATOR);
     assert.ok(!('card' in seatOf(seen, guest.id)), 'the guest picked none');
     await ok(host, { t: 'room.addBot' });
     const withBot = await guest.waitFor('room.state', (s) => s.seats.some((x) => x && x.isBot));
@@ -110,10 +126,10 @@ describe('room.card (lobby, stub match)', () => {
     const c = await pool.player('Early');
     await ok(c, { t: 'room.card', charId: OTHER });
     const st = await createRoom(c);
-    assert.equal(seatOf(st, c.id).card, OTHER);
+    assert.equal(seatOf(st, c.id).card?.charId, OTHER);
     await ok(c, { t: 'room.leave' });
     const again = await createRoom(c, 'solo');
-    assert.equal(seatOf(again, c.id).card, OTHER);
+    assert.equal(seatOf(again, c.id).card?.charId, OTHER);
   });
 
   test('cosmetic, no phase gate: accepted while the match runs and shown in room.state', async () => {
@@ -122,7 +138,7 @@ describe('room.card (lobby, stub match)', () => {
     await ok(host, { t: 'room.start' });
     await host.waitFor('m.public', (p) => p.phase === 'INFO_CHECK');
     await ok(host, { t: 'room.card', charId: OPERATOR });
-    const st = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card === OPERATOR);
+    const st = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.charId === OPERATOR);
     assert.equal(st.inMatch, true);
   });
 });

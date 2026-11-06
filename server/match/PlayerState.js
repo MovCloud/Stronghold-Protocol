@@ -138,8 +138,12 @@ import { PlayerDiy, DiyStock } from './player/diy.js';
 export class PlayerState {
   /**
    * @param {import('./Match.js').Match} m owning match
-   * @param {{ seat: number, playerId: string, name: string, isBot: boolean, connected: boolean, loadout?: any, notOwned?: any, diy?: any, skins?: any }} seat
+   * @param {{ seat: number, playerId: string, name: string, isBot: boolean, connected: boolean, loadout?: any, ops?: any, notOwned?: any, diy?: any, skins?: any }} seat
    */
+  get pool() { return this.m.poolFor(this); }
+  /** This seat's equipment stock (Match itemPoolFor: its chess-pool group's). */
+  get itemPool() { return this.m.itemPoolFor(this); }
+
   constructor(m, seat) {
     this.m = m;
     this.gd = m.gd;
@@ -149,7 +153,19 @@ export class PlayerState {
     this.isBot = !!seat.isBot;
     this.connected = this.isBot ? true : !!seat.connected;
     this.left = false;
+    /** Once-per-match rescue usage; never reset by death, round start or reconnect. */
+    this.revived = false;
+    /** Current SETTLE death awaiting rescue; holds the original state until rescued or finalized. */
+    this.pendingDeath = false;
+    /** Authority-recorded diagnostic only; never consulted by the rescue rules or reset by round start. */
+    this.revivalUnavailableReason = null;
     this.autoplay = false;
+    /** 挂机移出 (Match afkRemoveRounds): a substantive intent was accepted since the last prep end; the idle rounds in a row */
+    this.afkActed = false;
+    this.afkRounds = 0;
+    /** 掉线由 AI 接管 (OFFLINE_TAKEOVER_ROUNDS): prep ends in a row the seat was offline; the AI 托管 the match turned on for it */
+    this.offlineRounds = 0;
+    this.offlineAutoplay = false;
     this.alive = true;
     this.lp = 0;
     this.bandId = null;
@@ -158,6 +174,8 @@ export class PlayerState {
     this.ready = false;
     this.infoReady = this.isBot;
     this.lastEmoteAt = -Infinity;
+    /** the core bond the human announced it means to build (g.bondPlan, m.public players[].bondPlan; display only) */
+    this.bondPlan = null;
     /** operator loadout (DESIGN §16): frozen { [baseChessId]: { skill, module } }, {} = every chess on its defaults */
     this.loadout = Object.freeze({});
     // 0.2.2: the per-operator 潜能 / 练度 ({} = every operator 潜能 6, 精英2 Lv.60 — bots always)
@@ -186,8 +204,9 @@ export class PlayerState {
     // keeps the vanilla kit list and drops a plugin operator with no error (checkDiyPicks is lenient).
     // Bots never slot 自选; they read the human's composed records once this succeeds (bot.js chessRec).
     if (!this.isBot && seat.diy) this.setDiy(seat.diy, this.m.diyKitted ? { kitted: this.m.diyKitted } : undefined);
-    /** 皮肤 (docs/SKINS.md): frozen `{ [charId]: skinId }`, {} = every operator on its default model. Unlike the
-     * loadout these are PUBLIC (a teammate sees your skin), so they travel in Match.publicView().players[]. */
+    // 干员皮肤 (docs/SKINS.md): frozen { [charId]: skinId }, {} = every operator on its default model. Unlike the loadout
+    // these are PUBLIC (m.public players[].skins) and must survive the ROUND_START shop: only Match.resetUnit / new
+    // PlayerState ever clear them. Read through the accessor in every view (player/views.js, match/views.js).
     this.skins = Object.freeze({});
     if (!this.isBot && seat.skins) this.setSkins(seat.skins);
     this.shop = { level: 1, upgradePrice: this.gd.upgradeBase(1) ?? 0, slots: [], frozen: false, freeRefreshes: 0 };
@@ -205,11 +224,13 @@ export class PlayerState {
     this.board = new Map();
     /** persistent bond layers */
     this.layers = {};
+    /** This round's cumulative battle gains already consumed; repeated Worker states must not credit twice. */
+    this.battleLayerGains = {};
     /** computed bond states */
     this.bonds = {};
     /**
-     * this round's IN_BATTLE layer gains of the finished normal battle ({ [bondId]: n }, Match._finishCombat) until
-     * settle() makes them persistent — the views add them (bondsView, DESIGN §20.15); null otherwise
+     * Unsynchronized final-result gains ({ [bondId]: n }) for legacy/reference settlement paths only.
+     * Live normal-battle gains are already persistent and must never be overlaid again; null otherwise.
      */
     this.pendingLayerGains = null;
     /** optional per-bond count bonus written by effects */

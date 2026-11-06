@@ -6,6 +6,7 @@ let generation = 0;
 import { sha256Hex } from '../sha256.js';
 import { linkScript } from './scriptCheck.js';
 import { csUrlPart } from './identity.js';
+import { genPathFor } from '../gen.js';
 
 /** Mode is part of the hashed descriptors. Mixed native/sandbox descriptors fail closed. */
 export function scriptExecution(scripts) {
@@ -23,10 +24,11 @@ export function browserScriptSources(p) {
     rel === m.entry?.sim || rel === m.entry?.meta ? linkScript(source, '/shared/plugins/sdk.js') : source]));
 }
 
-export const scriptUrl = (cs, id, rel) => `/cs/${csUrlPart(cs)}/scripts/${id}/${rel}`;
+// (fork) in the page's server generation (shared/gen.js): a content set lives in that server process only
+export const scriptUrl = (cs, id, rel) => genPathFor(moduleUrl, `/cs/${csUrlPart(cs)}/scripts/${id}/${rel}`);
 
 /** Page-side byte check before native import; Workers use this already checked, immutable snapshot. */
-export async function checkBrowserScripts(scripts, cs, fetchFn = (...args) => globalThis.fetch(...args)) {
+export async function checkBrowserScripts(scripts, cs, fetchFn = (input, init) => globalThis.fetch(input, init)) {
   for (const p of scripts) {
     const m = JSON.parse(p.manifestSource);
     for (const rel of new Set([m.entry?.sim, m.entry?.meta, m.entry?.client].filter(Boolean))) {

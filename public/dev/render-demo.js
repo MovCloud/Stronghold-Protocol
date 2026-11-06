@@ -11,7 +11,8 @@
 //        &pen=<recording> (prep: that recording's round preview — m.private.nextEnemies — in the enemy preview pen)
 //        &ops=<chessId>,… (stress: up to 6 given chess in the crowd's front row, ids 6, 8, 10, …)
 //        &fa=L|R (prep on that half of the Final Assault boss field, view.setCamera('bossPrep', { side }))
-//        &board=2d|3d (the official 3D board scene, DESIGN §15; default 3D when the local art + WebGL2 are available)
+//        &board=3d|2d (设置「棋盘样式」: '3d' = 官方贴图, the official 3D board scene, the default, DESIGN §15;
+//        '2d' = the procedural tiles, the same camera, avatar diamond tokens — the mobile-friendly mode; never reframed)
 //        &cam=prep|normal|unite|boss|pen|bossPrep [&side=L|R &half=1 &shop=0] (official configBlackBoard framings)
 //        &fx=auto|off|lite|full (设置「官方特效」, default auto as in the game; off shows only the procedural effects)
 // Puppeteer hook: window.__demo = { ready, view, seek(t), play(), pause(), setScene(name), stats(), log,
@@ -469,7 +470,7 @@ function fxScene(view, stageId) {
   };
   // `pt` kinds name the shooter in `id` and happen at an enemy's spot; a 'flame' happens at its target
   const posFor = (k, ex) => unitAt(FX_KINDS[k].pt ? [21, 23, 20][i % 3] : FX_KINDS[k].a === 'flame' ? ex.target : ex.id);
-  // 蕾缪安 S3 as the sim plays it (sim/content/kits/ops/chess_char_6_01-lemuen.js): a lock every 0.5 s, then after the skill one shell every
+  // 蕾缪安 S3 as the sim plays it (sim/content/kits/tier6.js): a lock every 0.5 s, then after the skill one shell every
   // 0.3 s on the locks in order, each landing 0.3 s later with its bombard — queued [game time, event]
   const queue = [];
   const lemuenS3 = () => {

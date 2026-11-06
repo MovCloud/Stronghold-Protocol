@@ -8,7 +8,7 @@
 //                  fallback (docs/research/03-operators.json, 05-enemies.json, 05-maps.json), loaded by ./nodeData.js
 //                  so the sim and its tests work before/without generated data;
 //        browser — whatever the page injected with `setSimData(data)` (the fetched /data/*.json, DESIGN §14).
-// Both the research record shapes and the build-data shapes (docs/DATA.md) are accepted.
+// Both the research record shapes and the build-data shapes (docs/development/DATA.md) are accepted.
 //
 // Operator loadouts (DESIGN §16, DATA.md §2.2): `getChess(id, { skillIndex, moduleId })` resolves the def of a chess
 // with the selected skill (def.skill / its blackboard / trigger) and — elite only — module (stats = statsBase + attr,
@@ -559,6 +559,7 @@ export function freezeDef(d) {
  */
 export class DataSource {
   constructor(raw = {}, fallback = null) {
+    this.contentData = raw;
     this.raw = {
       chess: asMap(unwrap(raw.chess, 'chess'), 'chessId') ?? {},
       enemies: asMap(unwrap(raw.enemies, 'enemies'), 'key') ?? {},
@@ -573,6 +574,7 @@ export class DataSource {
     this._chess = new Map();
     this._enemy = new Map();
     this._token = new Map();
+    this._rawToken = new Map();
     this._stage = new Map();
   }
 
@@ -580,8 +582,17 @@ export class DataSource {
   rawEnemy(key) {
     return this.raw.enemies[key] ?? this.raw.enemies['enemy_' + key] ?? this.raw.enemies[String(key).replace(/^enemy_/, '')] ?? this.fallback?.rawEnemy(key) ?? null;
   }
-  /** A token record: data/tokens.json, else the 自选 picks' summons (data/backups.json `tokens`). */
-  rawToken(id) { return this.raw.tokens[id] ?? this.fallback?.rawToken(id) ?? this.rawBackups()?.tokens?.[id] ?? null; }
+  /** A token may be shared by a shop chess and a DIY pick. Keep both owner-specific variant maps. */
+  rawToken(id) {
+    if (this._rawToken.has(id)) return this._rawToken.get(id);
+    const primary = this.raw.tokens[id] ?? this.fallback?.rawToken(id) ?? null;
+    const backup = this.rawBackups()?.tokens?.[id] ?? null;
+    const record = primary && backup && primary !== backup
+      ? { ...backup, ...primary, variants: { ...backup.variants, ...primary.variants } }
+      : primary ?? backup;
+    this._rawToken.set(id, record);
+    return record;
+  }
   rawStage(id) { return this.raw.stages[id] ?? this.fallback?.rawStage(id) ?? null; }
   rawWave(id) { return this.raw.waves[id] ?? this.fallback?.rawWave(id) ?? null; }
   /** data/backups.json (`{ units, diy }`) of this source or its fallback, or null. */

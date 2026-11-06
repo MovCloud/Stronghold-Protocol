@@ -8,7 +8,7 @@
 //
 // Index getters (DESIGN §2; same names as public/js/data.js): getChess, getBond, getGarrison, getItem, getBand,
 // getEffect, getEnemy, getWave, getStage, getBoss, getToken, getConfig, getMode. The id-keyed files are already
-// `{ [id]: record }` maps (docs/DATA.md), so a getter is an OWN-property lookup: ids that come from client
+// `{ [id]: record }` maps (docs/development/DATA.md), so a getter is an OWN-property lookup: ids that come from client
 // intents (e.g. `g.band {bandId: "constructor"}`) can never resolve to inherited Object.prototype members.
 // Every getter returns null for unknown ids / missing files and takes an optional data object (default:
 // the process-wide getData() singleton).
@@ -107,9 +107,37 @@ export function getData({ dir = DATA_DIR, log = console } = {}) {
   return singleton;
 }
 
+const profiles = new Map();
+/**
+ * Select an immutable game-data profile from `dir` (cached per directory). A profile must have every core table and
+ * never falls back to another directory's tables. The returned objects can be shared by rooms safely.
+ * @param {{ dir?: string, log?: object }} [opts]
+ */
+export function getDataProfile({ dir = DATA_DIR, log = console } = {}) {
+  const key = path.resolve(dir);
+  if (key === path.resolve(DATA_DIR)) return getData({ dir, log });
+  if (profiles.has(key)) return profiles.get(key);
+  const data = loadData(key, { log });
+  const missing = DATA_FILES.filter((file) => !data[file] || typeof data[file] !== 'object' || Array.isArray(data[file]));
+  if (missing.length) {
+    throw new Error(`Game data unavailable in ${key}: missing or invalid ${missing.map((file) => `${file}.json`).join(', ')}`);
+  }
+  profiles.set(key, data);
+  return data;
+}
+
+/** Worker bootstrap: install transferred full data before importing simulation/content modules. */
+export function initializeData(data) {
+  if (!data || typeof data !== 'object') throw new TypeError('full game data required');
+  if (singleton && singleton !== data) throw new Error('game data singleton already initialized');
+  if (!singleton) singleton = deepFreeze(data);
+  return singleton;
+}
+
 /** Drop the singleton so the next getData() reloads (tests / hot reload). */
 export function resetData() {
   singleton = null;
+  profiles.clear();
   forgetOfficialBounds();
 }
 

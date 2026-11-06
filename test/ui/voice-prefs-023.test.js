@@ -23,7 +23,7 @@ test('per-character override survives persistence; deletion restores the current
   assert.equal(voiceLangFor(b, manager.voiceLang, manager.voiceOverrides), 'jp');
   assert.equal(voiceLangFor('unknown', 'cn', manager.voiceOverrides), 'cn');
 });
-test('voiceLangFor with a manifest: own choice, then 本土语言, then the global dub, then 中文', () => {
+test('voiceLangFor with a manifest: own choice, then 本土语言, then the global dub, then (fork) 日本語, then 中文', () => {
   const audio = {
     voice: { [a]: { select: '/cn.mp3' }, [b]: { select: '/b-cn.mp3' } },
     voiceJp: { [a]: { select: '/jp.mp3' } },
@@ -37,6 +37,12 @@ test('voiceLangFor with a manifest: own choice, then 本土语言, then the glob
   assert.equal(voiceLangFor(a, 'en', {}, { audio }), 'en', 'the global dub when the switch is off and there is no own choice');
   assert.equal(voiceLangFor(b, 'en', {}, { audio }), 'cn', 'a global dub this operator lacks falls back to 中文');
   assert.equal(voiceLangFor(b, 'jp', {}, { audio, native: true }), 'cn', 'no native tree and no JP tree: 中文');
+  // (fork) an operator without the global dub (not on the global server yet) speaks its JP dub before 中文
+  const c = 'char_4182_oblvns';
+  const withJp = { ...audio, voice: { ...audio.voice, [c]: { select: '/c-cn.mp3' } }, voiceJp: { ...audio.voiceJp, [c]: { select: '/c-jp.mp3' } } };
+  assert.equal(voiceLangFor(c, 'en', {}, { audio: withJp }), 'jp', 'no EN dub ⇒ JP');
+  assert.equal(voiceLangFor(c, 'kr', { [c]: 'en' }, { audio: withJp }), 'jp', 'a pick and a global it lacks ⇒ JP');
+  assert.equal(voiceLangFor(c, 'cn', {}, { audio: withJp }), 'cn', 'a 中文 global stays 中文');
   assert.equal(voiceLangFor(a, 'en', { [a]: 'jp' }), 'jp', 'without audio the old cn/jp rule stands, and en is not a global');
   assert.equal(voiceLangFor(a, 'en', { [a]: 'en' }), 'cn', 'without audio an en override does not win');
   assert.equal(voiceLangFor(a, 'kr', {}), 'cn');

@@ -347,7 +347,7 @@ describe('every handler and key hint reads the map', () => {
 
   test('game.js and the facing wheel pass the player\'s map to the one lookup; no other file names a rebindable key', () => {
     assert.match(read('public/js/screens/game.js'), /shortcutFor\(e, settingsStore\.get\(\)\.keys\)/);
-    assert.match(read('public/js/ui/facingWheel.js'), /facingSwallows\(e, settingsStore\.get\(\)\.keys\)/);
+    assert.match(read('public/js/ui/facingWheel.js'), /facingSwallows\(e, shortcutsStore\.get\(\)\)/);
     for (const f of files) {
       if (f === 'public/js/ui/gameLogic/shortcuts.js') continue;
       const src = read(f);

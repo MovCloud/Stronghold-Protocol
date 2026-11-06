@@ -2,7 +2,7 @@
 // 提示) and, in the same place, stage devices (阻隔工事 / “双眼皮” / 射击台 / 气流: GitHub #228, PR #229 by @rickylxw —
 // deviceInfo / deviceTipAt below). Re-exported from ../gameLogic.js.
 //
-// The words go through t() (docs/I18N.md: the Chinese text is the msgid, public/i18n/en.json the English): the name /
+// The words go through t() (docs/development/I18N.md: the Chinese text is the msgid, public/i18n/en.json the English): the name /
 // tag / fact tables are marked N_() and translated where terrainInfo hands them out, the mechanism lines are built
 // with their numbers as params. A device's NAME is a data text (data/stages.json `devices[].name`, localized by the
 // data overlay: "Barricade", "'Double Lids'" …), not a msgid.

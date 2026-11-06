@@ -67,7 +67,11 @@ describe('皮肤: the wire shape of room.skins', () => {
     for (const id of [SKIN, 'char_002_amiya@winter#1', 'char_002_amiya#1+', 'char_1039_thorn2@marthe#9']) {
       assert.ok(isSkinId(id), `should accept ${id}`);
     }
-    for (const bad of ['', ' ', 'a b', 'char/1', 'char\\1', '<script>', 'x'.repeat(SKIN_LIMITS.idLen + 1), 42, null, undefined, {}, []]) {
+    for (const id of ['char/1', 'myplugin/skin#1', 'p-1/char_002_amiya@winter#1']) {
+      assert.ok(isSkinId(id), `the skin registry's global key must travel: ${id}`);
+    }
+    for (const bad of ['', ' ', 'a b', 'char\\1', '<script>', 'a/', '/a', 'a//b', 'x'.repeat(SKIN_LIMITS.idLen + 1),
+      'myplugin/' + 'x'.repeat(SKIN_LIMITS.idLen), 42, null, undefined, {}, []]) {
       assert.ok(!isSkinId(bad), `should reject ${JSON.stringify(bad)}`);
     }
   });

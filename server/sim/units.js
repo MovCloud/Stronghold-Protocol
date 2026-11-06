@@ -41,7 +41,7 @@ export class Unit {
     // 干员皮肤 (docs/SKINS.md): the owning player's chosen skinId, carried from PlayerBattleInput.skin through
     // _makeAlly; snapshot's unitInfo puts it on the wire so every client draws that player's model. null = default.
     // Display only: no rule reads `this.skin`, and Battle.result() does not include it.
-    this.skin = init.skin ?? null
+    this.skin = init.skin ?? null;
     this.ownerUnit = init.ownerUnit ?? null; // summoner (tokens)
     this.x = init.x ?? 0;
     this.y = init.y ?? 0;
@@ -121,6 +121,41 @@ export class Unit {
     // char_attribute_mul — ATK / DEF / max HP, a multiplier of its own (never summed with the 直接乘算 percentages)
     this.cultivate = null;
     this.cultMul = null;
+    // Fields other modules set later — an enemy's at its spawn (battle/spawns.js), the rest whenever they first apply —
+    // declared here, unset, in one order: every unit then keeps one hidden class per kind instead of hundreds (lazily
+    // added properties in varying orders made the hot loops' property reads megamorphic). Reads are unchanged (an unset
+    // field reads undefined, as an absent one did); nothing enumerates a unit's own keys.
+    this.removeReason = undefined;    // battle/deploy.js removal
+    this._removing = undefined;
+    this.skillAnimUntil = undefined;  // skills.js cast animation window
+    this._regenAcc = undefined;       // battle/status.js natural regeneration
+    this._profInstalled = undefined;  // battle/players.js
+    this.obstacle = undefined;        // battle/summons.js obstacles
+    this.obstacleKind = undefined;
+    this.blockWeight = undefined;     // battle/spawns.js (enemies)
+    this.hitArea = undefined;
+    this.lpr = undefined;
+    this.mods = undefined;
+    this.tag = undefined;
+    this.bounty = undefined;
+    this.sourcePlayerId = undefined;
+    this.spawnX = undefined;
+    this.spawnY = undefined;
+    this.pauseUntil = undefined;
+    this.atkStandUntil = undefined;
+    this.unbalanceUntil = undefined;
+    this.atkStandCutAt = undefined;
+    this.swing = undefined;
+    this.counted = undefined;
+    this.items = undefined;           // allies: battle/players.js; range: battle/queries.js _refreshRange, tiles.js
+    this.rangeGrid = undefined;
+    this.ground = undefined;
+    this._rangeExtend = undefined;
+    this._baseExtend = undefined;
+    this.rangeKeys = undefined;
+    this.rangeKeySet = undefined;
+    this.liveRangeGrid = undefined;
+    this.baseRangeKeys = undefined;
   }
 
   markDirty() { this._dirty = true; }

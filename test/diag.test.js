@@ -196,10 +196,10 @@ describe('the report', () => {
     assert.equal(text.split('\n')[3], `content: vanilla cs=${cs} cosmetic vs=${vs} plugins=texas-red@1.0.0(01234567) personal=mine`);
   });
 
-  test('an empty page: the title screen, nothing recorded, unknown fields left out', () => {
+  test('an empty page: the lobby, nothing recorded, unknown fields left out', () => {
     const text = buildDiagnostics({ state: {}, now: 0, pageStart: 0 });
     assert.match(text, /\ncontent: unknown\n/);
-    assert.match(text, /\nwhere: title\n/);
+    assert.match(text, /\nwhere: lobby\n/);
     assert.match(text, /\nconnection: unknown\n/);
     assert.match(text, /\ndevice: unknown\n/);
     assert.match(text, /\nerrors: none recorded\n```$/);

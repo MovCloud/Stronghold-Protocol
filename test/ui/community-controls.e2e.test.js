@@ -1,6 +1,10 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/** `.pathname` yields `/F:/…` on Windows, which the screenshot writer then opens as `F:\F:\…`. */
+const shot = (name) => fileURLToPath(new URL(`../e2e/out/${name}`, import.meta.url));
 
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const enabled = process.env.SP_E2E === '1' && existsSync(CHROME);
@@ -8,7 +12,11 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
   let srv, browser;
   before(async () => {
     const { startServer } = await import('../../server/index.js');
-    srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
+    // clientBuild: false — this file drives the source modules by hand (`import('/js/net.js')` to stub
+    // identity.recoverable, `/js/ui/choiceOverlay.js` to render into #app), which only reach the app when the
+    // page is served from source. Serving public/build/ here would hand the page the bundle's own copy of those
+    // modules, so the stubs would land on a second instance and every wait below would time out.
+    srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, clientBuild: false });
     const P = (await import('puppeteer-core')).default;
     browser = await P.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
     mkdirSync(new URL('../e2e/out/', import.meta.url), { recursive: true });
@@ -35,9 +43,9 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       await page.waitForSelector('.spcard.is-armed');
       await page.evaluate(() => window.__exhaustStock());
       await page.waitForFunction(() => document.querySelector('.spcard').disabled && !document.querySelector('.spcard.is-armed'));
-      assert.match(await page.$eval('.spcard', e => e.textContent), /库存不足/);
+      assert.match(await page.$eval('.spcard', e => e.textContent), /全队库存已用完/);
       assert.equal(await page.evaluate(() => window.__picks?.length || 0), 0);
-      await page.screenshot({ path: new URL('../e2e/out/shared-stock-unavailable.png', import.meta.url).pathname });
+      await page.screenshot({ path: shot('shared-stock-unavailable.png') });
       await page.click('.spcard:nth-child(2)'); await page.click('.spcard:nth-child(2)');
       assert.deepEqual(await page.evaluate(() => window.__picks), [1]);
     } finally { await context.close(); }
@@ -50,8 +58,15 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       localStorage.setItem('sp.pref.settings', JSON.stringify({ textSize: 'xl' }));
       localStorage.setItem('sp.pref.lang', JSON.stringify(l));
     }, lang);
-    await page.goto(`http://127.0.0.1:${srv.port}/`, { waitUntil: 'networkidle0' });
+    await page.goto(`http://127.0.0.1:${srv.port}/`, { waitUntil: 'load' });
     await page.waitForSelector('.lobby-screen');
+    // an unread announcement opens over the lobby on arrival (screens/lobby.js), once the session is online and the
+    // notices are loaded: wait for both, then read it first, as a player would
+    await page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online'
+      && ['ready', 'missing'].includes(globalThis.__SP__.data.status('announcements')), { timeout: 15000 });
+    if (await page.waitForSelector('.announcement-board', { timeout: 2000 }).catch(() => null)) {
+      await page.click('.announcement-board .modal__actions .btn'); await page.waitForSelector('.announcement-board', { hidden: true });
+    }
     return { context, page };
   }
   for (const width of [1600, 844]) for (const lang of ['zh-CN', 'en', 'ja', 'ko', 'zh-TW']) {
@@ -70,7 +85,8 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
         });
         await page.waitForSelector('[data-testid="resume-local-match"]');
         await page.waitForSelector('[data-testid="pwa-install"]');
-        const boxes = await page.$$eval('.lobby-screen .topbar button, .lobby-screen .topbar__center', els => els.map(e => {
+        // (a closed 更多 menu's entries are not on screen: only what is shown must fit and take its own taps)
+        const boxes = await page.$$eval('.lobby-screen .topbar button, .lobby-screen .topbar__center', els => els.filter(e => e.getClientRects().length).map(e => {
           const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
           return { label: e.getAttribute('aria-label') || e.textContent.trim(), x: r.x, y: r.y, right: r.right, bottom: r.bottom,
             hit: e.tagName !== 'BUTTON' || hit === e || e.contains(hit) };
@@ -84,7 +100,7 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
           assert.ok(Math.min(a.right, b.right) - Math.max(a.x, b.x) <= 1 || Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y) <= 1,
             `${a.label} overlaps ${b.label}`);
         }
-        await page.screenshot({ path: new URL(`../e2e/out/lobby-header-${width}-${lang}.png`, import.meta.url).pathname });
+        await page.screenshot({ path: shot(`lobby-header-${width}-${lang}.png`) });
         // 统计数据 from the lobby: the 成就统计 card → its window → 查看完整统计 (the top bar has no 统计数据 chip)
         await page.click(width < 1000 ? '.hub-plate--ach' : '.hub-ach'); await page.waitForSelector('.modal__box.achv .achv__more', { visible: true });
         await page.click('.modal__box.achv .achv__more'); await page.waitForSelector('.st .st-tab');
@@ -116,7 +132,7 @@ describe('community UI: lobby header and shared DIY details', { skip: !enabled }
       const restored = await detail(); assert.deepEqual(restored.stats, elite.stats);
       // Independent scrolling must reach all skills/modules without displacing the fixed confirm control.
       await page.$eval(`${picker} .diy-pick__detail`, e => { e.scrollTop = e.scrollHeight; });
-      await page.screenshot({ path: new URL(`../e2e/out/diy-detail-${width}-xl.png`, import.meta.url).pathname });
+      await page.screenshot({ path: shot(`diy-detail-${width}-xl.png`) });
       const accessible = await page.$eval('[data-testid="diy-confirm"]', e => {
         const r = e.getBoundingClientRect(), at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
         return r.bottom <= innerHeight && (at === e || e.contains(at));

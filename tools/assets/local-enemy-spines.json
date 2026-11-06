@@ -1,5 +1,5 @@
 {
-  "about": "Spine metadata of the enemy models only the local client has (tools/local-extract/extract.py ENEMY_SPINES); data/assets.json enemies[id].spineLocal. Written by node tools/fetch-assets.mjs --local-spines (docs/ASSETS.md \"Enemy aliases\").",
+  "about": "Spine metadata of the enemy models only the local client has (tools/local-extract/extract.py ENEMY_SPINES); data/assets.json enemies[id].spineLocal. Written by node tools/fetch-assets.mjs --local-spines (docs/development/ASSETS.md \"Enemy aliases\").",
   "models": {
     "enemy_1201_sfzhi": {
       "skel": "enemy_1201_sfzhi.skel",
@@ -276,6 +276,38 @@
         "y": -1.969,
         "width": 230,
         "height": 164
+      },
+      "extents": {
+        "Attack": [
+          -119,
+          -187,
+          112,
+          8
+        ],
+        "Default": [
+          -119,
+          -162,
+          112,
+          2
+        ],
+        "Die": [
+          -123,
+          -169,
+          121,
+          5
+        ],
+        "Idle": [
+          -119,
+          -162,
+          112,
+          6
+        ],
+        "Move": [
+          -119,
+          -163,
+          116,
+          5
+        ]
       }
     },
     "enemy_1305_mhslim_2": {
@@ -330,6 +362,38 @@
         "y": -1.969,
         "width": 230,
         "height": 164
+      },
+      "extents": {
+        "Attack": [
+          -119,
+          -187,
+          112,
+          8
+        ],
+        "Default": [
+          -119,
+          -162,
+          112,
+          2
+        ],
+        "Die": [
+          -123,
+          -169,
+          121,
+          5
+        ],
+        "Idle": [
+          -119,
+          -162,
+          112,
+          6
+        ],
+        "Move": [
+          -119,
+          -163,
+          116,
+          5
+        ]
       }
     },
     "enemy_1373_ltnhor_2": {

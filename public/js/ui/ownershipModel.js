@@ -199,7 +199,7 @@ export function parseOwnershipImport(input) {
   if (Array.isArray(raw)) return { ok: true, notOwned: cleanIds(raw) };
   if (!isObj(raw)) return { ok: false, error: t('无法识别的格式') };
   const v = Number.isInteger(raw.v) ? raw.v : null;
-  if (v != null && v > OWNERSHIP_VERSION) return { ok: false, error: t('这份数据来自更新的版本（v{v}），请先更新游戏', { v }) };
+  if (v != null && v > OWNERSHIP_VERSION) return { ok: false, error: t('这份数据来自更新的版本（v{0}），请先更新游戏', { 0: (v) ?? '' }) };
   const kind = typeof raw.kind === 'string' ? raw.kind : null;
   if (kind && kind !== OWNERSHIP_EXPORT_KIND) return { ok: false, error: t('这不是干员持有的数据') };
   if (v === 2) return Array.isArray(raw.notOwnedChars) ? { ok: true, notOwnedChars: cleanIds(raw.notOwnedChars) } : { ok: false, error: t('里面没有干员持有的数据') };

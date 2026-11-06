@@ -1,4 +1,6 @@
-// server/http/buildTag.js — the build tag of the browser runtime this process serves (/healthz `build`).
+// Legacy fingerprint helper, retained for API compatibility and historical tests.
+// Production /healthz.build and HTML use assetVersion.js's 16-character release
+// tag. Do not add this scan back to server startup.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,7 +22,7 @@ import { ROOT } from './config.js';
  * this fingerprint for the process lifetime: files changing on disk do not advertise a new build before restart.
  * The rest of `server/` and downloaded media are not included.
  */
-export const BUILD_INPUTS = Object.freeze(['public/index.html', 'public/js', 'public/css', 'server/sim', 'shared', 'data']);
+export const BUILD_INPUTS = Object.freeze(['public/index.html', 'public/asset-cache-sw.js', 'public/js', 'public/css', 'public/vendor', 'server/sim', 'shared', 'data']);
 
 /** Names the static server never serves: dot files (`.DS_Store`, `.main.js.swp`) and editor backups (`main.js~`). */
 const isIgnoredBuildName = (name) => name.startsWith('.') || name.endsWith('~');
@@ -35,10 +37,14 @@ const VERSIONS_BUILD_DIR = 'data/versions';
 /** @type {{ tag: string|null }|null} */
 let buildCache = null;
 
-/**
- * Every file under `abs` (or `abs` itself), as `[relative path, size, mtimeMs]`, sorted by path. Missing → [].
- * @param {string} abs @param {string} rel @param {any[]} out @param {Set<string>} served the served data/versions children
- */
+/** The served data/versions children, as relative paths (`data/versions/<slug>`); a directory outside it is ignored. */
+function servedVersionSet(root, servedVersionDirs) {
+  const versionsAbs = path.join(root, ...VERSIONS_BUILD_DIR.split('/'));
+  return new Set(servedVersionDirs.map((d) => path.relative(versionsAbs, path.resolve(d)))
+    .filter((r) => r && !r.startsWith('..') && !path.isAbsolute(r) && !r.includes(path.sep)).map((r) => `${VERSIONS_BUILD_DIR}/${r}`));
+}
+
+/** Every file under `abs` (or `abs` itself), as `[relative path, size, mtimeMs]`, sorted by path. Missing → []. */
 function buildEntries(abs, rel, out, served) {
   let stat;
   try { stat = fs.statSync(abs); } catch { return; }
@@ -61,14 +67,19 @@ function buildEntries(abs, rel, out, served) {
 /**
  * Short hash of the served browser runtime (size + mtime of every BUILD_INPUTS file); null when nothing is readable.
  * @param {string} [root]
- * @param {{ servedVersionDirs?: string[] }} [opts] the absolute data/versions/<slug>/ directories this process serves
+ * @param {string | { publicDir?: string, servedVersionDirs?: string[] }} [optsOrPublicDir] this instance's public
+ *   directory, or the options object (its `servedVersionDirs`: the absolute data/versions/<slug>/ directories this
+ *   process serves, server/versions.js servedDirs())
  */
-export function computeBuildTag(root = ROOT, { servedVersionDirs = [] } = {}) {
+export function computeBuildTag(root = ROOT, optsOrPublicDir = path.join(root, 'public')) {
+  const opts = typeof optsOrPublicDir === 'string' ? { publicDir: optsOrPublicDir } : (optsOrPublicDir || {});
+  const publicDir = opts.publicDir || path.join(root, 'public');
+  const served = servedVersionSet(root, opts.servedVersionDirs || []);
   const out = [];
-  const versionsAbs = path.join(root, ...VERSIONS_BUILD_DIR.split('/'));
-  const served = new Set(servedVersionDirs.map((d) => path.relative(versionsAbs, path.resolve(d)))
-    .filter((r) => r && !r.startsWith('..') && !path.isAbsolute(r) && !r.includes(path.sep)).map((r) => `${VERSIONS_BUILD_DIR}/${r}`));
-  for (const rel of BUILD_INPUTS) buildEntries(path.join(root, rel), rel, out, served);
+  for (const rel of BUILD_INPUTS) {
+    const abs = rel.startsWith('public/') ? path.join(publicDir, rel.slice('public/'.length)) : path.join(root, rel);
+    buildEntries(abs, rel, out, served);
+  }
   if (!out.length) return null;
   out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   const h = createHash('sha1');
@@ -81,7 +92,8 @@ export function computeBuildTag(root = ROOT, { servedVersionDirs = [] } = {}) {
  * process is actually serving, every update restarts the server (DEPLOY.md), and re-reading the tree on a timer would
  * let a half-finished deploy — or a file that changed while the process kept running — move the tag under a page.
  * @param {string} [root] used by the first call only (tests)
- * @param {{ servedVersionDirs?: string[] }} [opts] used by the first call only (computeBuildTag)
+ * @param {string | { publicDir?: string, servedVersionDirs?: string[] }} [opts] used by the first call only
+ *   (computeBuildTag)
  */
 export function buildTag(root = ROOT, opts = {}) {
   if (buildCache === null) buildCache = { tag: computeBuildTag(root, opts) };

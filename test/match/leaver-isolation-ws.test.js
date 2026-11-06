@@ -48,7 +48,11 @@ for (const leaverSeat of [0, 1]) for (const phase of [PHASE.PREP, PHASE.COMBAT, 
     await survivor.terminate();
     const restored = await TestClient.connect(`ws://127.0.0.1:${srv.port}/ws`); clients.push(restored);
     const w = await restored.hello('Survivor', survivor.token); assert.equal(w.playerId, survivor.id);
+    // A short absence does not let the departed player evict the survivor's resumable match either.
     assert.equal((await restored.waitFor('room.state')).code, state.code);
-    await ok(restored, { t: 'g.autoplay', on: false });
+    assert.equal(srv.lobby.getRoom(state.code), room);
+    assert.equal(room.match, m);
+    assert.equal(m.disposed, false);
+    assert.equal(srv.registry.byId(survivor.id).roomCode, state.code);
   });
 }

@@ -1,17 +1,23 @@
 // server/match/match/platform.js — Match methods: the platform interface of the server/match/Match.js header
 // (server/lobby.js ⇄ Match) — start, handle (validation, error isolation, flush; the intents themselves: intents.js
 // _handle), setLoadout (INFO_CHECK; rule-enabled PREP), onDisconnect / onReconnect and the full resync of one human, onLeave and 中途退出
-// = elimination (_quit), dispose.
+// = elimination (_quit), the AFK rule (挂机移出: _checkIdle at each prep end, _removeIdle — also a passed 投票移出), the AI taking over a seat
+// offline too long (掉线由 AI 接管: _checkOffline at each prep end, released by onReconnect), dispose.
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
-import { C2S } from '../../../shared/protocol.js';
+import { C2S, C2S_FORK } from '../../../shared/protocol.js';
 import { PHASE, ERR } from '../../../shared/constants.js';
 import { syntheticResult } from '../fields.js';
-import { FLOW_TICKER_PRIORITY, OK, fail } from './common.js';
+import { bossPoolHp } from '../finalAssault.js';
+import { FLOW_TICKER_PRIORITY, OK, fail, AFK_ACTIONS, OFFLINE_TAKEOVER_ROUNDS } from './common.js';
 import { msg } from '../../../shared/i18n.js';
 import { ruleOption } from '../../../shared/plugins/rules.js';
 
-const GAME_TYPES = new Set(Object.keys(C2S).filter((t) => Object.hasOwn(C2S, t) && (t.startsWith('g.') || t.startsWith('b.'))));
+// Fork types (C2S_FORK, validated identically per protocol.js) join the published v1 registry here.
+const GAME_TYPES = new Set([...Object.keys(C2S), ...Object.keys(C2S_FORK)]
+  .filter((t) => t.startsWith('g.') || t.startsWith('b.')));
+// Intents that stay available while the match is emergency-frozen (spectating and leaving; SiderLock).
+const EMERGENCY_SAFE_TYPES = new Set(['g.watch', 'g.leave']);
 
 export class MatchPlatform {
   start() {
@@ -61,6 +67,7 @@ export class MatchPlatform {
       return this.clientCombat && msg && (msg.t === 'b.progress' || msg.t === 'b.result') ? OK : fail(ERR.WRONG_PHASE);
     }
     if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string' || !GAME_TYPES.has(msg.t)) return fail(ERR.BAD_MSG);
+    if (this.emergencyFrozen && !EMERGENCY_SAFE_TYPES.has(msg.t)) return fail(ERR.SERVER_EMERGENCY);
     let res;
     try {
       res = this._handle(ps, msg);
@@ -68,6 +75,8 @@ export class MatchPlatform {
       this.reportError(`handle ${msg.t}`, e);
       res = fail(ERR.INTERNAL);
     }
+    // the AFK rule counts accepted substantive intents only (a spectator's g.watch never is one)
+    if (!(res && res.error) && AFK_ACTIONS.has(msg.t)) ps.afkActed = true;
     try { this.flush(); } catch (e) { this.reportError('flush', e); }
     if (res && typeof res === 'object' && res.error) return res;
     return OK;
@@ -89,6 +98,7 @@ export class MatchPlatform {
    * @returns {{ ok: true } | { error: string, detail?: string }}
    */
   setLoadout(playerId, loadout, ops = undefined) {
+    if (this.emergencyFrozen) return fail(ERR.SERVER_EMERGENCY);
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
     const prep = this.phase === PHASE.PREP && ruleOption(this.rules, 'prepLoadout') === 'prep';
@@ -134,18 +144,40 @@ export class MatchPlatform {
     return res;
   }
 
+  /**
+   * room.bondPlan during the match (BOND PLAN): replace a player's 预选盟约. Accepted in ANY phase and inert, like
+   * setSkins directly above — it only tells the teammates which bond the player intends to build.
+   * @param {string} playerId
+   * @param {string | null} bondId
+   * @returns {{ ok: true } | { error: string, detail?: string }}
+   */
+  setBondPlan(playerId, bondId) {
+    const ps = this.players.get(playerId);
+    if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
+    const res = OK;
+    this.guard(() => {
+      ps.setBondPlan(bondId);
+      this.markPublic();
+    });
+    return res;
+  }
   onDisconnect(playerId) {
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || this.disposed) return;
     this.guard(() => {
       ps.connected = false;
-      // A disconnected human's silence is never consent to a new setup.
-      this.cancelSetupVote();
+      // A disconnected human's silence is never consent: it is dropped from an open vote, which is recounted
+      // (setupVote.js, kickVote.js, matchControl.js).
+      this._dropSetupVoter(playerId);
+      this._kickVoteMemberGone(playerId);
       // a paused solo battle resumes (the server takes the field over; nobody is left to resume it)
       this._resume();
+      // the open control request is recounted after that, so it settles against the clocks as they now stand
+      this._matchControlMemberGone(playerId);
       if (this.clientCombat) this._authorityLost(ps, 'disconnect');
       // a rehearsal this host was running falls back to the server (DESIGN §14; a no-op without tasks)
       this._rehearsalHostChanged();
+      this.refreshUniteSkipVote(); // a disconnected human's silence is never consent (unitePhaseWaves.js): drop and recount
       this.markPublic();
     });
   }
@@ -156,7 +188,20 @@ export class MatchPlatform {
     this.guard(() => {
       const was = ps.connected;
       ps.connected = true;
+      ps.offlineRounds = 0;
+      // 掉线由 AI 接管: back in the match, the player plays the seat again (an AI 托管 of its own choice stays on)
+      const released = ps.offlineAutoplay && ps.autoplay && !this.ended;
+      ps.offlineAutoplay = false;
+      // a kick vote against this seat ends with the takeover (kickVote.js); a control voter back online counts again
+      this._kickVoteMemberGone(playerId, true);
+      this._matchControlMemberGone(playerId, true);
+      if (released) {
+        this.setAutoplay(ps, false);
+        this.log.info?.(`[match ${this.roomCode}] seat ${ps.seat} back online: AI takeover released (R${this.round})`);
+        this.tickerText(msg('{name}博士已重新连接，收回了 AI 托管的席位', { name: ps.name }), FLOW_TICKER_PRIORITY);
+      }
       this._resync(ps);
+      if (released) this.toast(ps, 'info', msg('你已重新连接，AI 托管已解除'));
       if (!was) this.markPublic();
     });
   }
@@ -179,29 +224,38 @@ export class MatchPlatform {
       else {
         let fid = this.watchers.get(playerId);
         if (!fid && ps.spectator && this.fields.length) { fid = (this._watchTargetField(ps, this.fields) || this.fields[0]).fieldId; this.watchers.set(playerId, fid); }
-        if (fid) this._sendField(playerId, fid);
+        // the own field a browser runs locally: b.start again (kept, or rebuilt after a reload; localReplica.js)
+        const f = fid ? this.fields.find((x) => x.fieldId === fid) : null;
+        if (fid && !(f && this._offerLocal(ps, f, { resend: true }))) this._sendField(playerId, fid);
       }
     } else if (this.lastResultMsg) {
       this.sendTo(playerId, { ...this.lastResultMsg, playerId });
     }
+    this._sendDamageTo(playerId);
   }
 
   onLeave(playerId) {
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || ps.left || this.disposed) return;
     this.guard(() => {
+      this._cancelBotPrep(ps);
       ps.left = true;
-      this.cancelSetupVote();
+      this._dropSetupVoter(playerId);
       // A seat that is gone for good takes its reroll cooldown with it (it cannot ask again in this match anyway).
       this._rerollStartAt.delete(playerId);
       ps.connected = false;
       ps.autoplay = false;
+      ps.offlineAutoplay = false;
+      this._kickVoteMemberGone(playerId);
+      this._matchControlMemberGone(playerId);
       this.watchers.delete(playerId);
+      this.localViews.delete(playerId);
       if (this.ended) return;
       this._resume();
       if (this.clientCombat) this._authorityLost(ps, 'left');
       // a rehearsal the departed seat was running falls back to the server (DESIGN §14; a no-op without tasks)
       this._rehearsalHostChanged();
+      this.refreshUniteSkipVote(); // a departed seat cannot vote (unitePhaseWaves.js): drop and recount
       this.markPublic();
       if (!this.order.some((p) => !p.isBot && !p.left)) {
         this.finish({ victory: false, reason: 'abandoned' });
@@ -218,16 +272,19 @@ export class MatchPlatform {
    * survived when leaving.
    */
   _quit(ps) {
+    this._cancelBotPrep(ps);
     this.maybeEndInfo();
-    if (!ps.alive) return;
+    if (!ps.alive && !ps.pendingDeath) return;
     const phase = this.phase;
     const d = this.draft;
     if (phase === PHASE.BAND_DRAFT && d && !d.picks[ps.playerId]) {
       // the departed seat passes its turn with the default band (never one a teammate holds — defaultBand)
-      const turn = this.draftTurn() === ps.playerId;
+      const group = d.concurrent ? null : this.draftGroup(ps.playerId);
+      const turn = this.draftTurn(ps.playerId) === ps.playerId;
       d.picks[ps.playerId] = this.defaultBand(ps.playerId);
+      if (group) group.picks[ps.playerId] = d.picks[ps.playerId];
       ps.bandId = d.picks[ps.playerId];
-      if (turn) this.startDraftTurn();
+      if (turn || d.concurrent) this.startDraftTurn(d.concurrent ? null : group);
     }
     const passedRound = phase === PHASE.SETTLE ? this.round + 1 : Math.max(1, this.round);
     // its own normal battle has nobody left to fight for
@@ -241,8 +298,18 @@ export class MatchPlatform {
         try { f.battle.forceEnd('left'); } catch (e) { this.reportError('quit forceEnd', e); }
       }
     }
-    ps.lp = 0;
-    ps.eliminate(passedRound);
+    this._finalizeDeath(ps, { round: passedRound, notify: false, reason: 'left' });
+    const leavingBossLayers = phase === PHASE.FINAL_ASSAULT ? ps.activatedLayers() : 0;
+    if (phase === PHASE.FINAL_ASSAULT) this.hiddenLayerSum = Math.max(0, this.hiddenLayerSum - leavingBossLayers);
+    if (this.bossPool && this.bossPoolRescale && (phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && this.alivePlayers().length) {
+      // A departure during the boss rounds rescales the pool NOW (the departed seat's per-player share leaves it):
+      // the remaining HP percentage is preserved (its shares were already paid, SharedBossPool.rescale), and the
+      // hidden-layer sum shrinks by the boss layers the departed seat had activated. Plain ≤4-seat rooms never resize
+      // (the mainline rule); the capacity experiment keeps its local no-rescale rule.
+      const bossId = phase === PHASE.HIDDEN_CORE ? this.hiddenBossId : this.bossId;
+      this.bossPool.rescale(bossPoolHp(this.gd, bossId, this.alivePlayers().length, { experimental: this.bossPoolLinear }));
+      this._broadcastPool(true);
+    }
     this.offersChanged();
     this.tickerText(msg('{name}博士中途退出了模拟', { name: ps.name }), FLOW_TICKER_PRIORITY);
     if (this.bossWaves && (phase === PHASE.ROUND_START || phase === PHASE.SP_DRAFT || phase === PHASE.PREP)) {
@@ -260,14 +327,89 @@ export class MatchPlatform {
       this.finish({ victory: false, reason: 'eliminated' });
       return;
     }
-    if (phase === PHASE.SP_DRAFT && this.sp && this.spTurn() === ps.playerId) this.startSpTurn();
+    if (phase === PHASE.SP_DRAFT && this.sp) {
+      if (this.sp.concurrent ? this.spPending(ps) : this.spTurn(ps.playerId) === ps.playerId) this.startSpTurn(this.spGroup(ps.playerId));
+    }
     else if (phase === PHASE.PREP) this.maybeEndPrep();
+  }
+
+  /**
+   * 挂机移出 (afkRemoveRounds, the header's leave policy): called as a PREP ends, before its battle / boss fight is built
+   * (MatchPrep.endPrep). Every alive human of a match that started with ≥ 2 humans (never solo or soloUntimed) is
+   * counted: an accepted AFK_ACTIONS intent since the previous check — or the AI playing the seat now (AI 托管), or the
+   * seat being offline — resets its idle rounds, else they grow by one. Offline is not idle (the owner's decision of
+   * 2026-10-13): a dropped seat keeps its place and its last lineup, the disconnect policy of Match.js (the AI takes it
+   * over after OFFLINE_TAKEOVER_ROUNDS, _checkOffline) — the rule had removed it after two preps, so a player back
+   * found the seat gone and could only watch. A seat reaching afkRemoveRounds is removed (_removeIdle); may end the
+   * match. One round short of it, the seat is warned: a toast now and m.private afkWarn through its next prep.
+   */
+  _checkIdle() {
+    const limit = this.afkRemoveRounds;
+    if (!(limit > 0) || this.soloUntimed) return;
+    const humans = this.order.filter((p) => !p.isBot && !p.left && p.alive);
+    for (const ps of humans) {
+      ps.afkRounds = ps.afkActed || ps.botControlled || !ps.connected ? 0 : ps.afkRounds + 1;
+      ps.afkActed = false;
+    }
+    for (const ps of humans) {
+      if (this.ended || this.disposed) return;
+      if (!ps.left && ps.afkRounds >= limit) this._removeIdle(ps);
+      else if (limit > 1 && ps.afkRounds === limit - 1) {
+        this.toast(ps, 'warn', msg('你本回合没有任何操作，下回合备战仍无操作将被移出对局'));
+        this.markPrivate(ps);
+      }
+    }
+  }
+
+  /**
+   * 掉线由 AI 接管 (OFFLINE_TAKEOVER_ROUNDS, the owner's rule of 2026-10-14; the header's disconnect policy): called as a
+   * PREP ends, after the AFK rule. An alive human seat offline at this prep end has one more offline round (0 when
+   * online); at OFFLINE_TAKEOVER_ROUNDS the AI plays it (AI 托管, as g.autoplay) from the next phase on and everyone in
+   * the match is told. The seat stays the player's: reconnecting hands it back (onReconnect). A seat already under its
+   * own AI 托管 is left alone; an untimed match (soloUntimed) waits for its player instead.
+   */
+  _checkOffline() {
+    if (this.soloUntimed) return;
+    for (const ps of this.order) {
+      if (ps.isBot || ps.left || !ps.alive) continue;
+      ps.offlineRounds = ps.connected ? 0 : ps.offlineRounds + 1;
+      if (ps.connected || ps.autoplay || ps.offlineRounds < OFFLINE_TAKEOVER_ROUNDS) continue;
+      ps.autoplay = true;
+      ps.offlineAutoplay = true;
+      this.log.info?.(`[match ${this.roomCode}] seat ${ps.seat} offline for ${ps.offlineRounds} rounds: AI takes over (R${this.round})`);
+      this.tickerText(msg('{name}博士掉线超过 {rounds} 回合，由 AI 托管其席位，重新连接后可收回', { name: ps.name, rounds: OFFLINE_TAKEOVER_ROUNDS }), FLOW_TICKER_PRIORITY);
+      this.markPublic();
+    }
+  }
+
+  /**
+   * Remove a human exactly like a g.leave — an idle one (reason 'afk', the AFK rule) or one voted out (reason 'kicked',
+   * kickVote.js; `rounds` = its offline rounds, clamped to 1..100): the player is told first (m.removed — its client
+   * shows it and returns to the lobby), everyone else still in the match, spectator seats included, gets the m.notice
+   * (afkRemoved, or the vote's kickPassed), then the platform detaches the seat (opts.onRemove: the lobby's
+   * removeMember, whose onLeave quits it here). A platform without the hook, or one that hears of it later (the
+   * cluster coordinator), leaves the quit to onLeave below.
+   */
+  _removeIdle(ps, reason = 'afk', notice = null) {
+    const rounds = reason === 'afk' ? this.afkRemoveRounds : Math.min(100, Math.max(1, ps.offlineRounds | 0));
+    if (reason === 'afk') this.log.info?.(`[match ${this.roomCode}] seat ${ps.seat} removed after ${ps.afkRounds} idle rounds (R${this.round})`);
+    this.sendTo(ps.playerId, { t: 'm.removed', reason, rounds });
+    notice ||= { t: 'm.notice', kind: 'afkRemoved', playerId: ps.playerId, name: ps.name, rounds };
+    for (const p of this.order) if (p !== ps && !p.isBot && !p.left) this.sendTo(p.playerId, notice);
+    for (const id of this.spectators.keys()) this.sendTo(id, notice);
+    if (typeof this.opts.onRemove === 'function') {
+      try { this.opts.onRemove(ps.playerId, { reason, rounds }); } catch (e) { this.reportError('onRemove', e); }
+    }
+    if (!ps.left) this.onLeave(ps.playerId);
   }
 
   dispose() {
     if (this.disposed) return;
+    this._freezeDamage(false);
+    this._finalizePendingDeaths({ notify: false, reason: 'match-ended' });
     this.disposed = true;
     this.externalAI?.close();
+    for (const ps of this.order) this._cancelBotPrep(ps);
     if (this.runner) { try { this.runner.stop(); } catch { /* ignore */ } }
     this._stopClientCombat();
     this._cancelRehearsal();

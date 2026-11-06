@@ -1,30 +1,24 @@
+// Adapted from xinhai-ai/Stronghold-Protocol (GPL-3.0-or-later); see docs/development/PERFORMANCE.md.
 // One process-wide pool for CPU work. Each thread loads game data once; tasks carry only battle inputs.
-//
-// SP_WORKERS is opt-in: unset (or junk) means NO pool at all, see createSimulationPool — the server keeps doing the work
-// inline, exactly as before the pool existed. Set it to a thread count (1..32) to turn the pool on; 0 is the explicit
-// "off" and stays off. SP_WORKER_QUEUE bounds the queue and SP_WORKER_TIMEOUT_MS the per-task timeout. A thread that is
-// being terminated after a crash or a timeout keeps its place in the size budget until it has actually stopped, so the
-// pool never runs more threads than its size and never overruns its queue while a thread is retiring.
+// This fork derives the size from the CPU count (docs/operations/DEPLOY.md): an unset SP_WORKERS is the CPU-derived
+// count, not 0, and junk falls back to the same default. The explicit 0 is the only "off" state.
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
 
-/** The thread count the default (no SP_WORKERS) would pick — kept for callers that want to report it without starting a pool. */
+/** The size an unset SP_WORKERS picks in this fork — for callers that report it without starting a pool. */
 export function defaultWorkerCount(cpus = availableParallelism()) {
   return Math.min(8, Math.max(1, cpus - 2));
 }
 
-export function workerSettings(env = process.env) {
+export function workerSettings(env = process.env, cpus = availableParallelism()) {
   const integer = (value, fallback, min, max) => {
     if (value == null || String(value).trim() === '') return fallback;
     const n = Number(value);
     return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
   };
-  // Opt-in: an unset SP_WORKERS is 0 (no pool), not a CPU-derived count. A server only starts threads when the operator
-  // asked for them; junk falls back to the same safe, off state. Nothing here depends on the CPU count any more, which
-  // is why the old `cpus` parameter is gone — a pool that does not exist never needed a size.
   return {
-    size: integer(env.SP_WORKERS, 0, 0, 32),
+    size: integer(env.SP_WORKERS, defaultWorkerCount(cpus), 0, 32),
     maxQueue: integer(env.SP_WORKER_QUEUE, 256, 0, 10000),
     timeoutMs: integer(env.SP_WORKER_TIMEOUT_MS, 120000, 1, 3600000),
   };
@@ -33,9 +27,7 @@ export function workerSettings(env = process.env) {
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 export class SimulationPool {
-  // A pool always has at least one thread when it exists at all: createSimulationPool / workerSettings decide whether to
-  // start one (unset or 0 SP_WORKERS = no pool), so the constructor's fallback is the CPU-derived count, never 0.
-  constructor({ data, size = defaultWorkerCount(), maxQueue = 256, timeoutMs = 120000,
+  constructor({ data, size = workerSettings().size, maxQueue = 256, timeoutMs = 120000,
     workerUrl = new URL('./simulation.js', import.meta.url) } = {}) {
     if (!Number.isInteger(size) || size < 1 || size > 32) throw new RangeError('worker size must be 1..32');
     if (!Number.isInteger(maxQueue) || maxQueue < 0 || maxQueue > 10000) throw new RangeError('maxQueue must be 0..10000');
@@ -59,7 +51,13 @@ export class SimulationPool {
       queued: this.queue.length, maxQueue: this.maxQueue, timeoutMs: this.timeoutMs,
       avgComputeMs: this.counters.completed > 0 ? this.counters.computeMs / this.counters.completed : 0,
       ...this.counters,
+      queuedByType: this.queue.reduce((counts, task) => { counts[task.type] = (counts[task.type] || 0) + 1; return counts; }, {}),
+      oldestQueuedMs: this.queue.length ? Math.max(0, performance.now() - Math.min(...this.queue.map((t) => t.enqueuedAt))) : 0,
       memory: [...this.slots].map((s) => ({ threadId: s.worker.threadId, busy: !!s.task, sample: s.memory || null })) };
+  }
+
+  load() {
+    return { size: this.size, busy: [...this.slots].filter((s) => s.task).length, queued: this.queue.length };
   }
 
   submit(type, payload, { priority = 0, onProgress = null } = {}) {
@@ -68,12 +66,11 @@ export class SimulationPool {
     const task = { id: ++this.nextId, type, payload, priority, onProgress, resolve, reject, settled: false,
       enqueuedAt: performance.now(), flag: new Int32Array(new SharedArrayBuffer(4)), slot: null, timer: null };
     const handle = { promise, cancel: () => this._cancel(task) };
-    // Free means neither retired nor busy. A thread that is stopping keeps its place in the size budget until
-    // terminate() resolves, so it must not make the queue look drainable and let submit() overrun maxQueue.
-    if (this.closed || (this.queue.length >= this.maxQueue &&
+    const rehearsalBusy = type === 'rehearsal' && this.queue.length >= Math.min(this.maxQueue, this.size * 2);
+    if (this.closed || rehearsalBusy || (this.queue.length >= this.maxQueue &&
         this.slots.size >= this.size && ![...this.slots].some((s) => !s.retired && !s.task))) {
       this.counters.rejected++;
-      this._settle(task, failure(this.closed ? 'POOL_CLOSED' : 'POOL_FULL', 'simulation pool unavailable'));
+      this._settle(task, failure(this.closed ? 'POOL_CLOSED' : rehearsalBusy ? 'REHEARSAL_BUSY' : 'POOL_FULL', 'simulation pool unavailable'));
       return handle;
     }
     this.counters.submitted++;
@@ -98,7 +95,7 @@ export class SimulationPool {
     task.settled = true;
     clearTimeout(task.timer);
     const { resolve, reject } = task;
-    // The cancel handle may remain on a field after completion; it must not retain the input and progress closure.
+    // A kept cancel handle must not retain the settled task's input, progress closure or callbacks.
     task.payload = null;
     task.onProgress = null;
     task.resolve = null;
@@ -123,7 +120,7 @@ export class SimulationPool {
 
   _spawn() {
     const worker = new Worker(this.workerUrl, { workerData: { data: this.data } });
-    const slot = { worker, task: null, retired: false };
+    const slot = { worker, task: null, retired: false, memory: null };
     this.slots.add(slot);
     worker.on('message', (msg) => {
       if (msg.memory) slot.memory = msg.memory;
@@ -138,12 +135,12 @@ export class SimulationPool {
       clearTimeout(task.timer);
       slot.task = null;
       task.slot = null;
-      this.counters.computeMs += performance.now() - task.startedAt;
       if (!task.settled) {
         if (msg.error) {
           this.counters.failed++;
           this._settle(task, failure('TASK_FAILED', msg.error));
         } else {
+          this.counters.computeMs += performance.now() - task.startedAt;
           this.counters.completed++;
           this._settle(task, null, msg.value);
         }
@@ -220,13 +217,7 @@ export class SimulationPool {
   }
 }
 
-/**
- * The pool a server should run with, or null when it is switched off. The pool is opt-in: an unset SP_WORKERS (and the
- * explicit 0, and any junk value) all mean "do not start a pool", and the callers keep doing the work inline, exactly as
- * before the pool existed. Only SP_WORKERS=1..32 starts threads.
- * @param {{ data?: object, env?: NodeJS.ProcessEnv, workerUrl?: URL }} [opts]
- * @returns {SimulationPool | null}
- */
+/** Build a pool from the environment; returns null only when the resolved size is the explicit 0. */
 export function createSimulationPool({ data, env = process.env, workerUrl } = {}) {
   const { size, maxQueue, timeoutMs } = workerSettings(env);
   if (size === 0) return null;

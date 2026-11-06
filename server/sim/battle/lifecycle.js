@@ -5,9 +5,14 @@
 
 import { FORCED_EXIT, MAX_BATTLE_TIME } from '../constants.js';
 import { noteAttackCommit, updateAlly, updateEnemy } from '../ai.js';
+import { withGameData } from '../content/support/dataScope.js';
 
 export class BattleLifecycle {
   start() {
+    return withGameData(this.data, () => this._start());
+  }
+
+  _start() {
     if (this.started) return;
     this.started = true;
     this._safe(() => this._spawnStageDevices(), 'stageDevices');
@@ -71,6 +76,10 @@ export class BattleLifecycle {
   }
 
   step() {
+    return withGameData(this.data, () => this._step());
+  }
+
+  _step() {
     if (this.finished || this._stepping) return; // re-entrant step() from a hook is a no-op
     // forceEnd() requested while stepping (content hook, repeated engine errors) is deferred to the end of the
     // current phase: the remaining phases are skipped and the result is built once, so nothing mutates it later.
@@ -115,6 +124,7 @@ export class BattleLifecycle {
       // number, and the view adopts that too - see render/units.js sync - so the event is a fast path, not the only one.)
       this._phase('rate', () => this._emitRateChanges());
       this._phase('projectiles', () => this.projectiles.update(dt));
+      if (this.notes.list.length) this._phase('notes', () => this.notes.update(dt));
       this._phase('redeploy', () => this._checkRedeploys());
       this._phase('boss', () => this._bossSync());
       if (this._hooks.tick) this._phase('tickHook', () => this.emit('tick', { dt }));
@@ -128,6 +138,7 @@ export class BattleLifecycle {
     } finally {
       this._stepping = false;
     }
+    if (this.tickCount === 1 && this._startUnitStats == null) this.captureStartUnitStats();
     if (this._endReq && !this.finished) {
       try { this.forceEnd(this._endReq); } catch (e) { this._handlerError('internal:forceEnd', null, e); this._hardFinish(this._endReq); }
     }
@@ -141,6 +152,7 @@ export class BattleLifecycle {
     this._endReq = null;
     try { this._result = this._buildResult(); } catch { this._result = { time: this.time, reason: this.reason, perPlayer: {}, killed: this.killed, total: this.total, resolved: this.resolved, errors: this.errorCount }; }
     this.projectiles.clear();
+    this.notes.clear();
   }
 
   /** Run until finished or `maxSeconds` of game time elapsed. Returns the result when finished. */
@@ -227,6 +239,7 @@ export class BattleLifecycle {
       pp.perfect = !pp.leaked.some((l) => l.counted !== false);
     }
     this.projectiles.clear();
+    this.notes.clear();
   }
 
   _buildResult() {
@@ -241,6 +254,9 @@ export class BattleLifecycle {
       // Actual enemy deaths credited to this player's operators / summons, independent of the enemy's wave owner.
       // Sum the full unit list before compactBattleResult caps unitStats (long fights may spawn many summons).
       pp.creditedKills = ps.units.reduce((n, u) => n + u.stats.kills, 0);
+      // A helper keeps this round's accumulated reinforcement survival ticks when entering 联防.
+      const remSurvivalTicks = this.remState?.get(ps.playerId)?.survivalTicks;
+      if (Number.isInteger(remSurvivalTicks) && remSurvivalTicks > 0 && remSurvivalTicks <= 1e9) pp.remSurvivalTicks = remSurvivalTicks;
       // the operators and the board's summon pieces (a board uid): 联防 carries an operator's HP ratio and SP, a summon's
       // SP only (match/unite.js). `sp` is the official 技力 — stored charges included (PRTS 技能 "可充能X次…当前技力上限等于该
       // 技能技力需求的X倍"); a running skill spent its SP at activation, so it reports what was left (0 for one charge).
@@ -256,6 +272,8 @@ export class BattleLifecycle {
         id: u.id, uid: u.uid, defId: u.defId, name: u.name, kind: u.kind,
         dmg: Math.round(u.stats.dmg), kills: u.stats.kills, heal: Math.round(u.stats.heal), taken: Math.round(u.stats.taken), attacks: u.stats.attacks,
       }));
+      // the Fever gauge at the end (sim/fever.js), for 联防 (match/unite.js): only on a field that has one
+      if (this.fever) pp.fever = Math.round(this.fever.value * 100) / 100;
       perPlayer[ps.playerId] = pp;
     }
     const res = { time: Math.round(this.time * 1000) / 1000, reason: this.reason, perPlayer, killed: this.killed, total: this.total, resolved: this.resolved, errors: this.errorCount };

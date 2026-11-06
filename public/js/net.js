@@ -5,8 +5,10 @@
 //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
 //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
 //   so a background tab whose timers the browser throttles to ~1/min is not mistaken for dead.
-// - On every (re)connect, once a player name is known, sends `hello {name, token, version}`;
+// - On every (re)connect, once a player name is known, sends `hello {name, token, version, stateDelta}`;
 //   the session is "online" after `welcome`.
+// - m.state frames (the state-delta transport, shared/stateDelta.js) are decoded back into m.public / m.private
+//   before dispatch; a broken chain reconnects, which restarts both ends from full frames.
 // - `request(t, fields)` adds a `rid` and resolves on the matching `ok` (or any reply carrying the
 //   rid), rejects with a NetError on `error` or after REQUEST_TIMEOUT_MS. Requests made while
 //   reconnecting are queued and flushed after `welcome` (still bound by their timeout).
@@ -29,15 +31,21 @@
 // Shared modules are imported relatively: in the browser '../../shared/x.js' from /js/ resolves
 // to /shared/x.js (URL resolution clamps at the root); under Node it resolves to <repo>/shared.
 
-import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
-import { validateC2S } from '../../shared/protocol.js';
+import { PROTOCOL_VERSION, MATCHMAKING_VERSION, ERR_TEXT } from '../../shared/constants.js';
+import { PLAYER_CAPACITY_VERSION } from '../../shared/playerCapacity.js';
+import { validateC2S, normalizeServerLoad, normalizeLoadDetails } from '../../shared/protocol.js';
+import { normalizeClusterLoad } from '../../shared/cluster-load.js';
 import { N_ } from '../../shared/i18n.js';
 import { STATE_DELTA_VERSION, StateReceiver } from '../../shared/stateDelta.js';
+import { ownerKey } from './ownerKey.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
 export const PING_INTERVAL_MS = 4000;
 export const DEAD_AFTER_MS = 15000;
+export const PING_TIMEOUT_MS = DEAD_AFTER_MS;
+export const PING_SAMPLE_MAX_AGE_MS = PING_INTERVAL_MS * 3;
+const MAX_PENDING_PINGS = 8;
 /** Minimum gap between two `state.resync` requests: a gap in one channel is answered by the full frame of the next one. */
 export const RESYNC_GAP_MS = 1000;
 export const BACKOFF = Object.freeze({ base: 500, factor: 2, max: 10000, jitter: 0.2 });
@@ -65,6 +73,9 @@ const QUIET_SWAP_MIN_AGE_MS = 5000;
  * @param {string} [msg] server-provided message (fallback)
  * @returns {string}
  */
+/** The rejection of a nickname reserved for the server's owner (NAME_REJECTED, detail 'reserved'). */
+export const NAME_RESERVED_TEXT = N_('该代号为服主保留，请换一个昵称。');
+
 export function errorText(code, msg) {
   return ERR_TEXT[code] || CLIENT_ERR_TEXT[code] || (typeof msg === 'string' && msg) || String(code || N_('未知错误'));
 }
@@ -74,7 +85,8 @@ export class NetError extends Error {
   /** @param {string} code @param {string} [msg] server text @param {string} [detail] server developer detail */
   constructor(code, msg, detail) {
     const versionMismatch = typeof detail === 'string' && /version/i.test(detail);
-    super(versionMismatch ? CLIENT_ERR_TEXT.VERSION : errorText(code, msg));
+    // a nickname the server keeps for its owner (server/ownerFile.js): NAME_REJECTED with detail 'reserved'
+    super(versionMismatch ? CLIENT_ERR_TEXT.VERSION : code === 'NAME_REJECTED' && detail === 'reserved' ? NAME_RESERVED_TEXT : errorText(code, msg));
     this.name = 'NetError';
     this.code = String(code || 'INTERNAL');
     this.serverMsg = msg ?? null;
@@ -88,6 +100,17 @@ export class NetError extends Error {
  * @param {() => number} [rand]
  * @returns {number} milliseconds
  */
+/**
+ * The online cap's refusal (ERR SERVER_FULL, server/onlineLimit.js serverFullDetail): the numbers to show and the
+ * server's retry interval (20 s when the detail is missing or malformed).
+ * @param {string | null | undefined} detail @returns {{ online: number|null, limit: number|null, retryMs: number }}
+ */
+export function serverFull(detail) {
+  const read = (key) => { const m = new RegExp(`(?:^|\\s)${key}=(\\d{1,9})(?:\\s|$)`).exec(typeof detail === 'string' ? detail : ''); return m ? Number(m[1]) : null; };
+  const retry = read('retry');
+  return { online: read('online'), limit: read('limit'), retryMs: retry != null && retry >= 1000 && retry <= 300_000 ? retry : 20_000 };
+}
+
 export function backoffDelay(attempt, rand = Math.random) {
   const n = Math.max(0, Math.min(30, Math.floor(Number(attempt) || 0)));
   const raw = Math.min(BACKOFF.max, BACKOFF.base * BACKOFF.factor ** n);
@@ -96,13 +119,28 @@ export function backoffDelay(attempt, rand = Math.random) {
 }
 
 /**
+ * The browser WebSocket build discriminator (docs/CUSTOM-DEPLOYMENT.md, RELEASE-INFO.json `browserBuild`): appended
+ * as `?build=` so a fronting proxy can route two deployed builds apart during a rolling replacement (a stale page
+ * reconnecting into the fresh build's socket pool is refused instead of half-working). It marks a proxied deployment
+ * root only — a subpath deployment (`loc.pathname`, the proxy already routes by path) and a local dev host
+ * (localhost / 127.0.0.1: no proxy in between) connect without it, exactly as before.
+ */
+export const BROWSER_BUILD = 'fp100-upstream024-20261011';
+const LOCAL_HOST_RE = /^(localhost|127\.|::1|\[::1\]|0\.0\.0\.0)/i;
+
+/**
  * WebSocket URL for the current page (`ws(s)://host/ws`).
  * @param {{protocol: string, host: string}} [loc]
  * @returns {string}
  */
 export function defaultWsUrl(loc = globalThis.location) {
+  // [WSDIRECT] 经中转入口打开时，B 节点 nginx 会在首页注入 window.__SH_WS__，让游戏 WebSocket 直连源站，
+  // 绕开「玩家→B→A」那一跳（素材仍走 B 缓存）；从源站直连打开时不注入，仍走同源。
+  const forced = globalThis.__SH_WS__;
+  if (typeof forced === 'string' && forced) return forced;
   if (!loc || !loc.host) return 'ws://localhost:3000/ws';
-  return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
+  const base = `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
+  return !loc.pathname && !LOCAL_HOST_RE.test(String(loc.host)) ? `${base}?build=${BROWSER_BUILD}` : base;
 }
 
 const WS_OPEN = 1;
@@ -118,7 +156,9 @@ export class Net {
    * @param {any} [opts.WebSocket] WebSocket constructor (default: globalThis.WebSocket)
    * @param {() => (string|null)} [opts.getToken] reconnect-token provider for `hello`
    * @param {() => ({ noReplace: boolean, claimAt?: number })} [opts.getTokenClaim] local ownership for this hello
-   * @param {() => number} [opts.now]
+   * @param {() => number} [opts.now] epoch clock for server-time estimates
+   * @param {() => number} [opts.monotonicNow] elapsed-time clock (defaults to opts.now for injected clocks)
+   * @param {() => boolean} [opts.isVisible] whether latency probes belong to a visible page
    * @param {() => number} [opts.random]
    * @param {{setTimeout: Function, clearTimeout: Function, setInterval: Function, clearInterval: Function}} [opts.timers]
    */
@@ -128,6 +168,8 @@ export class Net {
     this.getToken = typeof opts.getToken === 'function' ? opts.getToken : () => null;
     this.getTokenClaim = typeof opts.getTokenClaim === 'function' ? opts.getTokenClaim : () => null;
     this.now = opts.now || (() => Date.now());
+    this.monotonicNow = opts.monotonicNow || opts.now || (() => performance.now());
+    this.isVisible = opts.isVisible || (() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
     this.random = opts.random || Math.random;
     this.timers = opts.timers || {
       setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
@@ -146,6 +188,14 @@ export class Net {
     this.attempt = 0;          // consecutive failed connection attempts
     this.retryAt = 0;          // epoch ms of the next reconnect attempt (0 = none)
     this.ping = null;          // last RTT in ms
+    this.rttEma = null;        // smoothed RTT (0.75/0.25 EMA over recent pong samples)
+    this.jitter = null;        // smoothed |RTT - previous RTT| (0.75/0.25 EMA)
+    this.quality = 'unknown';  // link quality of the latest sample: 'good' | 'fair' | 'poor'
+    this.loadState = 'unknown'; // cached server main-thread pressure, independent of network RTT
+    this.loadDetails = null;    // whitelisted cached game-process measurements, never raw health data
+    this.clusterLoad = null;
+    this.wantClusterLoad = false; // the service status dialog is open: every ping asks for the whole summary
+    this.onlineCount = null;    // server-presence count (the `presence` frame); null = no figure (unknown / stale)
     this.lastError = null;     // last NetError relevant to the connection (e.g. hello rejected)
     this.clockOffset = 0;
     this.clockSynced = false;
@@ -163,13 +213,19 @@ export class Net {
     this._helloRid = null;
     this._helloSentName = null;
     this._helloToken = null;
+    this._welcomed = false;    // the current socket completed a hello/welcome handshake
+    this._states = new StateReceiver(); // m.state baselines of the current socket
     this._lastRx = 0;
-    this._unansweredSince = null; // time of the oldest ping sent since the last inbound frame
+    this._unansweredSince = null; // monotonic time of the oldest ping since the last inbound frame
+    this._pings = new Map();   // rid -> { c: epoch time, at: monotonic time, order }
+    this._pingOrder = 0;
+    this._lastPongOrder = 0;
+    this._pingReceivedAt = null;
     this._clockSamples = [];   // [{ offset, rtt }]
+    this._clockEpoch = this.now() - this.monotonicNow();
     // State-delta decoding (shared/stateDelta.js): only ever fed frames a server chose to send this client after its
     // hello named STATE_DELTA_VERSION. A missed frame blocks that channel, and one resync request per RESYNC_GAP_MS
     // asks for a full one — the server answers it like a repeated hello (and throttles it the same way).
-    this._receiver = new StateReceiver();
     this._stateRoom = null;
     this._resyncAt = 0;        // epoch ms of the last resync request we sent
   }
@@ -207,14 +263,15 @@ export class Net {
   /** Snapshot of the connection state (what the 'status' event carries). */
   snapshot() {
     return {
-      status: this.status, attempt: this.attempt, retryAt: this.retryAt, ping: this.ping,
-      lastError: this.lastError ? { code: this.lastError.code, text: this.lastError.message } : null,
+      status: this.status, attempt: this.attempt, retryAt: this.retryAt, ping: this.ping, rttEma: this.rttEma, jitter: this.jitter, quality: this.quality, loadState: this.loadState, loadDetails: this.loadDetails, clusterLoad: this.clusterLoad, onlineCount: this.onlineCount,
+      lastError: this.lastError ? { code: this.lastError.code, text: this.lastError.message, ...(this.lastError.code === 'SERVER_FULL' ? { detail: this.lastError.detail } : null) } : null,
       playerId: this.playerId,
     };
   }
 
   _setStatus(status) {
     this.status = status;
+    if (status !== 'online' && status !== 'connected') { this.loadState = 'unknown'; this.loadDetails = null; this.clusterLoad = null; }
     this._emit('status', this.snapshot());
   }
 
@@ -315,8 +372,13 @@ export class Net {
   }
 
   _onClose(ev) {
+    // A request sent before this socket's handshake completed cannot have reached a session, so it
+    // rides the resumed connection and re-flushes on the next welcome (transient handover). After
+    // the welcome it may already be applied server-side — it still fails fast (mainline default).
+    const welcomed = this._welcomed;
     this._teardownSocket();
-    this._failPending('DISCONNECTED', false);
+    if (welcomed) this._failPending('DISCONNECTED', false);
+    else this._holdPending();
     if (this._manualClose) { this._setStatus('closed'); return; }
     if (ev && ev.code === CLOSE_REPLACED) {
       // Another tab/socket took this session over: don't fight it; the user may reconnect manually.
@@ -337,9 +399,10 @@ export class Net {
     this._scheduleReconnect();
   }
 
-  _scheduleReconnect() {
+  /** @param {number} [delayMs] a fixed wait (SERVER_FULL) instead of the exponential backoff */
+  _scheduleReconnect(delayMs) {
     if (this._manualClose) return;
-    const delay = backoffDelay(this.attempt, this.random);
+    const delay = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : backoffDelay(this.attempt, this.random);
     this.attempt += 1;
     this.retryAt = this.now() + delay;
     this._clearTimer('_reconnectTimer', 'clearTimeout');
@@ -356,14 +419,23 @@ export class Net {
       ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
     }
     this.ws = null;
+    this._states.reset();
+    this._resetLatency();
+    this._clockSamples = [];
+    this.clockSynced = false;
     this._unansweredSince = null;
+    // The presence figure belonged to the dead socket: drop it (null, not 0) so the UI shows 「—」 instead of a
+    // stale count until the next socket's own frame arrives (NekoTC §presence).
+    const hadPresence = this.onlineCount != null;
+    this.onlineCount = null;
     this._clearTimer('_pingTimer', 'clearInterval');
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
     this._helloSentName = null;
+    this._welcomed = false;
+    if (hadPresence) this._emit('status', this.snapshot());
     // A new socket is a new negotiation (server/net.js onHelloMsg re-baselines per connection): the sequences the old
     // one used mean nothing here, so a stale baseline must never make the first full frame of the new one look old.
-    this._receiver?.reset();
     this._stateRoom = null;
     this._resyncAt = 0;
   }
@@ -380,9 +452,11 @@ export class Net {
   _sendHello() {
     if (!this.name) return;
     const rid = this._nextRid();
-    // `delta` says this build decodes `m.state` frames (shared/stateDelta.js). A server that does not speak it ignores
-    // the field, and the client then keeps receiving the plain m.public / m.private frames it always got.
-    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, delta: STATE_DELTA_VERSION };
+    // `stateDelta` says this build decodes `m.state` frames (shared/stateDelta.js) — the fork's field name, read by
+    // server/net.js and relayed by the cluster. A server that does not speak it ignores the field, and the client then
+    // keeps receiving the plain m.public / m.private frames it always got.
+    const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION, matchmakingVersion: MATCHMAKING_VERSION, playerCapacityVersion: PLAYER_CAPACITY_VERSION,
+      stateDelta: STATE_DELTA_VERSION };
     let token = null;
     try { token = this.getToken(); } catch { token = null; }
     if (typeof token === 'string' && token.length > 0 && token.length <= 64) {
@@ -391,6 +465,9 @@ export class Net {
       if (claim?.noReplace) msg.noReplace = true;
       if (Number.isFinite(claim?.claimAt)) msg.claimAt = claim.claimAt;
     }
+    // the 服主 key (ownerKey.js): the server marks the owner's seats; an older server ignores the field
+    const owner = ownerKey();
+    if (owner) msg.owner = owner;
     this._helloToken = token;
     this._helloRid = rid;
     this._helloSentName = this.name;
@@ -416,6 +493,7 @@ export class Net {
     this.helloName = this._helloSentName;
     this.serverName = typeof msg.name === 'string' && msg.name ? msg.name : this._helloSentName;
     this.playerId = msg.playerId ?? null;
+    this._welcomed = true;
     this.attempt = 0;
     this.lastError = null;
     if (Number.isFinite(msg.serverNow)) this._addClockSample(msg.serverNow + (this.ping ?? 0) / 2 - this.now(), Infinity);
@@ -428,6 +506,18 @@ export class Net {
     this._clearTimer('_helloTimer', 'clearTimeout');
     this._helloRid = null;
     this.lastError = new NetError(msg.code, msg.msg, msg.detail);
+    if (msg.code === 'NAME_REJECTED') this.name = null; // wait for an explicit corrected name, not endless rejected reconnects
+    if (msg.code === 'SERVER_FULL') {
+      // the online cap: leave this socket and try again after the server's interval (±25 %), no exponential backoff;
+      // lastError stays for the banner until a welcome
+      const ws = this.ws;
+      this._teardownSocket();
+      try { ws?.close(1000, 'server full'); } catch { /* ignore */ }
+      this._failPending('OFFLINE', true);
+      this._emit('helloError', this.lastError);
+      this._scheduleReconnect(Math.round(serverFull(msg.detail).retryMs * (0.75 + this.random() * 0.5)));
+      return;
+    }
     this._setStatus('connected');
     // Queued requests can't be sent without a session.
     this._failPending('OFFLINE', true);
@@ -529,6 +619,11 @@ export class Net {
     }
   }
 
+  /** Keep in-flight (already sent) requests queued across a transient drop; they re-flush on the next welcome. */
+  _holdPending() {
+    for (const entry of this._pending.values()) entry.sent = false;
+  }
+
   _clearEntryTimer(entry) {
     if (entry.timer != null) {
       try { this.timers.clearTimeout(entry.timer); } catch { /* ignore */ }
@@ -573,11 +668,11 @@ export class Net {
     // reordered delta, an older full frame) is dropped and one rate-limited `state.resync` asks for a full one.
     if (msg.t === 'room.closed' || (msg.t === 'room.state' && msg.code !== this._stateRoom)) {
       this._stateRoom = msg.t === 'room.state' ? msg.code : null;
-      this._receiver.reset();
+      this._states.reset();
       this._resyncAt = 0;
     }
     if (msg.t === 'm.state') {
-      const { message, resync } = this._receiver.receive(msg);
+      const { message, resync } = this._states.receive(msg);
       if (resync) this.requestResync();
       if (message == null) return;
       msg = message;
@@ -593,9 +688,18 @@ export class Net {
       this._onWelcome(msg);
     } else if (t === 'pong') {
       this._onPong(msg);
+    } else if (t === 'presence' && Number.isSafeInteger(msg.onlineCount) && msg.onlineCount >= 0) {
+      // Server presence (server/net.js): a plain count of live sockets, pushed whenever it changes. Values that are
+      // not a safe non-negative integer are noise and are ignored whole (never a 0 overwrite, never a partial read);
+      // an unchanged figure does not re-notify subscribers.
+      if (msg.onlineCount !== this.onlineCount) {
+        this.onlineCount = msg.onlineCount;
+        this._emit('status', this.snapshot());
+      }
     } else if (isHelloError) {
       this._onHelloError(msg);
-    } else if (t === 'm.public' && Number.isFinite(msg.serverNow) && !this.clockSynced) {
+    } else if ((t === 'm.public' || t === 'site.announcement') && Number.isFinite(msg.serverNow) && !this.clockSynced) {
+      // site.announcement carries serverNow too: a hello-time replay bootstraps the clock before any match starts.
       this._addClockSample(msg.serverNow + (this.ping ?? 0) / 2 - this.now(), Infinity);
     }
 
@@ -629,8 +733,13 @@ export class Net {
   _heartbeat() {
     const ws = this.ws;
     if (!ws || ws.readyState !== WS_OPEN) return;
+    const now = this.monotonicNow();
+    this._expireLatency(now);
     const live = this.status === 'online' || this.status === 'connected';
-    if (live && this._unansweredSince != null && this.now() - this._unansweredSince > DEAD_AFTER_MS) {
+    // A jittery link gets a proportionally wider silence window before we give up (capped at 26 s);
+    // with no jitter samples this is exactly the mainline DEAD_AFTER_MS.
+    const deadAfter = Math.min(DEAD_AFTER_MS + (Number.isFinite(this.jitter) ? this.jitter : 0) * 8, 26000);
+    if (live && this._unansweredSince != null && now - this._unansweredSince > deadAfter) {
       console.warn('[net] connection silent; reconnecting');
       this._teardownSocket();
       try { ws.close(4000, 'heartbeat timeout'); } catch { /* ignore */ }
@@ -641,10 +750,50 @@ export class Net {
     this._sendPing();
   }
 
+  _resetLatency(notify = false) {
+    this._pings.clear();
+    this._lastPongOrder = 0;
+    this._pingReceivedAt = null;
+    this.ping = null;
+    this.rttEma = null;
+    this.jitter = null;
+    this.quality = 'unknown';
+    this.loadState = 'unknown';
+    this.loadDetails = null;
+    this.clusterLoad = null;
+    if (notify) {
+      this._emit('ping', null);
+      this._emit('status', this.snapshot());
+    }
+  }
+
+  _expireLatency(now) {
+    for (const [rid, probe] of this._pings) {
+      if (now - probe.at >= PING_TIMEOUT_MS) this._pings.delete(rid);
+    }
+    if (this._pingReceivedAt != null && now - this._pingReceivedAt >= PING_SAMPLE_MAX_AGE_MS) {
+      this._pingReceivedAt = null;
+      this.ping = null;
+      this.loadState = 'unknown';
+      this.loadDetails = null;
+      this.clusterLoad = null;
+      this._emit('ping', null);
+      this._emit('status', this.snapshot());
+    }
+  }
+
   _sendPing() {
     if (this.status !== 'online' && this.status !== 'connected') return;
-    const now = this.now();
-    if (this._sendRaw({ t: 'ping', c: now }) && this._unansweredSince == null) this._unansweredSince = now;
+    const at = this.monotonicNow(), c = this.now(), rid = this._nextRid();
+    this._expireLatency(at);
+    // Hidden pages still heartbeat, but cannot produce a fresh visible latency measurement.
+    if (this.isVisible()) this._pings.set(rid, { c, at, order: ++this._pingOrder });
+    while (this._pings.size > MAX_PENDING_PINGS) this._pings.delete(this._pings.keys().next().value);
+    // the lobby's cluster summary rides on a pong only every CLUSTER_LOAD_EVERY_MS (server/net.js): ask for it while the
+    // service dialog shows it or while this page holds none (a game node ignores the flag)
+    const full = this.wantClusterLoad || !(this.clusterLoad && this.clusterLoad.scope === 'cluster');
+    if (!this._sendRaw(full ? { t: 'ping', rid, c, full: true } : { t: 'ping', rid, c })) { this._pings.delete(rid); return; }
+    if (this._unansweredSince == null) this._unansweredSince = at;
   }
 
   /** Force an immediate latency probe (e.g. when the tab regains focus). */
@@ -652,14 +801,57 @@ export class Net {
     this._heartbeat();
   }
 
+  /** While on (the service status dialog is open) every ping asks for the whole cluster load summary; on probes now. */
+  watchClusterLoad(on) {
+    const was = this.wantClusterLoad;
+    this.wantClusterLoad = !!on;
+    if (this.wantClusterLoad && !was) this.probe();
+  }
+
+  /** Smooth the latest RTT sample: 0.75/0.25 EMA for RTT and jitter, plus a coarse quality label. */
+  _noteRtt(rtt) {
+    const prev = this.rttEma;
+    this.rttEma = prev == null ? rtt : prev * 0.75 + rtt * 0.25;
+    const diff = prev == null ? 0 : Math.abs(rtt - prev);
+    this.jitter = this.jitter == null ? diff : this.jitter * 0.75 + diff * 0.25;
+    this.quality = rtt < 120 ? 'good' : rtt < 250 ? 'fair' : 'poor';
+  }
+
   _onPong(msg) {
-    const now = this.now();
-    const c = Number(msg.c);
-    if (!Number.isFinite(c)) return;
-    const rtt = now - c;
-    if (!(rtt >= 0 && rtt < 60000)) return;
+    const probe = this._pings.get(msg.rid);
+    if (probe && msg.c !== probe.c) return;
+    const at = this.monotonicNow();
+    let rtt;
+    if (probe) {
+      this._pings.delete(msg.rid);
+      rtt = at - probe.at;
+    } else if (Number.isFinite(msg.c)) {
+      // Pong without a matching probe (server-driven or a session restored mid-flight):
+      // fall back to the client timestamp the ping carried.
+      rtt = this.now() - msg.c;
+    } else {
+      return;
+    }
+    if (!this.isVisible() || !(rtt >= 0 && rtt < PING_TIMEOUT_MS)) return;
+    if (probe) {
+      if (probe.order <= this._lastPongOrder) return;
+      this._lastPongOrder = probe.order;
+      this._pingReceivedAt = at;
+    }
     this.ping = Math.round(rtt);
-    if (Number.isFinite(msg.s)) this._addClockSample(msg.s + rtt / 2 - now, rtt);
+    this._noteRtt(rtt);
+    this.loadState = normalizeServerLoad(msg.loadState);
+    this.loadDetails = normalizeLoadDetails(msg.loadDetails);
+    // `clusterLoadSame`: the lobby summary this page already holds is current (a pong without either clears it)
+    if (!(msg.clusterLoadSame === true && this.clusterLoad && this.clusterLoad.scope === 'cluster')) this.clusterLoad = normalizeClusterLoad(msg.clusterLoad);
+    const now = this.now();
+    if (Number.isFinite(msg.s)) {
+      // Detect adjustments during or between probes; offsets from the old epoch cannot be reused.
+      const epoch = now - at;
+      if (Math.abs(epoch - this._clockEpoch) > 100) { this._clockSamples = []; this.clockSynced = false; }
+      this._clockEpoch = epoch;
+      this._addClockSample(msg.s + rtt / 2 - now, rtt);
+    }
     this._emit('ping', this.ping);
     this._emit('status', this.snapshot());
   }
@@ -693,6 +885,7 @@ export class Net {
     this._hooked = true;
     window.addEventListener('online', () => this.retryNow());
     document.addEventListener('visibilitychange', () => {
+      this._resetLatency(true);
       if (document.visibilityState !== 'visible') return;
       if (this.status === 'reconnecting') this.retryNow();
       else if (this.status === 'online' || this.status === 'connected') this.probe();
@@ -722,12 +915,16 @@ const K_TOKEN = 'sp.token';      // sessionStorage: this tab's token
 const K_WELCOME = 'sp.tokenWelcome'; // sessionStorage: { hash, at } from the first welcome for this token
 const K_RECENT = 'sp.tokens';    // localStorage: this browser's recent tokens, most recent first
 const K_MATCHES = 'sp.matches'; // local metadata for explicit recovery of another closed tab's seat
-const K_ENTERED = 'sp.entered';  // sessionStorage: this tab passed the title screen
 const RECENT_MAX = 4;
 const TOKEN_MAX_LEN = 64;        // protocol limit for hello.token
 const CHANNEL_NAME = 'sp.identity';
 /** How long init() waits for other tabs to claim a candidate token (ms). */
 export const CLAIM_QUERY_MS = 150;
+/**
+ * How long a shared candidate holding a match seat is asked for again after SESSION_IN_USE (identity.retryClaim): the
+ * server drops a socket that vanished without a close after one missed heartbeat (net.js heartbeatMs 30 s: 30–60 s).
+ */
+export const CLAIM_RETRY_MS = 75_000;
 
 function safeStorage(kind) {
   try {
@@ -772,7 +969,7 @@ function defaultChannel() {
 }
 
 /**
- * Create the identity helper (nickname, "entered" flag and reconnect-token selection; see above).
+ * Create the identity helper (nickname and reconnect-token selection; see above).
  * @param {{ local?: Storage|null, session?: Storage|null, tabId?: string,
  *           channel?: { postMessage: Function, addEventListener?: Function, onmessage?: any } | null,
  *           setTimeout?: (fn: Function, ms: number) => any, queryMs?: number, now?: () => number,
@@ -800,6 +997,7 @@ export function createIdentity(deps = {}) {
     if (owned && saved?.hash === tokenHash(owned) && Number.isFinite(saved.at) && saved.at >= 0) welcomeAt = saved.at;
   } catch { /* old / damaged storage: the session token still claims its seat */ }
   let welcomed = false; // this document has received welcome (a copied stamp alone is not a live holder)
+  let claimRetry = null; // { hash, until }: the shared candidate retryClaim keeps asking for after SESSION_IN_USE
 
   const readRecent = () => {
     try {
@@ -972,6 +1170,22 @@ export function createIdentity(deps = {}) {
         ? { noReplace: false, ...(welcomeAt != null ? { claimAt: welcomeAt } : {}) }
         : { noReplace: true };
     },
+    /**
+     * SESSION_IN_USE for a shared candidate (another, closed page's token — never this tab's own) that holds a match
+     * seat: the holder may be a socket the server has not seen drop yet (a killed app, a lost network). True while this
+     * candidate may be asked again — CLAIM_RETRY_MS from its first refusal; the caller then repeats the hello (still
+     * noReplace: a live holder is never replaced) instead of rejectToken, which would take a new identity and leave the
+     * seat behind (the owner's report of 2026-10-13: reconnects that ended on a spectator seat).
+     * @returns {boolean}
+     */
+    retryClaim() {
+      if (!current || current === owned) return false;
+      const hash = tokenHash(current);
+      if (!readMatches()[hash]) return false;
+      const t = now();
+      if (!claimRetry || claimRetry.hash !== hash) claimRetry = { hash, until: t + CLAIM_RETRY_MS };
+      return t < claimRetry.until;
+    },
     /** Only this page gives up the rejected claim; the shared recovery list belongs to all tabs. */
     rejectToken() {
       if (current) yieldCandidate(tokenHash(current));
@@ -979,6 +1193,7 @@ export function createIdentity(deps = {}) {
     /** @param {string} token from `welcome` */
     saveToken(token) {
       if (!isToken(token)) return;
+      claimRetry = null;
       if (current !== token) rememberMatch(null);
       if (owned !== token || welcomeAt == null) welcomeAt = now();
       owned = token;
@@ -998,10 +1213,6 @@ export function createIdentity(deps = {}) {
       sdel(session, K_WELCOME);
       if (t) writeRecent(readRecent().filter((x) => x !== t));
     },
-    /** Whether this tab already passed the title screen (survives reloads, not new tabs). */
-    wasEntered: () => sget(session, K_ENTERED) === '1',
-    /** @param {boolean} on */
-    setEntered: (on) => (on ? sset(session, K_ENTERED, '1') : sdel(session, K_ENTERED)),
   };
 }
 
@@ -1010,3 +1221,4 @@ export const identity = createIdentity({ onYield: () => net.reconnectNow(net.hel
 
 /** Browser connection singleton (created lazily-safe: nothing touches the network until connect()). */
 export const net = new Net({ getToken: () => identity.getToken(), getTokenClaim: () => identity.getTokenClaim() });
+

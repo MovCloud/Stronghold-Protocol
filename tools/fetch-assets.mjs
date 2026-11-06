@@ -66,16 +66,18 @@ import { restartForEnvProxy } from './assets/env-proxy.mjs';
 import { MirrorPolicy, selectDownloadSource, validateSource } from './assets/network.mjs';
 import { normalizeProxyPrefix } from './assets/sources.mjs';
 import { loadIndexes } from './assets/cache.mjs';
-import { indexAudio, VOICE_DIRS } from './assets/audio.mjs';
+import { indexAudio, VOICE_DIRS, normalizeVoiceLangs, retainInstalledVoices } from './assets/audio.mjs';
 import { buildPlan, charModesFromIndex, VOICE_OPTIONAL_TREES } from './assets/plan.mjs';
 import {
   processModels, findLocalEnemyModels, findLocalTokenModels, localSpineMeta, loadLocalSpines, LOCAL_ENEMY_SPINES_FILE,
   LOCAL_TOKEN_SPINES_FILE, LOCAL_ENEMY_SPINE_DIR, LOCAL_TOKEN_SPINE_DIR,
 } from './assets/spine.mjs';
 import { collectLeaves, downloadLeaves, resolveTemplate, totalBytes, contentHash, droppedEntries, MANIFEST_VERSION } from './assets/manifest.mjs';
+import { retainInstalledSkins } from './prepare-operator-skins.mjs';
 import { fontJobs, buildFonts } from './assets/fonts.mjs';
 import { statsTemplateJobs } from './assets/stats-template.mjs';
 import { skelParserAvailable } from './assets/skel.mjs';
+import { outfitRoster } from '../shared/outfits.js';
 import { SourceVerifier } from './assets/source-verifier.mjs';
 import { versionAssetData, presentationUnion, addManifestEntries } from './assets/versions.mjs';
 
@@ -111,8 +113,10 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
   --offline         no network: post-process what is on disk and rebuild data/assets.json
   --dry-run         print the plan and exit
   --refresh-index   re-download the audio_data.json / charword_table.json / models_data.json indexes
-  --voice-lang=cn   the dub of audio.voice (the 中文 voice setting): cn (default) | jp | en | kr
-                    (audio.voiceJp, the 日本語 setting, is always the JP dub: both trees are planned)
+  --voice-lang=cn   legacy single operator voice language: cn (default) | jp | en | kr
+                    (audio.voiceJp is always the JP dub: both trees are planned)
+  --voice-langs=L   simultaneous languages (comma-separated or repeated; always retains CN fallback)
+                    e.g. --voice-langs=cn,jp,en; keeps installed language files referenced during --prune
   --voice-all       plan every official voice slot, including the prep-only lines no battle plays
                     (干员报到 / 编入队伍 / 任命队长; 360 files / 19.3 MB more per run — off by default)
   --no-optional-voice
@@ -154,6 +158,7 @@ function envFlag(value) {
  */
 export function parseArgs(argv) {
   const o = { concurrency: 16, force: false, offline: false, dryRun: false, refreshIndex: false, prune: false, allowShrink: false, strict: envFlag(process.env.SP_ASSETS_STRICT), addOnly: false, localSpines: false, voiceLang: 'cn', voiceAll: false, optionalVoice: true, help: false, source: process.env.SP_ASSET_SOURCE || 'direct', sourceSnapshot: '' };
+  let explicitVoiceLang = false;
   for (const a of argv) {
     const [k, v] = a.split('=');
     if (k === '--concurrency') o.concurrency = Math.max(1, Math.min(64, parseInt(v, 10) || 16));
@@ -168,12 +173,14 @@ export function parseArgs(argv) {
     else if (k === '--strict') o.strict = true;
     else if (k === '--add-only') o.addOnly = true;
     else if (k === '--local-spines') o.localSpines = true;
-    else if (k === '--voice-lang') { if (!VOICE_DIRS[v]) throw new Error(`unknown --voice-lang ${v} (cn | jp | en | kr)`); o.voiceLang = v; }
+    else if (k === '--voice-lang') { if (!Object.hasOwn(VOICE_DIRS, v)) throw new Error(`unknown --voice-lang ${v} (cn | jp | en | kr)`); o.voiceLang = v; explicitVoiceLang = true; }
+    else if (k === '--voice-langs') o.voiceLangs = normalizeVoiceLangs([...(o.voiceLangs || []), ...normalizeVoiceLangs([v])]);
     else if (k === '--voice-all') o.voiceAll = true;
     else if (k === '--no-optional-voice') o.optionalVoice = false;
     else if (k === '--help' || k === '-h') o.help = true;
     else throw new Error(`unknown option ${a}\n${HELP}`);
   }
+  if (o.voiceLangs) o.voiceLangs = normalizeVoiceLangs(['cn', ...(explicitVoiceLang ? [o.voiceLang] : []), ...o.voiceLangs]);
   if (o.addOnly && (o.prune || o.force)) throw new Error(`--add-only never deletes or rewrites files: not with --prune / --force\n${HELP}`);
   if (o.sourceSnapshot && (o.offline || o.addOnly || o.localSpines)) throw new Error('--source-snapshot is incompatible with --offline / --add-only / --local-spines');
   if (!o.help) validateSource(o.source);
@@ -312,6 +319,27 @@ function tidyManifest(m) {
     for (const [sid, iconId] of Object.entries(m.skillsById)) if (!m.skills?.[iconId]) delete m.skillsById[sid];
   }
   for (const c of Object.values(m.chars || {})) if (c.spine && !Object.keys(c.spine).length) delete c.spine;
+  // (fork) an outfit or summon look none of whose art landed is no entry (the client then draws the default look)
+  for (const group of ['chars', 'tokens']) {
+    const g = m.outfits?.[group] || {};
+    for (const [id, o] of Object.entries(g)) {
+      if (o.spine && !Object.keys(o.spine).length) delete o.spine;
+      if (!o.spine && !o.avatar && !o.portrait && !o.art) delete g[id];
+    }
+  }
+}
+
+/** Preserve multilingual installations and keep the 0.2.2 JP alias in sync with their canonical JP tree. */
+export function retainManifestVoices(current, next, assetRoot) {
+  const multilingual = current?.voiceByLang || next?.voiceByLang;
+  // A legacy plan still resolves voiceJp. Feed its newly installed JP lines into retention rather than letting an
+  // older voiceByLang.jp hide them; an official-only previous manifest can also seed a multilingual rebuild.
+  const withJp = (audio) => !audio?.voiceJp ? audio : {
+    ...audio, voiceByLang: { jp: audio.voiceJp, ...audio.voiceByLang },
+  };
+  const retained = retainInstalledVoices(multilingual ? withJp(current) : current, multilingual ? withJp(next) : next, assetRoot);
+  if (retained.audio.voiceByLang?.jp) retained.audio.voiceJp = retained.audio.voiceByLang.jp;
+  return retained;
 }
 
 /**
@@ -329,7 +357,7 @@ export function tidyVoiceTrees(m) {
   }
 }
 
-function countStats(m, bytes, files) {
+export function countStats(m, bytes, files) {
   const vals = (o) => Object.values(o || {});
   const spines = new Set();
   for (const c of vals(m.chars)) for (const s of vals(c.spine)) spines.add(s.skel);
@@ -436,6 +464,9 @@ async function main() {
   }
   // The game data built by tools/build-data.mjs (when present) may reference more
   // spawnable enemies/tokens than research lists (e.g. 机变 enemy swaps): cover them too.
+  const [dataBackups, dataChess, dataOutfits] = await Promise.all(
+    ['data/backups.json', 'data/chess.json', 'data/outfits.json'].map((f) => readJson(f).catch(() => null)));
+  const extras = dataExtras(dataBackups, dataChess);
   const versionSets = versionAssetData(ROOT);
   const all = presentationUnion(versionSets);
   log(`[versions] planning presentation for ${versionSets.length} official versions`);
@@ -447,20 +478,26 @@ async function main() {
   const localTokenSpines = await syncLocalSpines(opts, 'token');
   const statsTemplate = await statsTemplateJobs(ROOT, { offline: opts.offline || opts.dryRun, log });
   const plan = buildPlan({
-    assets07, ops03, enemies05, maps05, audio, modelsData, charword, voiceLang: opts.voiceLang,
+    assets07, ops03, enemies05, maps05, audio, modelsData, charword, voiceLang: opts.voiceLang, voiceLangs: opts.voiceLangs,
     // default: only the slots a battle can play (plan.mjs VOICE_BATTLE_SLOTS); --voice-all takes the whole official set
     voiceSlots: opts.voiceAll ? null : undefined,
     optionalVoice: opts.optionalVoice,
     extraEnemyIds: Object.keys(all.enemies),
-    extraTokenIds: Object.keys(all.tokens),
+    extraTokenIds: [...Object.keys(all.tokens), ...extras.tokenIds],
     extraHandbook,
     localEnemySpines,
     localTokenSpines,
-    extraOperators: all.operators,
+    // (fork) the union of the official versions plus the 自选 picks of the aggregate data — the aggregate still lists
+    // operators no official version has, so they must not drop out of the plan
+    extraOperators: { ...all.operators, ...extras.extraOperators },
     extraBands: all.bands,
     extraItems: all.items,
     extraBonds: all.bonds,
-    moduleTypes: all.moduleTypes,
+    moduleTypes: [...new Set([...all.moduleTypes, ...extras.moduleTypes])].sort(),
+    // fork (docs/OUTFITS.md): the outfits of tools/build-outfits.mjs, and the operators (roster + 自选编队) whose default
+    // artwork the picker shows
+    outfits: dataOutfits,
+    outfitChars: outfitRoster(dataChess, dataBackups),
     statsTemplate,
     charModes,
   });
@@ -520,6 +557,12 @@ async function main() {
     ...(verifier ? { available: (rel) => dl.accepted.has(rel) } : null),
   });
   let body = resolved.value;
+  const importedSkins = retainInstalledSkins(current, ASSETS);
+  if (Object.keys(importedSkins.skins).length) body.skins = importedSkins.skins;
+  for (const rel of importedSkins.files) resolved.files.add(rel);
+  const importedVoices = retainManifestVoices(current?.audio, body.audio, ASSETS);
+  body.audio = importedVoices.audio;
+  for (const rel of importedVoices.files) resolved.files.add(rel);
   tidyManifest(body);
   tidyVoiceTrees(body);
   const fontFaces = {};
@@ -541,7 +584,7 @@ async function main() {
     version: MANIFEST_VERSION,
     hash: contentHash(body),
     generator: 'tools/fetch-assets.mjs',
-    stats: countStats(body, bytes, resolved.files.size),
+    stats: { ...countStats(body, bytes, resolved.files.size), ...(Object.keys(importedSkins.skins).length ? { skins: Object.keys(importedSkins.skins).length } : {}) },
     ...body,
   };
   const guard = shrinkGuard(current, manifest, opts);

@@ -52,7 +52,7 @@ describe('the plugin studio in the browser', { skip: !ENABLED && 'set SP_E2E=1 (
       assert.match(await pub.text(), /页面不存在 · Not found/);
       assert.equal((await fetch(`${srv.url}/studio/api/plugins`, { headers: { 'cf-connecting-ip': '198.51.100.7' } })).status, 404);
 
-      const page = await browser.newPage();
+      const page = await browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
       await page.setViewport({ width: 1600, height: 1000 });
       page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
       page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
@@ -114,7 +114,7 @@ describe('the plugin studio in the browser', { skip: !ENABLED && 'set SP_E2E=1 (
       await shot(page, 'packed');
       // another browser profile without the key: the plugins show, the bar asks for the key; the printed address pasted
       const other = await browser.createBrowserContext();
-      const p2 = await other.newPage();
+      const p2 = await other.newPage(); await p2.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
       await p2.setViewport({ width: 1600, height: 1000 });
       p2.on('pageerror', (e) => problems.push(`pageerror (no key): ${e.message}`));
       await p2.goto(`${srv.url}/studio/`, { waitUntil: 'domcontentloaded' });
@@ -166,7 +166,7 @@ describe('the plugin studio in the browser', { skip: !ENABLED && 'set SP_E2E=1 (
       assert.equal((await host.request({ t: 'room.setPlugins', plugins: [{ id: 'room-skin' }] })).t, 'ok');
       await host.waitFor('room.state', (s) => !!s.content?.plugins?.some((p) => p.id === 'room-skin'));
 
-      const page = await browser.newPage();
+      const page = await browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
       await page.setViewport({ width: 1600, height: 1000 });
       page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
       page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));

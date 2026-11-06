@@ -37,8 +37,13 @@ import { mergeSceneChunks, sceneMaterialKey, sceneWaterInfo, isSceneWater } from
 
 /** Lighting rig (tuned against the official screenshots: bright even tops, darker sides, soft shadows). */
 export const LIGHTING = Object.freeze({
-  key: { color: 0xfff1df, intensity: 2.6, dir: [-5.2, -3.4, 10] },
-  hemi: { sky: 0xe4ecf4, ground: 0x4a5058, intensity: 0.6 },
+  // The official scene lights its board with one directional light, m_Intensity = 1.1 (scene bundle "Mainlight (1)").
+  // 2.6 was hand-tuned from screenshots and blows light-albedo tiles out to pure white (#549).
+  key: { color: 0xfff1df, intensity: 1.1, dir: [-5.2, -3.4, 10] },
+  // The official pixel shader has no per-pixel ambient diffuse term (its ambient lives in the baked lightmap;
+  // unity_AmbientSky only feeds the specular reflection). This hemisphere light propped up the shading while the baked
+  // light was scaled down; kept as a small [ASSUMED] floor for meshes without a lightmap page (#549).
+  hemi: { sky: 0xe4ecf4, ground: 0x4a5058, intensity: 0.05 },
   env: 1.0,
   emissive: 0.25,
   roughness: 0.78,
@@ -204,7 +209,11 @@ export class BoardScene {
       wind: this.tex.wind ? unlitMaterial(T, this.tex.wind) : null,
       gateStartAdd: this.tex.gate ? gateMaterial(T, this.tex.gate, { additive: true, tint: GATE_TINT.start.rgb }) : null,
       gateEndAdd: this.tex.gate ? gateMaterial(T, this.tex.gate, { additive: true, tint: GATE_TINT.end.rgb }) : null,
-      gateEndAb: this.tex.gate ? gateMaterial(T, this.tex.gate, { additive: false, tint: GATE_TINT.endAb.rgb }) : null,
+      // [GATEGLYPH] the end box's top face is additive like the start's: the atlas paints the warning triangle's inside an
+      // opaque black (alpha 255), which an alpha blend shows as a dark fill (owner report 2026-10-25: it must read as
+      // transparent, only the outline / corner ticks / exclamation visible). Additive drops the black fill and keeps the
+      // white marks — the same treatment the red start box gets from its own additive material.
+      gateEndTop: this.tex.gate ? gateMaterial(T, this.tex.gate, { additive: true, tint: GATE_TINT.endAb.rgb }) : null,
       edge: glowMaterial(T, dashTexture(T)),
       water: waterMaterial(T, this.tex, this.focus),
       mire: mireMaterial(T, this.tex, this.focus),
@@ -433,6 +442,9 @@ export class BoardScene {
     this.sceneWater = [];
     const buckets = new Map();
     for (const c of pack.chunks || []) {
+      // The extractor keeps disabled, ungrouped objects as 'inactive' (tools/local-extract/scenes.py). Their bounds can
+      // overlap the boss area (its untextured survival-shadow planes): a camera switch must never show them.
+      if (c.group === 'inactive') continue;
       if (c.group && !sceneGroupVisible(pack.groups?.[c.group], this.area)) continue;
       const info = infos[c.material] || null;
       const mk = sceneMaterialKey(c, info);
@@ -452,6 +464,7 @@ export class BoardScene {
           ? waterMaterial(T, this.tex, this.focus, info, { env: res.env, envRange: pack.doc?.env?.range, envMips: pack.doc?.env?.mips })
           : water ? sceneWaterDecalMaterial(T, this.tex, this.focus, info)
           : sceneMaterial(T, {
+            materialName: c.material,
             map: res.tex[info?.map] || null, lightMap: c.lightmap >= 0 ? (res.lm[c.lightmap] || null) : null, info,
             light: pack.doc?.light || null, lightRange: pack.doc?.lightRange, lightEncoding: pack.doc?.lightEncoding,
             normalMap: res.data[info?.normalMap] || null, glossMap: res.data[info?.glossMap] || null,
@@ -530,7 +543,7 @@ export class BoardScene {
       return objToBoard(rec.mesh, 0.01);
     };
     const parts = { startDown: place('startDown'), startUp: place('startUp'), startBack: place('startBack'), endDown: place('endDown'), endUp: place('endUp') };
-    const startAdd = [], endAdd = [], endAb = [];
+    const startAdd = [], endAdd = [], endTop = [];
     for (const g of board.gates) {
       // the tile effect's prefab rotation (0, .707, −.707, 0) maps the mesh to (x', −z', y') of the exported OBJ:
       // objToBoard's frame turned half a turn — the warning glyph on the top face points north (the official look)
@@ -538,13 +551,13 @@ export class BoardScene {
       if (g.kind === 'start') for (const k of ['startDown', 'startUp', 'startBack']) { if (parts[k]) startAdd.push(placeMesh(parts[k], at)); }
       else {
         if (parts.endDown) endAdd.push(placeMesh(parts.endDown, at));
-        if (parts.endUp) endAb.push(placeMesh(parts.endUp, at));
+        if (parts.endUp) endTop.push(placeMesh(parts.endUp, at));
       }
     }
     const opt = { cast: false, receive: false, order: 5 };
     if (startAdd.length) this.meshes.gateStart = this._mesh(mergeInto(startAdd), this.mat.gateStartAdd, opt);
     if (endAdd.length) this.meshes.gateEndAdd = this._mesh(mergeInto(endAdd), this.mat.gateEndAdd, opt);
-    if (endAb.length) this.meshes.gateEndAb = this._mesh(mergeInto(endAb), this.mat.gateEndAb, { ...opt, order: 4 });
+    if (endTop.length) this.meshes.gateEndTop = this._mesh(mergeInto(endTop), this.mat.gateEndTop, { ...opt, order: 4 });
   }
 
   _buildEdges(board) {
@@ -755,10 +768,10 @@ export class BoardScene {
     // gate pulses (the official clip's _TintColor.a curves), objective leak flashes
     if (this.mat.gateStartAdd) this.mat.gateStartAdd.uniforms.uAlpha.value = gatePulse(t, GATE_TINT.start.alpha);
     if (this.mat.gateEndAdd) this.mat.gateEndAdd.uniforms.uAlpha.value = gatePulse(t, GATE_TINT.end.alpha);
-    if (this.mat.gateEndAb) this.mat.gateEndAb.uniforms.uAlpha.value = gatePulse(t, GATE_TINT.endAb.alpha);
+    if (this.mat.gateEndTop) this.mat.gateEndTop.uniforms.uAlpha.value = gatePulse(t, GATE_TINT.endAb.alpha);
     let flash = 0;
     for (let i = this.flashes.length - 1; i >= 0; i--) { const f = this.flashes[i]; f.t += dt; if (f.t > 1.2) this.flashes.splice(i, 1); else flash = Math.max(flash, 1 - f.t / 1.2); }
-    for (const m of [this.mat.gateEndAdd, this.mat.gateEndAb]) if (m) m.uniforms.uFlash.value.setRGB(flash, flash * 0.12, flash * 0.1);
+    for (const m of [this.mat.gateEndAdd, this.mat.gateEndTop]) if (m) m.uniforms.uFlash.value.setRGB(flash, flash * 0.12, flash * 0.1);
     for (const k of ['water', 'mire', 'infection', 'smog']) this.mat[k].uniforms.uTime.value = t;
     if (this.official) for (const m of this.sceneWater || []) m.uniforms.uTime.value = t;
     this.renderer.render(this.scene, this.camera);

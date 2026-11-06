@@ -26,6 +26,8 @@ import { chessAvatarUrl, itemIconUrl, tokenAvatarUrl, enemyIconUrl } from './ass
 import { tileKey, hasFlag, UF, penPlacement, PEN, fieldTile, ownStandIn, ownDiyRecord } from './gameLogic.js';
 import { t } from '../../../shared/i18n.js';
 import { ownerSkin } from './skins.js';
+import { Img } from './gameComponents.js';
+import { MaterialImage } from './materialImage.js';
 
 const DRAG_PX = 6;
 const DMG_TTL = 900;
@@ -37,10 +39,14 @@ export function unitArt(m, info, appearance = {}) {
   if (!m || !id) return null;
   if (info.side === 'enemy' || String(id).startsWith('enemy_')) return enemyIconUrl(m, id);
   if (String(id).startsWith('token_')) return tokenAvatarUrl(m, id);
-  // Same golden rule as chessAvatarUrl: a character-key avatar uses avatarE2 on a golden piece.
+  // Same golden rule as chessAvatarUrl: a character-key avatar uses avatarE2 on a golden piece; the owner's chosen
+  // appearance (info.skin on the operator's spine) draws its own avatar first.
   const charId = info.diy?.charId || info.spine || String(id).replace(/_[12]$/, '');
-  const skin = ownerSkin(charId, { ...appearance, ownerId: info.ownerId ?? null, skin: info.skin });
-  return chessAvatarUrl(m, { charId, isGolden: !!info.golden, assets: { avatar: id } }, { skin });
+  // #686 keeps each seat independent: the owner's public choice wins; the viewer's own map is the fallback when the
+  // owner is not in the players list (a solo / watched board).
+  const skin = ownerSkin(charId, { ...appearance, ownerId: info.ownerId ?? null, skin: info.skin })
+    || appearance?.localSkins?.[charId] || info.skin;
+  return chessAvatarUrl(m, { charId, isGolden: !!info.golden, skin, assets: { avatar: id, spine: info.spine } }, { skin });
 }
 
 /** Look of the stage tile (row, col) on the fallback board (stage coordinates). */
@@ -153,8 +159,10 @@ export function createFallbackView(host, opts = {}) {
     if (p.kind === 'token') return tokenAvatarUrl(mm, p.id);
     const chess = lookup('chess', p.id);
     const body = ownSi(chess) || ownDiy(chess) || chess;
+    // #686: the owner's public choice wins; `localSkins` keeps the fork's own map for a board with no player entry
+    // (a solo prep board read straight from the private state).
     const skin = ownerSkin(body?.charId, { ownerId: st.priv?.playerId ?? st.myId, skin: p.skin,
-      myId: st.myId, players: st.players, otherSkins: st.settings.otherSkins });
+      myId: st.myId, players: st.players, localSkins: st.priv?.skins || {}, otherSkins: st.settings.otherSkins });
     return chessAvatarUrl(mm, body, { skin });
   }
   /** 0.2.0 补位: the player's own piece of a chess it does not own is its stand-in, bench and board alike (render/app.js pieceInfo) */
@@ -184,7 +192,8 @@ export function createFallbackView(host, opts = {}) {
         onPointerDown=${(e) => onDown(e, p)} onContextMenu=${(e) => { e.preventDefault(); emit('pieceClick', { uid: p.uid, button: 2, clientX: e.clientX, clientY: e.clientY }); }}
         onPointerEnter=${() => emit('pieceHover', { uid: p.uid })} onPointerLeave=${() => emit('pieceHover', { uid: null })}
         title=${pieceName(p)}>
-      <div class="ff-piece__art">${src ? html`<img src=${src} alt="" draggable=${false} />` : html`<span>${[...pieceName(p)][0]}</span>`}</div>
+      <div class="ff-piece__art"><${Img} src=${src} fallbackSrc=${p.kind === 'chess' ? chessAvatarUrl(m(), ownSi(lookup('chess', p.id)) || ownDiy(lookup('chess', p.id)) || lookup('chess', p.id)) : null}
+        fallback=${html`<span>${[...pieceName(p)][0]}</span>`} /></div>
       ${tier && p.kind !== 'token' ? html`<${TierChip} tier=${tier} golden=${golden} size="sm" class="ff-piece__tier" />` : null}
       ${p.kind === 'chess' && Array.isArray(p.items) && p.items.length ? html`<div class="ff-piece__items">${p.items.slice(0, 2).map((it) => html`<i key=${it.uid}></i>`)}</div>` : null}
       ${p.kind === 'token' && p.count > 1 ? html`<b class="ff-piece__count">×${p.count}</b>` : null}
@@ -287,7 +296,7 @@ export function createFallbackView(host, opts = {}) {
         style=${`transform:translate(${px - size / 2}px,${py - size / 2}px);width:${size}px;height:${size}px`}
         onPointerDown=${(e) => { if (e.button === 0) emit('pieceClick', { unitId: id, uid: info.uid ?? null, unit: info, button: 0, clientX: e.clientX, clientY: e.clientY }); }}
         onContextMenu=${(e) => { e.preventDefault(); emit('pieceClick', { unitId: id, uid: info.uid ?? null, unit: info, button: 2, clientX: e.clientX, clientY: e.clientY }); }}>
-      <div class="ff-unit__art">${src ? html`<img src=${src} alt="" draggable=${false} />` : html`<span>${[...(info.name || '?')][0]}</span>`}</div>
+      <div class="ff-unit__art"><${Img} src=${src} fallbackSrc=${unitArt(m(), { ...info, skin: null })} fallback=${html`<span>${[...(info.name || '?')][0]}</span>`} /></div>
       <div class="ff-unit__bars"><i class="hp" style=${`width:${hpPct}%`}></i>${!enemy && spMax > 0 ? html`<i class="sp" style=${`width:${spPct}%`}></i>` : null}</div>
     </div>`;
   }
@@ -327,7 +336,7 @@ export function createFallbackView(host, opts = {}) {
       return html`<button key=${mdl.k} type="button" class=${cx('ff-unit', 'is-enemy', 'ff-pen__enemy', (mdl.elite || mdl.boss) && 'is-boss', mdl.fly && 'is-fly')}
           data-enemy=${mdl.enemyKey} title=${name} aria-label=${name}
           style=${`transform:translate(${x}px,${y}px);width:${size}px;height:${size}px;z-index:${10 + mdl.slot}`} onClick=${tap}>
-        <div class="ff-unit__art">${src ? html`<img src=${src} alt="" draggable=${false} />` : html`<span>${[...name][0]}</span>`}</div>
+        <div class="ff-unit__art">${src ? html`<${MaterialImage} src=${src} alt="" draggable=${false} />` : html`<span>${[...name][0]}</span>`}</div>
       </button>`;
     });
     return html`<div class="ff-board ff-board--pen" style=${`left:${left}px;top:${top}px;width:${bw}px;height:${tile * rows}px;--tile:${tile}px`}>
@@ -409,7 +418,7 @@ export function createFallbackView(host, opts = {}) {
       const hr = root.getBoundingClientRect();
       const src = pieceArt(d.piece);
       return html`<div class=${cx('ff-ghost', d.piece.golden && 'is-golden')} style=${`left:${d.x - hr.left - L.tile / 2}px;top:${d.y - hr.top - L.tile / 2}px;width:${L.tile}px;height:${L.tile}px`}>
-        ${src ? html`<img src=${src} alt="" />` : null}</div>`;
+        ${src ? html`<${MaterialImage} src=${src} alt="" />` : null}</div>`;
     })() : null;
     if (st.camera === 'pen') { render(html`${penView()}<div class="ff-badge">SIMPLIFIED VIEW</div>`, root); return; }
     render(html`<div class=${cx('ff-board', `ff-board--${st.mode}`, `ff-cam--${st.camera}`)} style=${`left:${L.left}px;top:${L.top}px;width:${L.bw}px;height:${L.bh}px;--tile:${L.tile}px`}>

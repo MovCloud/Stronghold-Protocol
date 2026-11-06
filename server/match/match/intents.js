@@ -1,13 +1,15 @@
 // server/match/match/intents.js — Match methods: the g.* / b.* intent router (_handle: the prep intents go to
 // PlayerState, the drafts, watching, the pause and the battle reports to the match), emotes, AI 托管 (setAutoplay,
-// kickBot) and g.unitStats (the stats the board's units start their next battle with: a preview battle, started, read
-// and dropped).
+// kickBot), g.unitStats (the stats the board's units start their next battle with: a preview battle, started, read
+// and dropped) and g.bondPlan (the announced core bond, display only).
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { unitStatsEntry } from '../../../shared/protocol.js';
 import { PHASE, ERR, EMOTES, EMOTE_COOLDOWN_MS, GEO } from '../../../shared/constants.js';
+import { isPluginEmoteId } from '../../../shared/plugins/emoteCatalog.js';
 import { deriveSeed } from '../../sim/rng.js';
 import { OK, fail } from './common.js';
+import { setBondCall } from '../bondCall.js';
 import { onHumanEmote } from '../botEmotes.js';
 
 export class MatchIntents {
@@ -19,11 +21,22 @@ export class MatchIntents {
         if ((msg.setupRevision ?? 0) !== this.setupRevision) return fail(ERR.BAD_TARGET, 'setup changed; confirm the current revision');
         if (!ps.infoReady) { ps.infoReady = true; this.markPublic(); this.maybeEndInfo(); }
         return OK;
-      case 'g.rerollVote': return this.voteSetupReroll(ps, msg.voteId, msg.agree);
-      case 'g.band': return this.pickBand(ps, msg.bandId);
-      case 'g.bandSkip': return this.skipBand(ps);
+      // the briefing's 核心盟约 call (server/match/bondCall.js)
+      case 'g.bondCall': return setBondCall(this, ps, msg.bondId ?? null);
+      // the vote is over once it passed/failed/cancelled: the wire refuses every further vote (the internal method
+      // alone tolerates a late YES as consent — setupVote.js voteSetupReroll)
+      case 'g.rerollVote':
+        if (!this.setupVote) return fail(ERR.WRONG_PHASE);
+        return this.voteSetupReroll(ps, msg.voteId, msg.agree);
+      // 投票移出 an offline seat under AI takeover (kickVote.js)
+      case 'g.kickVote': return this.requestKickVote(ps, msg.targetId);
+      case 'g.kickBallot': return this.answerKickVote(ps, msg.voteId, msg.agree);
+      case 'g.band': return this.pickBand(ps, msg.bandId, msg);
+      case 'g.bandSkip': return this.skipBand(ps, msg);
       // the strategy highlighted in the draft screen (what a timed-out turn takes, timeoutBand)
-      case 'g.bandFocus': return this.bandFocus(ps, msg.bandId ?? null);
+      case 'g.bandFocus': return this.bandFocus(ps, msg.bandId ?? null, msg);
+      // the core bond the player means to build (display only; the opening phases)
+      case 'g.bondPlan': return this.planBond(ps, msg.bondId ?? null);
       case 'g.buy': return ps.buy(msg.slot);
       case 'g.refresh': return ps.refresh();
       case 'g.freeze': return ps.freeze();
@@ -38,20 +51,32 @@ export class MatchIntents {
       case 'g.reward': return ps.pickReward(msg.idx);
       case 'g.choice': return msg.choiceId !== undefined
         ? this.pickPersonalChoice(ps, msg.idx, msg.choiceId)
-        : this.pickCard(ps, msg.idx);
+        : this.pickCard(ps, msg.idx, msg);
       // a plugin interaction window (PLUGIN API v2, docs/PLUGINS.md §10b): the window's own id, not a draft card —
       // the host applies the declared primitive, a plugin never reaches the match state itself
       case 'g.offer': return this.requestOffer(ps, msg.offerId, msg.idx, msg);
       case 'g.offerRefresh': return this.requestOfferRefresh(ps, msg.offerId, msg.idx, msg);
       case 'g.ready': return ps.setReady(!!msg.ready);
+      case 'g.revive': return this.revive(ps, msg);
       case 'g.emote': return this.emote(ps, msg.id);
       // playerId: the player tapped (a shared field names two) — the watch preference (item 56)
       case 'g.watch': return this.watch(ps, msg.fieldId, msg.playerId ?? null);
+      // the bonds of a player whose list this connection's hot frames strip (compression round 2, step ③)
+      case 'g.bonds': return this.sendBonds(ps, msg.playerId);
       case 'g.autoplay': return this.setAutoplay(ps, !!msg.on);
-      case 'g.pause': return this.setPause(ps, !!msg.on);
+      // 比赛控制 (matchControl.js): the pause is a request the connected humans must all agree to; `{ on: false }` is
+      // the resume, and a resume when nothing is paused is a no-op that is always accepted
+      case 'g.pause': return this.requestMatchControl(ps, msg.on ? 'pause' : 'resume');
+      // the fast-forward toggle and the one-shot 跳过: the same request/broadcast/consent shape as the pause
+      case 'g.matchControl': return this.requestMatchControl(ps, msg.action);
+      case 'g.matchControlBallot': return this.answerMatchControl(ps, msg.voteId, msg.agree);
+      // server-run combat: this browser runs its own fields locally / its replica wants the stream (localReplica.js)
+      case 'g.sim': return this.setLocalSim(ps, msg);
       // the stats the board's units start their next battle with (the detail card in prep, user playtest #4 item 7)
       case 'g.unitStats': return this.unitStats(ps, msg.seq ?? null);
       case 'g.leave': this.onLeave(ps.playerId); return OK;
+      // optional multi-wave 联防 (uniteWaves.js, SiderLock port): a connected manual human votes to skip the remaining waves
+      case 'g.uniteSkipVote': return this.voteSkipUnite(ps, msg);
       case 'g.test': return this.applyTestCommand(ps, msg);
       case 'b.progress': return this._onProgress(ps, msg);
       case 'b.result': return this._onResult(ps, msg);
@@ -63,7 +88,9 @@ export class MatchIntents {
   }
 
   emote(ps, id) {
-    if (!EMOTES.includes(id)) return fail(ERR.BAD_MSG, 'unknown emote');
+    // an official id or a plugin page's namespaced one (shared/plugins/emoteCatalog.js); the protocol validator checks
+    // the same shape, and the match only broadcasts it — an AI teammate reacts to the official ids only
+    if (!EMOTES.includes(id) && !isPluginEmoteId(id)) return fail(ERR.BAD_MSG, 'unknown emote');
     const now = this.sched.now();
     if (now - ps.lastEmoteAt < EMOTE_COOLDOWN_MS) return fail(ERR.RATE);
     ps.lastEmoteAt = now;
@@ -73,11 +100,40 @@ export class MatchIntents {
     return OK;
   }
 
+  /**
+   * g.bondPlan { bondId? } (a remake feature, display only): the core bond (盟约) the player announces it means to build
+   * — m.public players[].bondPlan, seen by every teammate and spectator for the rest of the match. Changeable from
+   * INFO_CHECK until round 1's battle starts (bondPlanOpen), else WRONG_PHASE; `bondId` one of
+   * GameData.plannableBondIds() (BAD_TARGET otherwise), absent / null clears it; the same plan again changes nothing.
+   * No rule, bot, timer or idle check reads it. AI seats and spectator seats cannot send it (handle refuses them).
+   * @param {PlayerState} ps @param {string|null} bondId
+   */
+  planBond(ps, bondId) {
+    if (!this.bondPlanOpen()) return fail(ERR.WRONG_PHASE);
+    if (bondId !== null && !this.gd.bondPlannable(bondId)) return fail(ERR.BAD_TARGET);
+    if (ps.bondPlan === bondId) return OK;
+    ps.bondPlan = bondId;
+    this.markPublic();
+    return OK;
+  }
+
+  /** The opening, while a bond plan may change: INFO_CHECK, the strategy draft, BATTLE_CHECK and round 1 up to its battle. */
+  bondPlanOpen() {
+    switch (this.phase) {
+      case PHASE.INFO_CHECK: case PHASE.BAND_DRAFT: case PHASE.BATTLE_CHECK: return true;
+      case PHASE.ROUND_START: case PHASE.SP_DRAFT: case PHASE.PREP: return this.round <= 1;
+      default: return false;
+    }
+  }
+
   setAutoplay(ps, on) {
     if (ps.autoplay === on) return OK;
     ps.autoplay = on;
+    if (!on) { ps._botWorker?.cancel(); ps._botWorker = null; }
+    this.refreshUniteSkipVote(); // an autoplay seat cannot vote (unitePhaseWaves.js): drop and recount an open 联防 skip vote
     this.markPublic();
     if (on) this.kickBot(ps);
+    else this._cancelBotPrep(ps);
     return OK;
   }
 
@@ -86,8 +142,11 @@ export class MatchIntents {
     if (!ps.botControlled || this.ended) return;
     this.offersChanged();
     if (this.phase === PHASE.INFO_CHECK && !ps.infoReady) { ps.infoReady = true; this.markPublic(); this.maybeEndInfo(); }
-    else if (this.phase === PHASE.BAND_DRAFT && this.draftTurn() === ps.playerId) this.scheduleBandBot();
-    else if (this.phase === PHASE.SP_DRAFT && this.spTurn() === ps.playerId) this.scheduleSpBot();
+    // a concurrent draft (concurrentDraft) looks at every seat still deciding again
+    else if (this.phase === PHASE.BAND_DRAFT && this.draft?.concurrent) this._concurrentBandStep();
+    else if (this.phase === PHASE.BAND_DRAFT && this.draftTurn(ps.playerId) === ps.playerId) this.scheduleBandBot(this.draftGroup(ps.playerId));
+    else if (this.phase === PHASE.SP_DRAFT && this.sp?.concurrent) this._concurrentSpStep();
+    else if (this.phase === PHASE.SP_DRAFT && this.spTurn(ps.playerId) === ps.playerId) this.scheduleSpBot(this.spGroup(ps.playerId));
     else if (this.phase === PHASE.PREP && ps.alive && !ps.ready) this.scheduleBotPrep(ps, 0);
   }
 

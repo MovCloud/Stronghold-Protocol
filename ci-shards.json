@@ -193,8 +193,6 @@
     "test/data.test.js": 1134,
     "test/diag.test.js": 20,
     "test/diy.test.js": 13,
-    "test/docs-consistency.test.js": 503,
-    "test/docs-paths.test.js": 599,
     "test/doctor.test.js": 3,
     "test/e2e/client-close.test.js": 45,
     "test/e2e/client-wait.test.js": 186,

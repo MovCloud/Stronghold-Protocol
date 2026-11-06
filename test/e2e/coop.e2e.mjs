@@ -5,6 +5,8 @@
 //   node test/e2e/coop.e2e.mjs                         # everything (facing, co-op, solo, result)
 //   SP_E2E=1 node --test test/e2e/coop.e2e.mjs         # same through the test runner (skipped in `npm test` otherwise)
 //   SP_E2E_ONLY=facing|coop|solo|result  SP_E2E_ROUNDS=5  CHROME_PATH=…
+//   SP_E2E_TIMER_SCALE=2   co-op on a slow host (software GL): every phase timer ×2 so both browsers' scripted steps fit
+//                          a prep (the engine and its 2× combat clock unchanged — test/e2e/fastServer.mjs)
 //
 // Co-op (host 1920×1080, guest 1280×720): title → 玩法说明 → lobby → create a 同盟模拟 room (险境) → add an AI → the
 // guest joins through the ?room= invite link → ready → start → briefing (both ready) → band draft (the guest skips
@@ -37,6 +39,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Client, ROOT, sleep, hasChrome, startRealServer, problemsOf, groundAnchor, anchorPoint, cameraSettled } from './client.mjs';
 
+const TIMER_SCALE = Number(process.env.SP_E2E_TIMER_SCALE) || 1;
 const ENABLED = (process.env.SP_E2E === '1' || !process.env.NODE_TEST_CONTEXT) && hasChrome() && existsSync(path.join(ROOT, 'public/assets'));
 const ONLY = process.env.SP_E2E_ONLY || '';
 const ROUNDS = Math.max(4, Number(process.env.SP_E2E_ROUNDS) || 4);
@@ -116,7 +119,10 @@ async function buyOne(c, sel = BUYABLE, { shot = null } = {}) {
     : (await c.exists(`${BUYABLE} .scard__pips`)) ? `${BUYABLE}:has(.scard__pips)` : sel) : sel;
   const ok = await c.click(pick, null, { timeout: 1200, optional: true });
   if (!ok) return false;
-  await c.page.waitForSelector('.scard.is-armed .scard__confirm', { timeout: 3000 });
+  try { await c.page.waitForSelector('.scard.is-armed .scard__confirm', { timeout: 3000 }); } catch (e) {
+    if ((await c.st()).phase !== 'PREP') return false; // the prep ran out between the taps
+    throw e;
+  }
   await sleep(250);
   const mid = await c.st();
   assert.equal(mid.funds, before.funds, `${c.label}: the first tap only selects (确认购买)`);
@@ -223,7 +229,12 @@ async function refreshKey(c) {
 
 async function freezeToggle(c) {
   const s = await c.st();
-  await c.click('.toolbtn--ice');
+  // each prep runs the host's steps first: the guest's may find the prep over — then it goes again next round
+  if (s.phase !== 'PREP') return false;
+  if (!(await c.click('.toolbtn--ice', null, { optional: true, timeout: 4000 }))) {
+    if ((await c.st()).phase !== 'PREP') return false;
+    throw new Error(`${c.label}: nothing clickable for .toolbtn--ice during the prep`);
+  }
   await c.waitFor((x) => x.frozen !== s.frozen || x.phase !== 'PREP', 'freeze', 6000);
   assert.ok(await c.exists('.shopbar.is-frozen'), 'the frozen shop is tinted');
   await sleep(250);
@@ -378,7 +389,7 @@ async function moveOnBoard(c) {
 
 /**
  * Press on a board unit at `from`, carry it off its tile and back onto `home` (its own tile), release. `home` is aimed at
- * again after the pickup: the own prep board's deploy fold zooms the board then (GitHub #602, client.mjs aimedDrag).
+ * again after the pickup (client.mjs aimedDrag).
  */
 async function offAndBack(c, from, home) {
   const anchor = await groundAnchor(c.page, home);
@@ -402,7 +413,7 @@ async function reorientInPlace(c, dir = 'LEFT', { midShot = null } = {}) {
   const home = await c.tilePoint(unit.row, unit.col);
   if (!from || !home) return false;
   // off the tile and back: a plain drag whose release lands on the unit's own tile (aimed at again once the piece is
-  // picked up: the deploy fold zooms the board then — GitHub #602)
+  // picked up)
   await offAndBack(c, from, home);
   await chooseDirection(c, unit.uid, { row: unit.row, col: unit.col }, dir, { midShot });
   await sleep(500);
@@ -456,14 +467,12 @@ async function sellByTap(c, { shot = 'underframe' } = {}) {
   const unit = (await frontUnits(c, (b) => !b.golden && !b.items))[0];
   if (!unit) return false;
   const before = await c.st();
-  // no drag-to-sell zone: the shop bar folds away while a piece is carried (GitHub #602) and a release over its tab — DOM
-  // UI — puts the piece back; the unit stays on the board
-  const centre = (sel) => c.page.$eval(sel, (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }).catch(() => null);
+  // no drag-to-sell zone: a release over the shop bar — DOM UI — puts the piece back; the unit stays on the board
   const bar = await c.page.$eval('.shopbar__row', (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width * 0.45, y: r.top + r.height / 2 }; });
   const from = await c.piecePoint(unit.uid);
-  await c.drag(from, bar, { retarget: () => centre('.shopbar-tab') });
+  await c.drag(from, bar);
   await sleep(500);
-  assert.ok((await c.boardPieces()).some((b) => b.uid === unit.uid), `${c.label}: a release over the folded shop does not sell`);
+  assert.ok((await c.boardPieces()).some((b) => b.uid === unit.uid), `${c.label}: a release over the shop bar does not sell`);
   assert.equal(await c.exists('.sellzone'), false, 'no sell zone');
   assert.ok(await tapUnit(c, unit.uid), `${c.label}: tapping the unit opens its underframe`);
   assert.ok(await c.exists('.uframe__btn--retreat'), 'underframe: 撤退');
@@ -588,7 +597,7 @@ async function watchTeammatePrep(c) {
 }
 
 async function openSettings(c) {
-  await c.click('.gm__gear');
+  await c.click('.gm__gear:not(.dmgbtn__btn):not(.gm__guide):not(.gm__fs)'); // (fork) the damage meter's button is a .gm__gear too
   await c.page.waitForSelector('.modal', { timeout: 4000 });
   await sleep(300);
   await c.shot('settings');
@@ -677,7 +686,11 @@ async function checkFacingChain(c) {
   });
   assert.equal(r.err, undefined, `${c.label}: ${r.err}`);
   const chess = r.rows.filter((x) => x.kind === 'chess');
-  assert.ok(chess.length > 0, `${c.label}: board operators in the battle`);
+  if (!chess.length) {
+    // each prep runs the host's one-off steps first: the round can end before this seat deployed (checked in a later one)
+    c.note('facing chain: no operator on the board in this battle');
+    return null;
+  }
   for (const x of r.rows) {
     const tag = `${c.label} unit ${x.uid} (${x.want})`;
     if (x.kind === 'chess' || x.spec != null) assert.equal(x.spec, x.want, `${tag}: the BattleSpec carries the stored dir`);
@@ -725,7 +738,14 @@ async function observeAfterFinish(c) {
       observeAfterFinish.refusedChecked = true;
       await c.click('.team__row:not(.is-self) .team__btn', null, { nth: 0, optional: true, timeout: 2000 });
       await sleep(300);
-      assert.equal(await c.exists('.team__ob'), false, 'no 前往查看 while the own battle runs');
+      const offered = await c.exists('.team__ob');
+      if (offered && (await runnerState(c))?.done) {
+        // the own battle ended within the tap (localDone is the runner's done): 前往查看 is right — check a later battle
+        observeAfterFinish.refusedChecked = false;
+        await c.click('.team__row:not(.is-self) .team__btn', null, { nth: 0, optional: true, timeout: 1000 });
+        return false;
+      }
+      assert.equal(offered, false, 'no 前往查看 while the own battle runs');
       c.note('own battle running: a teammate row offers no 前往查看');
     }
     return false;
@@ -787,7 +807,7 @@ async function dropOnTile(c, uid, tile) {
   return to;
 }
 
-/** The same with touch input (pointerType 'touch': CDP touch events), aimed at `to` again after the pickup (GitHub #602). */
+/** The same with touch input (pointerType 'touch': CDP touch events), aimed at `to` again after the pickup. */
 async function touchDrag(c, from, to, steps = 12) {
   const t = c.page.touchscreen;
   const anchor = await groundAnchor(c.page, to);
@@ -983,12 +1003,11 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
     try {
       await c.open();
       await c.enter('推进之王');
-      await c.click('.mode-card', '独立模拟');
-      await c.click('.diff-card', '标准模拟');
-      await c.click('.create-box button', '开始独立模拟');
+      await c.createSolo('标准模拟');
       await c.waitFor((s) => !!s.room, 'solo room');
-      if (!(await c.st()).phase) await c.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      if (!(await c.st()).phase) await c.roomStart({ timeout: 20000 });
       await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+      await c.settled('.brief-go');
       await c.click('.brief__foot .btn--primary', '准备就绪');
       await c.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
       await c.click('.dband', null, { nth: 2 });
@@ -1026,21 +1045,19 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
   });
 
   test(`co-op: 2 humans + 1 AI, lobby → briefing → band draft → ${ROUNDS} rounds`, { skip: !!ONLY && ONLY !== 'coop', timeout: 40 * 60 * 1000 }, async () => {
-    const srv = await startRealServer();
+    // (verbose: forcedDisconnect reads the server's takeover line)
+    const srv = await startRealServer(TIMER_SCALE !== 1 ? { fast: { timerScale: TIMER_SCALE, verbose: true } } : {});
     const P = await pptr();
     const host = new Client(P, srv.base, 'host', { prefix: 'coop' });
     const guest = new Client(P, srv.base, 'guest', { w: 1280, h: 720, prefix: 'coop' });
     const both = [host, guest];
     const did = { watched: false, watchedPrep: false, sold: false, reoriented: false, leveled: false, refreshed: false, froze: false, itemBought: false, equipped: false,
       inspected: false, shopDetail: false, bond: false, enemies: -1, info: false, emote: false, moved: false, bench: false, settings: false, guideGame: false,
-      reward: 0, sp: 0, unite: false, combatRounds: new Set(), takeover: false, lpChanged: false, settledBy: new Set(), facingTurned: 0 };
+      reward: 0, sp: 0, unite: false, combatRounds: new Set(), takeover: false, lpChanged: false, settledBy: new Set(), facingTurned: 0, facingChecked: new Set() };
     const lps = new Map();
     try {
-      // ---- title, 玩法说明, lobby, room --------------------------------------------------------------------------
+      // ---- lobby (no title screen since 2026-10-15), 玩法说明, room ------------------------------------------------
       await host.open();
-      await sleep(900);
-      await host.shot('title');
-      await openGuide(host, '.title-guide', 'guide-title');
       await host.enter('凯尔希');
       await sleep(400);
       await host.shot('lobby');
@@ -1049,20 +1066,20 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
       const room = await host.createCoop('险境模拟');
       await host.click('button', '添加 AI 队友');
       await guest.open(`?room=${room.code}`);
-      await guest.shot('title');
+      await guest.shot('invite');
       await guest.enter('阿米娅');
       await guest.waitFor((s) => s.room?.code === room.code, 'guest joined via the invite link');
-      await guest.click('.room-bar__right button', '准备就绪');
+      await guest.roomReady();
       await sleep(500);
       await host.shot('room');
       await guest.shot('room');
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
 
       // ---- briefing -----------------------------------------------------------------------------------------------
       for (const c of both) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
       await sleep(1200);
       for (const c of both) await c.shot('briefing');
-      for (const c of both) await c.click('.brief__foot .btn--primary', '准备就绪');
+      for (const c of both) { await c.settled('.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
 
       // ---- band draft -----------------------------------------------------------------------------------------------
       for (const c of both) await c.waitFor((s) => s.phase !== 'INFO_CHECK', 'band draft', 40000);
@@ -1210,7 +1227,8 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
               await c.page.waitForFunction(() => { const s = globalThis.__SP_RUNNER__?.state(); return !!s && !s.loading && s.kind === 'normal'; }, { timeout: 15000 }).catch(() => {});
               const rs = await runnerState(c);
               assert.ok(rs && rs.kind === 'normal' && rs.own, `${c.label} runs its own battle locally (${JSON.stringify(rs)})`);
-              did.facingTurned += await checkFacingChain(c);
+              const turned = await checkFacingChain(c);
+              if (turned != null) { did.facingTurned += turned; did.facingChecked.add(c.label); }
             }
             if (!did.takeover && hs.round >= 2) did.takeover = await forcedDisconnect(guest, srv);
             // wait for either human's own battle to end while a teammate still fights, then observe it
@@ -1267,6 +1285,7 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
       }
       assert.ok(did.enemies >= 0, 'enemy drawer opened');
       assert.ok(did.facingTurned > 0, 'an UP / LEFT / DOWN unit went through the whole facing chain');
+      assert.deepEqual([...did.facingChecked].sort(), ['guest', 'host'], 'each browser\'s board went through the facing chain in a battle');
       assert.ok(did.sp >= 1, '机变 picked in round 3');
       assert.deepEqual(problemsOf(both), [], 'no console errors, page errors, failed requests or HTTP errors');
     } finally {
@@ -1285,14 +1304,13 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
     try {
       await solo.open();
       await solo.enter('杜宾');
-      await solo.click('.mode-card', '独立模拟');
-      await solo.click('.diff-card', '绝境模拟');
-      await solo.click('.create-box button', '开始独立模拟');
+      await solo.createSolo('绝境模拟');
       await solo.waitFor((s) => !!s.room, 'solo room');
-      if (!(await solo.st()).phase) await solo.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      if (!(await solo.st()).phase) await solo.roomStart({ timeout: 20000 });
       await solo.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
       await sleep(900);
       await solo.shot('briefing');
+      await solo.settled('.brief-go');
       await solo.click('.brief__foot .btn--primary', '准备就绪');
       await solo.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
       await sleep(700);
@@ -1347,12 +1365,11 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
     try {
       await c.open();
       await c.enter('煌');
-      await c.click('.mode-card', '独立模拟');
-      await c.click('.diff-card', '标准模拟');
-      await c.click('.create-box button', '开始独立模拟');
+      await c.createSolo('标准模拟');
       await c.waitFor((s) => !!s.room, 'solo room');
-      if (!(await c.st()).phase) await c.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      if (!(await c.st()).phase) await c.roomStart({ timeout: 20000 });
       await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+      await c.settled('.brief-go');
       await c.click('.brief__foot .btn--primary', '准备就绪');
       await c.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
       await c.click('.dband', null, { nth: 0 });
@@ -1397,18 +1414,24 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
         assert.deepEqual(bossPrep.pf, { kind: 'bossPrep', side: 'L', mirror: false }, 'solo: the left half');
         assert.equal(bossPrep.err, null, 'a deploy in the boss-round prep lands on its board tile with its direction');
       } else c.note('the run ended before the boss round');
-      await c.page.waitForSelector('[data-testid="settle"]', { timeout: 10000 });
-      // the radar intro gives way to my own report by itself (screens/settle.js INTRO_MS)
-      await c.page.waitForSelector('[data-testid="settle-self"]', { timeout: 10000 });
-      await sleep(2000);
-      await c.shot('screen');
-      assert.equal(await c.page.$$eval('.sops .sop', (els) => els.length), 10, 'the report shows the ten lineup slots');
-      await c.click('.settle__next');
-      await c.page.waitForSelector('[data-testid="settle-team"]', { timeout: 10000 });
-      await sleep(1000);
+      await c.page.waitForSelector('.screen.result', { timeout: 10000 });
+      // the settlement flow (screens/settle.js, the 2026-10-14 interface): radar intro → 个人战报 → 下一步 → 同盟,
+      // whose 数据详情 opens the full report (ResultView, one .rcard a seat) over it
+      await c.page.waitForSelector('.settle__next', { visible: true, timeout: 15000 });
+      await c.settled('.settle__next');
+      await c.shot('self');
+      await c.click('.settle__next', '下一步');
+      await c.page.waitForSelector('.settle--team .steam__detail', { visible: true, timeout: 10000 });
+      await c.settled('.steam__detail');
       await c.shot('team');
-      const players = await c.page.$$eval('.tcard', (els) => els.length);
+      await c.click('.steam__detail', '数据详情');
+      await c.page.waitForSelector('.settle__detail .rcard', { visible: true, timeout: 10000 });
+      await sleep(800);
+      await c.shot('screen');
+      const players = await c.page.$$eval('.settle__detail .rcard', (els) => els.length);
       assert.equal(players, 1, 'one player card');
+      await c.click('.settle__detail .result__foot button');
+      await c.page.waitForSelector('.settle__detail', { hidden: true, timeout: 5000 });
       await c.click('.settle__back');
       await c.page.waitForSelector('.room-screen, .lobby-screen', { timeout: 15000 });
       await sleep(500);

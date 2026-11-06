@@ -1,5 +1,5 @@
 ﻿<#
-  卫戍协议：盟约 · Windows 启动脚本（PowerShell 版）。文档：docs\DEPLOY.md
+  卫戍协议：盟约 · Windows 启动脚本（PowerShell 版）。文档：docs\operations\DEPLOY.md
   运行：右键 →「使用 PowerShell 运行」，或
         powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 [-Port 3001] [launch.mjs 的其他参数]
   检查 Node.js（没有时可用 winget 安装）→ 首次运行 npm ci → tools\setup.mjs → 启动服务器并打开浏览器。
@@ -31,7 +31,7 @@ function Test-Node {
 
 $node = Test-Node
 if (-not $node) {
-  Write-Host '未找到 Node.js（需要 22 或更高，22 / 24 LTS）。' -ForegroundColor Yellow
+  Write-Host '未找到 Node.js（只支持 Node.js 24 LTS）。' -ForegroundColor Yellow
   $winget = Get-Command winget -ErrorAction SilentlyContinue
   if ($winget) {
     Write-Host '可以用 Windows 自带的 winget 安装：  winget install OpenJS.NodeJS.LTS'
@@ -49,8 +49,8 @@ if (-not $node) {
     Pause-Exit 1
   }
 }
-if ($node.Major -lt 22) {
-  Write-Host "Node.js $($node.Version) 太旧，需要 22 或更高：winget upgrade OpenJS.NodeJS.LTS  或  https://nodejs.org/zh-cn/download" -ForegroundColor Red
+if ($node.Major -lt 24) {
+  Write-Host "Node.js $($node.Version) 太旧，只支持 Node.js 24（LTS）：winget upgrade OpenJS.NodeJS.LTS  或  https://nodejs.org/zh-cn/download" -ForegroundColor Red
   Pause-Exit 1
 }
 

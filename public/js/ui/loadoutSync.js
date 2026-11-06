@@ -1,5 +1,4 @@
-// Operator loadout + ownership + 自选编队 + 干员皮肤 state and server sync (DESIGN §16; 干员持有 — 0.2.0 补位; 自选编队 —
-// 0.2.0 DIY; 干员皮肤 — docs/SKINS.md).
+// Operator loadout + ownership + 自选编队 state and server sync (DESIGN §16; 干员持有 — 0.2.0 补位; 自选编队 — 0.2.0 DIY).
 //
 // `loadoutStore` holds the per-browser loadout (`entries`, persisted in localStorage through store.js savePref), the
 // per-browser not-owned list of the 干员持有 tab (`notOwned`, likewise), the 自选编队 picks (`diy`, likewise; with
@@ -12,14 +11,11 @@
 // edit (debounced; a pending edit goes out at once when the overlay closes), they send `room.loadout { entries, ops }`
 // (sanitised against the loaded data/chess.json: ui/loadoutModel.js sanitizeEntries — a stale entry is dropped, never
 // the whole loadout; `ops` = the per-operator 潜能 / 练度 of 0.2.2, sanitizeOps against chess.json + backups.json), `room.ownership { notOwned }` (sent as stored: the server keeps the droppable chess and drops
-// the rest, so no data is needed), `room.diy { picks }` (sent as stored, structurally clean: the server keeps the
-// legal picks) and `room.skins { skins }` (ui/skins.js' own store; sent as stored, since an appearance lives in a
-// cosmetic plugin's overlay and can only fail to resolve — and unlike the three above it is accepted in ANY phase, so a
-// match takes it at once). Replies: RATE → retried later; WRONG_PHASE / ROOM_STARTED → the running match keeps what it
-// took (the loadout locks when INFO_CHECK ends; the ownership and the 自选 picks never change during a match) — stored
-// for the next match, not an error for the player; anything else is logged. `sync` / `ownSync` / `diySync` /
-// `skinsSync` ∈ 'idle' | 'pending' | 'sending' | 'synced' | 'locked' | 'error' are mirrored into the store for the
-// screen's status line.
+// the rest, so no data is needed) and `room.diy { picks }` (sent as stored, structurally clean: the server keeps the
+// legal picks). Replies: RATE → retried later; WRONG_PHASE / ROOM_STARTED → the running match keeps what it took (the
+// loadout locks when INFO_CHECK ends; the ownership and the 自选 picks never change during a match) — stored for the
+// next match, not an error for the player; anything else is logged. `sync` / `ownSync` / `diySync` ∈ 'idle' |
+// 'pending' | 'sending' | 'synced' | 'locked' | 'error' are mirrored into the store for the screen's status line.
 // A room with gameplay plugins (DESIGN §32.6): data.js then shows the room's content set, so what goes out is checked
 // against the room's data (its operators too); the stored settings keep every entry — one the room does not know is
 // only left out of what is sent, never deleted. Whenever the room's content set arrives or goes (content.js contentSet)
@@ -46,13 +42,14 @@ import { POTENTIAL_DEFAULT, CULTIVATE_DEFAULT } from '../../../shared/potential.
 import { ruleOption } from '../../../shared/plugins/rules.js';
 import { OWNERSHIP_PREF, parseStoredOwnership, parseStoredOwnershipChars, toStoredOwnership, toStoredOwnershipV1, cleanIds, sanitizeNotOwned,
   notOwnedView, rebaseChars } from './ownershipModel.js';
-import { parseStoredDiy, toStoredDiy, cleanPicks, sanitizeDiyPicks, diyPrefKey } from './diyModel.js';
-import { skinsStore, SKINS_KEY, SKINS_SYNC_KEY, parseStoredSkins } from './skins.js';
+import { DIY_PREF, parseStoredDiy, toStoredDiy, cleanPicks, sanitizeDiyPicks, diyPrefKey } from './diyModel.js';
+import { skinsStore, SKINS_KEY, SKINS_SYNC_KEY, parseStoredSkins, setSkins as storeSkins } from './skins.js';
 import { cardStore, CARD_KEY, CARD_SYNC_KEY, cardOperators } from './seatArt.js';
 import { needsContent, serverDefaultVersion } from '../versions.js';
 import { DEFAULT_VERSION } from '../../../shared/versions.js';
 import { toast } from './toasts.js';
 import { t, N_ } from '../../../shared/i18n.js';
+import { prepareOperatorPreset } from './operatorPresetModel.js';
 
 export const SYNC_DEBOUNCE_MS = 500;
 export const RETRY_MS = 1500;
@@ -70,11 +67,39 @@ function readStoredDiy(version = DEFAULT_VERSION) {
   try { return parseStoredDiy(loadPref(diyPrefKey(version), null)); } catch { return {}; }
 }
 
+/** Replace the browser's skin choices (docs/SKINS.md): `skinsStore` (ui/skins.js) is the one store the screens and the
+ * render read, and it persists the plain `{ [charId]: skin }` map; the preset's skins section goes through it. */
+export function setSkins(choices) { storeSkins(choices); }
+
+/** Validate all included sections, then publish one local change; existing ordered sync engines retain their locks. */
+export function applyOperatorPreset(parsed, deps, { target = loadoutStore, persist = savePref } = {}) {
+  const result = prepareOperatorPreset(parsed, deps);
+  if (!result.ok) return result;
+  const formats = { notOwned: [OWNERSHIP_PREF, toStoredOwnership], diy: [DIY_PREF, toStoredDiy] };
+  const current = target.get?.() || {};
+  let loadoutSaved = false;
+  for (const [key, value] of Object.entries(result.patch)) {
+    if (key === 'entries' || key === 'ops') {
+      if (loadoutSaved) continue;
+      loadoutSaved = true;
+      try { persist(LOADOUT_PREF, toStored(result.patch.entries ?? current.entries, result.patch.ops ?? current.ops)); }
+      catch { /* blocked storage: keep the coherent in-memory preset */ }
+      continue;
+    }
+    if (key === 'skins') { storeSkins(value); delete result.patch.skins; continue; }
+    const [pref, format] = formats[key];
+    try { persist(pref, format(value)); } catch { /* blocked storage: keep the coherent in-memory preset */ }
+  }
+  target.set(result.patch);
+  return result;
+}
+
 /**
  * Loadout + ownership + screen state (separate from the app store: it must survive room / match resets). By operator
  * (DESIGN §35.23): `byChar` / `notOwnedChars` are the stored settings (null while a v1 store waits for its migration);
  * `entries` / `notOwned` are their views by the chess ids of the data on screen (what the screens and the sync read);
- * `diy` is the picks of the version on screen (`diyVersion`).
+ * `diy` is the picks of the version on screen (`diyVersion`). The 皮肤 choices are not here — they live in `skinsStore`
+ * (ui/skins.js), the store the render and every screen reads.
  */
 export const loadoutStore = createStore({
   entries: legacyEntries || {},
@@ -435,9 +460,9 @@ export function canSendSettings({ store: app = store, content = appContentSet, c
  * content change only when the payload changed (a version switch or a room's arrival then spends no heavy-message budget
  * on them).
  */
-function installPrefSync({ net, timers, target, notify, key, stateKey, msgType, field, prepare, lockedText, tag, content = appContentSet, gate = null, app = store, seatBound = true }) {
+export function installPrefSync({ net, timers, target, notify, key, stateKey, msgType, field, prepare, lockedText, tag, content = appContentSet, gate = null, app = store, seatBound = true }) {
   const T = timers || { setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms), clearTimeout: (id) => globalThis.clearTimeout(id) };
-  // (`lockedText` is a msgid: the toast is translated when it shows — docs/I18N.md)
+  // (`lockedText` is a msgid: the toast is translated when it shows — docs/development/I18N.md)
   const tell = notify || ((text) => toast(t(text), 'warn'));
   let timer = null;
   let seq = 0;            // requests sent (the reply of an older one never overrides a newer one's state)
@@ -483,7 +508,10 @@ function installPrefSync({ net, timers, target, notify, key, stateKey, msgType, 
       pendingJson = json;
       setState('sending');
       try {
-        await net.request(msgType, field ? { [field]: payload } : payload);
+        const c = content?.get();
+        const fields = field ? { [field]: payload } : { ...payload };
+        if (['room.loadout', 'room.ownership', 'room.diy'].includes(msgType) && c?.status === 'ready' && c.cs) fields.cs = c.cs;
+        await net.request(msgType, fields);
         if (my !== seq) return;
         pendingJson = null;
         lastSent = json;

@@ -473,7 +473,8 @@ export function presetCamera(kind, viewport, options) {
   const base = wide ? preset : CAMERA_PRESETS[k === 'prep' || k === 'bossPrep' ? 'prep' : 'normal'];
   return fitCamera(rect, viewport, {
     tilt: finite(opts.tilt, base.tilt), dist: finite(opts.dist, base.dist),
-    margin: finite(opts.margin, preset.margin), headroom: finite(opts.headroom, preset.headroom),
+    margin: finite(opts.margin, preset.margin),
+    headroom: finite(opts.headroom, preset.headroom),
     maxTilePx: opts.maxTilePx, minTilePx: opts.minTilePx,
   });
 }

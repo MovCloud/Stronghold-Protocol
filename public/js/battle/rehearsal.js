@@ -23,9 +23,10 @@
 //   installRehearsal({ net, runner, createWorker, log }) → { pending(), clear(), dispose() } | null   (wired in main.js)
 
 import { battleRunner } from './runner.js';
+import { genUrl } from '../gen.js';
 
 /** The module Worker that simulates the candidates (public/ is served at the root). */
-export const WORKER_URL = '/js/battle/rehearsalWorker.js';
+export const WORKER_URL = genUrl('/js/battle/rehearsalWorker.js'); // (fork) in this page's server generation
 /** Tasks kept while the single worker is busy; one more may always run. */
 export const MAX_PENDING_TASKS = 3;
 
@@ -155,6 +156,7 @@ export function installRehearsal({ net, runner = battleRunner, createWorker = ()
   function onTask(msg) {
     if (!msg || typeof msg !== 'object' || typeof msg.taskId !== 'string' || typeof msg.playerId !== 'string'
       || !Number.isFinite(msg.cap) || !Array.isArray(msg.specs)) return;
+    // limits: the optional stage / tickBudget of the run (server/sim/rehearsal.js rehearsalLimits re-checks them)
     const task = { id: msg.taskId, playerId: msg.playerId, cap: msg.cap, specs: msg.specs, limits: msg.limits, settled: false };
     // past the queue, or a spec that names a content set: answer now, so the server rehearses on its own data
     if (broken || queue.length >= MAX_PENDING_TASKS || !rehearsalSpecsAreOfficial(msg.specs)) { answer(task, { error: true }); return; }

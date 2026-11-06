@@ -6,13 +6,12 @@
    whole UI is authored in design pixels ÷ 100 (e.g. 24px → .24rem). The rule never drops below
    40px, which keeps it clear of CJK browsers' minimum-font-size clamping. 1px hairlines stay px.
    设置 → 异形屏适配 →「界面大小」 (ui/screenFit.js, DESIGN §35.43) multiplies the root by --sp-ui
-   (75–100 %, unset = 1: the design itself; only at 文字大小 小); every max(rem, px) floor carries the
-   same factor, a size floor never below min(its px, 32px), the font-size floors never (test/ui/ui-size.test.js).
+   (70–120 %, unset = 1: the design itself, at every 文字大小 step); every max(rem, px) floor carries the
+   same factor, a size floor never below min(its px, 32px) (test/ui/ui-size.test.js).
    ========================================================================================== */
 
 :root {
   color-scheme: dark;
-
   /* surfaces */
   --bg-0: #0c0f0e;
   --bg-1: #141816;
@@ -23,7 +22,6 @@
   --line: #2f3a35;
   --line-2: #3e4b45;
   --line-3: #58675f;
-
   /* accents (official hex values where research marks [DATA]) */
   --mint-500: #4ed8af;
   --mint-400: #59f4ca;
@@ -50,20 +48,17 @@
   --ice: #9fd4ff;
   --ice-a20: rgba(159, 212, 255, .2);
   --ice-900: #14283a;
-
   /* text */
   --text-hi: #f2f2f2;
   --text-md: #c3cbc7;
   --text-lo: #8a948f;
   --text-dim: #5d6863;
   --text-on-mint: #06110d;
-
   /* difficulty (shared/constants.js DIFFICULTY_COLORS) */
   --diff-funny: #f6a329;
   --diff-normal: #e85a1a;
   --diff-hard: #e73118;
   --diff-abyss: #ff0024;
-
   /* chess tier accents (I–VI), sampled from the official tier chips (img_chess_level_1..6) */
   --tier-1: #a8a8a8;
   --tier-2: #f2f2f2;
@@ -71,7 +66,6 @@
   --tier-4: #34b8d8;
   --tier-5: #f8bf00;
   --tier-6: #f88000;
-
   /* shop level tag colours (shopLevelDisplayDataDict) */
   --lv-1: #434343;
   --lv-2: #626654;
@@ -79,7 +73,6 @@
   --lv-4: #615b74;
   --lv-5: #6c5e41;
   --lv-6: #5d341e;
-
   /* type */
   /* the Han / Hangul faces follow <html lang> (ui/lang.js htmlLang; the :lang() rules below): Simplified Chinese by default */
   --cjk-faces: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans SC', 'Noto Sans CJK SC';
@@ -87,14 +80,12 @@
   --font-num: 'Bender', 'Rajdhani', 'Oxanium', var(--cjk-faces), sans-serif;
   --font-display: 'Novecento', 'Novecento Wide', 'Oxanium', 'Rajdhani', var(--cjk-faces), sans-serif;
   --font-mono: 'Bender', 'Oxanium', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
-
   /* motion */
   --ease-out: cubic-bezier(.2, .8, .2, 1);
   --ease-in-out: cubic-bezier(.6, 0, .3, 1);
   --t-fast: 150ms;
   --t-med: 200ms;
   --t-slow: 250ms;
-
   /* layers */
   --z-screen: 1;
   --z-banner: 40;
@@ -103,20 +94,27 @@
   --z-toast: 90;
   --z-tooltip: 95;
   --z-rotate: 100;
-
   /* bracket corners (see .brackets) */
   --bk-c: var(--mint-500);
   --bk-l: .14rem;
   --bk-w: 2px;
 }
 
-/* Language packs (docs/I18N.md): the same characters take their own glyph forms per language — Japanese kanji,
+/* Language packs (docs/development/I18N.md): the same characters take their own glyph forms per language — Japanese kanji,
    Traditional Chinese, a Korean face for Hangul (each stack falls back to the Simplified Chinese faces). */
+
 :root:lang(ja) { --cjk-faces: 'Noto Sans JP', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP', 'Noto Sans SC', 'Microsoft YaHei'; }
+
 :root:lang(ko) { --cjk-faces: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans CJK KR', 'Noto Sans SC', 'Microsoft YaHei'; }
+
 :root:lang(zh-TW) { --cjk-faces: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', 'Noto Sans SC', 'Microsoft YaHei'; }
 
+/* Korean breaks at its word spaces, not between syllables (as the CJK default would). */
+
+:root:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
+
 /* ---- root scale ----------------------------------------------------------------------------- */
+
 html {
   font-size: calc(clamp(40px, min(calc(100vw / 19.2), calc(100vh / 10.8)), 240px) * var(--sp-ui, 1));
   /* mobile browsers: 100vh is the height with the toolbars hidden — the small viewport (svh; Safari 15.4+, Chrome 108+,
@@ -126,6 +124,16 @@ html {
   text-size-adjust: 100%;
   height: 100%;
   background: var(--bg-0);
+}
+
+/* 异形屏适配 (设置, ui/screenFit.js; the 2026-10-14 hub design): while <html data-fit> holds the player's own insets, the
+   layout root is computed from the box inside them — the rule above with the insets taken off, times 界面大小 (--sp-ui) as
+   well. The svh lines only where svh exists, for the same reason (the insets are var()s). */
+
+html[data-fit] { font-size: clamp(40px, min(calc((100vw - var(--fit-l, 0px) - var(--fit-r, 0px)) / 19.2), calc((100vh - var(--fit-t, 0px) - var(--fit-b, 0px)) / 10.8)), 240px) * var(--sp-ui, 1); }
+
+@supports (height: 100svh) {
+  html[data-fit] { font-size: clamp(40px, min(calc((100vw - var(--fit-l, 0px) - var(--fit-r, 0px)) / 19.2), calc((100svh - var(--fit-t, 0px) - var(--fit-b, 0px)) / 10.8)), 240px) * var(--sp-ui, 1); }
 }
 
 /* ---- text root: 设置 →「文字大小」 ---------------------------------------------------------------
@@ -138,17 +146,24 @@ html {
    clientHeight (render/app.js), which no font-size can reach.
    小 = 1rem reproduces the design's own sizes exactly, on every device. The other steps keep the
    desktop gentle and lift the phone: 1rem there is clamped at 40 px by the rule above, which is what
-   made the .18rem body text 7.2 CSS px. 界面大小 (--sp-ui, at most 1) never shrinks these px floors, and
-   it applies at 小 only (ui/screenFit.js effectiveUi): the kept 64 / 76 / 88 px floors of 中 / 大 / 特大
-   outgrew boxes that shrank, so those steps keep 100 %. 小 has no floor and follows the layout, which keeps
-   every label in its box (body text ≈ 5.4 CSS px at 75 % on a phone; DESIGN §35.43, [ASSUMED]). */
+   made the .18rem body text 7.2 CSS px. 界面大小 (--sp-ui, 70–120 %) scales these px floors, as it has in this repo
+   since the factor existed: the text floors shrink with it, so a step already at its floor stays inside the boxes that
+   shrink with the interface (the upstream 小-only restriction came from the floors being unscaled, which they are not
+   here). 小 has no floor and follows the layout, which keeps every label in its box (body text ≈ 5.4 CSS px at 70 % on
+   a phone; DESIGN §35.43, [ASSUMED]). */
+
 :root { --t: 1rem; }
-:root[data-text="md"] { --t: max(1rem, 64px); }
-:root[data-text="lg"] { --t: max(calc(1rem * 1.15), 76px); }
-:root[data-text="xl"] { --t: max(calc(1rem * 1.3), 88px); }
+
+:root[data-text="md"] { --t: max(1rem, calc(64px * var(--sp-ui, 1))); }
+
+:root[data-text="lg"] { --t: max(calc(1rem * 1.15), calc(76px * var(--sp-ui, 1))); }
+
+:root[data-text="xl"] { --t: max(calc(1rem * 1.3), calc(88px * var(--sp-ui, 1))); }
+
 /* On a short screen (≤ 520 px tall, where 1rem is 40–48 px) --t is 64 / 76 / 88 px at 中 / 大 / 特大: --t-step is 0 at 中,
    1 px at 大, 2 px at 特大 (below 0 at 小). A px cap written as calc(N px + var(--t-step)) still grows a pixel a step there,
    so 文字大小 keeps changing the text above 中 (§35.18 review). Meant for those caps only. */
+
 :root { --t-step: calc((var(--t) - 64px) / 12); }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -172,19 +187,33 @@ body {
 }
 
 input, textarea, [contenteditable], .selectable { -webkit-user-select: text; user-select: text; }
+
 button, input, select, textarea { font: inherit; color: inherit; }
+
 button { cursor: pointer; }
+
 img { max-width: 100%; }
+
 h1, h2, h3, h4, p { margin: 0; }
+
 :focus { outline: none; }
+
 :focus-visible { outline: 2px solid var(--mint-400); outline-offset: 2px; }
 
 ::selection { background: var(--mint-500); color: var(--text-on-mint); }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--line-2); }
-::-webkit-scrollbar-thumb:hover { background: var(--mint-700); }
+* {
+  scrollbar-width: none !important;
+  scrollbar-color: transparent transparent !important;
+}
+
+::-webkit-scrollbar { width: 0px !important; height: 0px !important; background: transparent !important; }
+
+::-webkit-scrollbar-track { background: transparent !important; }
+
+::-webkit-scrollbar-thumb { background: transparent !important; }
+
+::-webkit-scrollbar-thumb:hover { background: transparent !important; }
 
 .sr-only {
   position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -192,8 +221,11 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 /* ---- typography helpers ---------------------------------------------------------------------- */
+
 .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+
 .display { font-family: var(--font-display); text-transform: uppercase; letter-spacing: .12em; }
+
 .micro {
   font-family: var(--font-display);
   font-size: calc(.11 * var(--t));
@@ -203,23 +235,40 @@ h1, h2, h3, h4, p { margin: 0; }
   color: var(--text-dim);
   white-space: nowrap;
 }
+
 .micro--mint { color: var(--mint-700); }
+
 .micro--gold { color: #9c7c16; }
+
 .micro--hi { color: var(--text-lo); }
+
 .t-mint { color: var(--mint-500); }
+
 .t-gold { color: var(--gold); }
+
 .t-amber { color: var(--amber); }
+
 .t-orange { color: var(--orange-hi); }
+
 .t-red { color: var(--red-premium); }
+
 .t-ice { color: var(--ice); }
+
 .t-lo { color: var(--text-lo); }
+
 .t-dim { color: var(--text-dim); }
 
 /* ---- bracket corners: 4 L-shaped corners drawn with gradients on ::after ---------------------- */
+
 .brackets { position: relative; }
+
 .brackets::after {
   content: '';
   position: absolute;
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  bottom: -1px;
   inset: -1px;
   pointer-events: none;
   background:
@@ -235,10 +284,18 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 /* ---- texture overlays -------------------------------------------------------------------------- */
+
 .fx-scan { position: relative; }
+
 .fx-scan::before {
   content: '';
   position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
   inset: 0;
   pointer-events: none;
   background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .028) 0 1px, transparent 1px 3px);
@@ -251,6 +308,7 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 /* ---- global app backdrop (behind every screen) ------------------------------------------------- */
+
 .app-root {
   position: fixed;
   inset: 0;
@@ -268,30 +326,29 @@ h1, h2, h3, h4, p { margin: 0; }
     radial-gradient(80% 60% at 50% 40%, rgba(40, 60, 52, .35), transparent 70%),
     linear-gradient(180deg, #0b0e0d 0%, #0e1311 55%, #0a0d0c 100%);
 }
+
 .app-bg::before {
   /* faint survey grid */
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(rgba(78, 216, 175, .045) 1px, transparent 1px) 0 0 / .8rem .8rem,
-    linear-gradient(90deg, rgba(78, 216, 175, .045) 1px, transparent 1px) 0 0 / .8rem .8rem;
+  background: linear-gradient(rgba(78, 216, 175, .045) 1px, transparent 1px) 0 0 / .8rem .8rem, linear-gradient(90deg, rgba(78, 216, 175, .045) 1px, transparent 1px) 0 0 / .8rem .8rem;
   -webkit-mask-image: radial-gradient(90% 80% at 50% 50%, #000 30%, transparent 85%);
   mask-image: radial-gradient(90% 80% at 50% 50%, #000 30%, transparent 85%);
 }
+
 .app-bg::after {
   /* grain + scanlines + vignette */
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, .02) 0 1px, transparent 1px 3px),
-    radial-gradient(130% 100% at 50% 50%, transparent 55%, rgba(0, 0, 0, .65) 100%),
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .75  0 0 0 0 .85  0 0 0 0 .8  0 0 0 .6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.35'/></svg>");
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .02) 0 1px, transparent 1px 3px), radial-gradient(130% 100% at 50% 50%, transparent 55%, rgba(0, 0, 0, .65) 100%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .75 0 0 0 0 .85 0 0 0 0 .8 0 0 0 .6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.35'/></svg>");
   opacity: .9;
 }
 
 /* ---- screens ------------------------------------------------------------------------------------ */
+
 .screen {
   position: absolute;
   inset: 0;
@@ -301,8 +358,12 @@ h1, h2, h3, h4, p { margin: 0; }
   overflow: hidden;
   animation: screen-in var(--t-slow) var(--ease-out) backwards;
 }
+
 /* Opacity only: a transform here would become the containing block of fixed overlays. */
-@keyframes screen-in { from { opacity: 0; } }
+
+@keyframes screen-in {
+  from { opacity: 0; }
+}
 
 .screen__scroll {
   flex: 1 1 auto;
@@ -311,6 +372,7 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 /* crosshair "+" marks used as decoration */
+
 .cross {
   position: absolute;
   width: .22rem;
@@ -323,8 +385,15 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 /* ---- boot splash (index.html, removed by main.js) ------------------------------------------- */
+
 .boot {
   position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
   inset: 0;
   display: grid;
   place-items: center;
@@ -332,23 +401,105 @@ h1, h2, h3, h4, p { margin: 0; }
   z-index: 200;
   transition: opacity 250ms ease;
 }
+
 .boot.is-done { opacity: 0; pointer-events: none; }
+
 .boot__inner { display: grid; justify-items: center; gap: .18rem; }
+
 .boot__hex {
-  width: .64rem;
-  height: .64rem;
-  border: 2px solid var(--mint-500);
-  clip-path: polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0 50%);
+  width: .86rem;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(78, 216, 175, .55);
+  border-radius: 22%;
   animation: boot-spin 1.4s linear infinite;
-  background: linear-gradient(135deg, transparent 45%, rgba(78, 216, 175, .35) 50%, transparent 55%);
+  background: #071110;
+  box-shadow: 0 0 .22rem rgba(78, 216, 175, .28);
 }
+
+.boot__hex img { display: block; width: 100%; height: 100%; aspect-ratio: 1; object-fit: cover; object-position: center; }
+
 .boot__text { font-family: var(--font-display); font-size: .13rem; letter-spacing: .4em; color: var(--mint-700); }
+
+.boot__status { min-height: .22rem; color: var(--text-lo); font-size: .15rem; text-align: center; }
+
+.boot__progress { width: min(5.2rem, 70vw); height: .06rem; overflow: hidden; background: rgba(78, 216, 175, .12); border: 1px solid var(--line); }
+
+.boot__progress span { display: block; width: 100%; height: 100%; transform: scaleX(0); transform-origin: left; background: var(--mint-500); box-shadow: 0 0 .14rem rgba(23, 249, 183, .5); transition: transform 160ms ease-out; }
+
+.boot__detail { max-width: min(6.5rem, 88vw); color: var(--text-lo); font-size: .12rem; text-align: center; line-height: 1.6; }
+
+.boot__retry { padding: .1rem .22rem; border: 1px solid var(--mint-700); background: rgba(78, 216, 175, .08); color: var(--mint-400); font: inherit; cursor: pointer; }
+
+.boot__retry:hover { background: rgba(78, 216, 175, .16); }
+
+.boot__ready { color: var(--mint-700); font-size: .12rem; text-align: center; min-height: .2rem; }
+
+.boot [hidden] { display: none !important; }
+
+.boot__audio { display: flex; gap: .12rem; }
+
+.boot__music { padding: .08rem .18rem; border: 1px solid var(--line); background: transparent; color: var(--mint-400); font: inherit; font-size: .13rem; cursor: pointer; }
+
+.boot__music:hover, .boot__music:focus-visible { border-color: var(--mint-500); background: rgba(78, 216, 175, .08); }
+
+/* download picker (boot.js + shared/resource-plan.js): the two optional groups; everything else is required */
+
+.boot__dl { width: min(5.8rem, 88vw); display: grid; gap: .06rem; padding: .12rem .14rem; border: 1px solid var(--line); background: rgba(0, 0, 0, .3); }
+
+.boot__dl-head { margin: 0; color: var(--text-lo); font-size: .14rem; }
+
+.boot__dl-head .num { color: var(--mint-400); }
+
+.boot__dl-row { display: flex; flex-wrap: wrap; gap: .06rem .18rem; }
+
+.boot__dl-opt { display: inline-flex; align-items: center; gap: .06rem; color: var(--text-md); font-size: .13rem; cursor: pointer; }
+
+.boot__dl-opt input { accent-color: var(--mint-500); }
+
+.boot__dl-note { margin: 0; color: var(--text-lo); font-size: .12rem; line-height: 1.6; }
+
+.boot__dl-btns { display: flex; gap: .08rem; }
+
+.boot__dl-btns .boot__retry { padding: .06rem .14rem; font-size: .13rem; }
+
+.boot__dl-local { display: flex; flex-wrap: wrap; align-items: center; gap: .08rem; }
+
+.boot__dl-local .boot__retry { padding: .06rem .14rem; font-size: .13rem; }
+
+.boot__dl-local .boot__dl-note { flex: 1 1 100%; }
+
+/* the start page's load choice (boot.js): 预下载 vs 边玩边下 — shown once, the saved choice (sp.pref.download) and a
+   complete local snapshot skip the page */
+
+.boot__choice-btns { display: flex; flex-wrap: wrap; gap: .08rem; justify-content: center; }
+
+.boot__choice-btn { padding: .07rem .18rem; border: 1px solid var(--mint-700); background: rgba(78, 216, 175, .08); color: var(--mint-400); font: inherit; font-size: .13rem; cursor: pointer; }
+
+.boot__choice-btn:hover { background: rgba(78, 216, 175, .16); }
+
+.boot__choice-btn--primary { background: var(--mint-500); border-color: var(--mint-500); color: #0d1110; font-weight: 700; }
+
+.boot__music:disabled { opacity: .45; cursor: default; }
+
 .boot__err { max-width: 6rem; text-align: center; color: var(--text-lo); font-size: .16rem; }
-@keyframes boot-spin { to { transform: rotate(360deg); } }
+
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* ---- rotate-device hint (portrait phones/tablets) ------------------------------------------- */
+
 .rotate-hint {
   position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
   inset: 0;
   z-index: var(--z-rotate);
   display: none;
@@ -361,6 +512,7 @@ h1, h2, h3, h4, p { margin: 0; }
   color: var(--text-md);
   font-size: 16px;
 }
+
 .rotate-hint__phone {
   width: 54px;
   height: 90px;
@@ -370,6 +522,7 @@ h1, h2, h3, h4, p { margin: 0; }
   animation: rotate-phone 2.4s var(--ease-in-out) infinite;
   box-shadow: 0 0 24px rgba(23, 249, 183, .25);
 }
+
 .rotate-hint__phone::after {
   content: '';
   position: absolute;
@@ -381,23 +534,30 @@ h1, h2, h3, h4, p { margin: 0; }
   background: var(--mint-500);
   border-radius: 2px;
 }
+
 .rotate-hint__title { font-size: 20px; font-weight: 700; color: var(--text-hi); }
+
+.rotate-hint__fullscreen { min-height: 44px; padding: 10px 22px; font-size: 15px; }
+
 .rotate-hint__micro { font-family: var(--font-display); font-size: 11px; letter-spacing: .3em; color: var(--mint-700); }
+
 @keyframes rotate-phone {
   0%, 20% { transform: rotate(0deg); }
   50%, 75% { transform: rotate(-90deg); }
   100% { transform: rotate(0deg); }
 }
-/* only on a device that can be turned (js/ui/device.js sp-rotatable: a touch screen whose screen is not landscape) —
-   a narrow desktop window or a split-view iPad keeps the game */
+
+/* The battlefield requires landscape on rotatable touch devices. Keep the lobby, announcements and
+   fullscreen/help controls usable in portrait; narrow desktop windows and split-view iPads stay unblocked. */
+
 @media (orientation: portrait) and (max-width: 1024px) {
-  .sp-rotatable .rotate-hint { display: grid; }
+  .sp-rotatable.sp-in-match .rotate-hint { display: grid; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 1ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 1ms !important;
-  }
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+    }
 }

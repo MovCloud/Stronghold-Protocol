@@ -34,6 +34,8 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { snapshotMatch, restoreMatch } from '../snapshot.js';
+import { createRngFromState } from '../../sim/rng.js';
 import { getData, setData } from '../../data.js';
 import { installOfficialBounds } from '../../../shared/plugins/officialBounds.js';
 import { contentHashOf } from '../../../shared/plugins/identity.js';
@@ -73,6 +75,7 @@ const queue = [];
 let booted = false;
 let MatchClass = null;
 let VirtualScheduler = null;
+let virtualHeadlessSliceMs = null;
 /** Prep EffectRefs this content set grants to every player. Empty when the set has no data.dsl. */
 let dslGrants = [];
 /** @type {Map<string, any>} */
@@ -183,7 +186,11 @@ async function boot() {
       grantPrepDsl(this, dslGrants);
     }
   };
-  if (options.virtualTime) ({ VirtualScheduler } = await import('../scheduler.js'));
+  if (options.virtualTime) {
+    ({ VirtualScheduler } = await import('../scheduler.js'));
+    // Keep content/data initialization ahead of fields.js → spec.js → Battle/content imports.
+    ({ HEADLESS_SLICE_MS: virtualHeadlessSliceMs } = await import('../fields.js'));
+  }
 }
 
 /** A MATCH INTERFACE method a match class may lack: what the platform does then (server/lobby.js callMatch). */
@@ -224,6 +231,9 @@ function create(matchId, opts) {
   let match;
   try {
     match = new MatchClass({
+      // Virtual hosts must return to their pump between battle slices so real heartbeats can run.
+      // Direct VirtualScheduler users retain their synchronous default; explicit test options still win.
+      ...(sched ? { headlessSliceMs: virtualHeadlessSliceMs } : {}),
       ...(options.matchOptions || {}),
       ...opts,
       // the content set installed at boot (server/data.js getData)
@@ -242,7 +252,12 @@ function create(matchId, opts) {
     return;
   }
   matches.set(matchId, match);
-  try { match.start(); } catch (e) {
+  try {
+    if (opts.checkpoint) {
+      if (!restoreMatch(match, opts.checkpoint, { createRngFromState, log, bestEffort: true, departedPlayerIds: opts.departedPlayerIds || [] })) throw new Error('plugin checkpoint refused');
+      match.flush?.(true);
+    } else match.start();
+  } catch (e) {
     log.error(`[host] match ${matchId} failed to start`, e);
     matches.delete(matchId);
     try { match.dispose?.(); } catch { /* ignore */ }
@@ -278,6 +293,10 @@ function handle(m) {
   if (m.type === 'call') {
     let result;
     if (!match) result = { error: 'WRONG_PHASE', detail: 'no running match' };
+    else if (m.method === 'captureSnapshot') {
+      const doc = snapshotMatch(match);
+      result = { capture: doc ? { doc } : null };
+    }
     else if (m.method === 'diag') result = diag(match);
     else {
       try {

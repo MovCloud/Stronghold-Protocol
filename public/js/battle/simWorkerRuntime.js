@@ -1,8 +1,18 @@
+import { trackCombat } from './metrics.js';
 // Kept separate from the browser port so the same engine/packets can be verified with a Node worker.
 import { InPageSimHost } from './simHost.js';
+import { genUrl } from '../gen.js'; // (fork) this worker's server generation
+
+/** (fork) A unit as runner.damageUnits reads it (kind, defId, stats.dmg, def.diyFor / loadout.diy / standInFor). */
+function damageView(u) {
+  const d = u.def || {};
+  return { kind: u.kind, defId: u.defId, stats: { dmg: Number(u.stats?.dmg) || 0 },
+    def: { diyFor: d.diyFor, standInFor: d.standInFor, loadout: d.loadout?.diy ? { diy: { ...d.loadout.diy } } : undefined } };
+}
 
 export function createSimWorker({ loadSim, prepareScripts = browserScripts } = {}) {
   const host = new InPageSimHost(loadSim ? { loadSim } : {});
+  let readCombat = null;
   let loaded = false;
   let loadingStarted = false;
   let installScripts = null;
@@ -15,10 +25,14 @@ export function createSimWorker({ loadSim, prepareScripts = browserScripts } = {
         leakedCount: b.leakedCount, flags: b.flags,
         // A length marker, not enemy objects; runner's uniteLeftMark uses it.
         enemies: Array(b.enemies?.length || 0).fill(null),
-        allyUnits: (b.allyUnits || []).map(u => ({ id: u.id, uid: u.uid, ownerId: u.ownerId })),
+        // (fork) + what the damage chart reads (runner.damageUnits, ui/damageLog.js): kind, defId, the damage dealt, the
+        // 自选 / 补位 identity and a token's summoner — display only, so a plugin room's chart works too
+        allyUnits: (b.allyUnits || []).map(u => ({ id: u.id, uid: u.uid, ownerId: u.ownerId, ...damageView(u),
+          ...(u.kind === 'token' && u.ownerUnit ? { ownerUnit: damageView(u.ownerUnit) } : {}) })),
         sharedBoss: b.sharedBoss ? { cum: b.sharedBoss.cum, byPlayer: { ...b.sharedBoss.byPlayer } } : null },
       meta: b.fieldMeta(), players: Object.fromEntries(pids.map(id => [id, { bonds: b.getPlayer(id)?.bonds }])),
       ops: Object.fromEntries(pids.map(id => [id, host.ownerOps(id)])), meter: { lp: host.meter.lp },
+      combat: readCombat?.() || null,
       progress: host.progress(), left: host.spec.kind === 'unite' ? host.uniteLeft() : null,
       result: b.finished ? host.compactResult({ bossLike: ['boss', 'hidden'].includes(host.spec.kind), battleId: host.spec.battleId }) : null,
     };
@@ -45,7 +59,7 @@ export function createSimWorker({ loadSim, prepareScripts = browserScripts } = {
     }
     if (!loaded) throw new Error('simulation not loaded');
     switch (method) {
-      case 'start': host.start(args[0]); return packet();
+      case 'start': host.start(args[0]); readCombat = trackCombat(host.battle); return packet();
       case 'step': {
         if (!Number.isInteger(args[0]) || args[0] < 0 || args[0] > 600) throw new Error('invalid step count');
         return packet(host.step(args[0], args[1] || {}));
@@ -65,8 +79,8 @@ async function browserScripts(content) {
 }
 
 /** Same production adapter in both browser Workers and the Node determinism harness. */
-export async function prepareScriptRuntime(content, { loadSES = () => import('/vendor/ses.umd.js'),
-  loadMath = () => import('/sim/detmath.js'), loadParser = () => import('/vendor/acorn.mjs'), sdkUrl, extensionsUrl } = {}) {
+export async function prepareScriptRuntime(content, { loadSES = () => import(genUrl('/vendor/ses.umd.js')),
+  loadMath = () => import(genUrl('/sim/detmath.js')), loadParser = () => import(genUrl('/vendor/acorn.mjs')), sdkUrl, extensionsUrl } = {}) {
   const { verifyScripts, scriptExecution, loadScripts } = await import('../../../shared/plugins/scriptLoad.js');
   verifyScripts(content.scripts, content.hashInput);
   const opts = { hashInput: content.hashInput, cs: content.cs, nativeVerified: content.nativeVerified, sdkUrl, extensionsUrl };

@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/op-closur.js — 可露希尔 (char_4228_closur) 自选 operator kit: 6★ 战术家 (先锋), an owned-6★ pick of
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // the tier-5 and tier-6 自选 slots; every skill, both talents, the trait, the module TAC-X 给自己的小奖杯 at every form, and the
 // kit of her 援军 指挥中心 (token_10066_closur_ourbase). Kit contract and the 自选 rules: ../README.md ("How to add an operator
 // (自选)").
@@ -157,7 +158,7 @@ export default {
         set.add(base);
         const keys = base.rangeKeySet ?? new Set(base.rangeKeys ?? []);
         for (const a of battle.allyUnits) {
-          if (!up(a) || a.hidden || (a.kind !== 'op' && a.kind !== 'token')) continue;
+          if (!up(a) || a.hidden || (!nativeOperator(a) && a.kind !== 'token')) continue;
           if (!battle.allySelectable(a, unit) || !keys.has(tileKey(a.tileR, a.tileC))) continue;
           set.add(a);
         }
@@ -369,7 +370,7 @@ export default {
             const ret = num(b2.cost_return);
             battle.on('deploy', (ctx) => {
               const a = ctx.unit;
-              if (!(ret > 0) || ctx.initial || ctx.move || !a || a.kind !== 'op' || a.ownerId !== unit.ownerId || a === unit) return;
+              if (!(ret > 0) || ctx.initial || ctx.move || !a || !nativeOperator(a) || a.ownerId !== unit.ownerId || a === unit) return;
               if (!unit.skill?.active || unit.skill.id !== S2 || !up(unit)) return;
               const inRange = basesOf(battle, unit).some((t) => up(t) && (t.rangeKeySet ?? new Set(t.rangeKeys)).has(tileKey(a.tileR, a.tileC)));
               if (!inRange) return;
@@ -383,7 +384,7 @@ export default {
           if (!(atk > 0)) return;
           const give = () => {
             for (const a of battle.allyUnits) {
-              if (a.kind !== 'op' || a.ownerId !== unit.ownerId || (a.def?.raw?.nationId ?? a.def?.nationId) !== 'rhodes') continue;
+              if (!nativeOperator(a) || a.ownerId !== unit.ownerId || (a.def?.raw?.nationId ?? a.def?.nationId) !== 'rhodes') continue;
               const cur = a.findBuff(RHODES_KEY);
               if (cur && num(cur.data?.v) >= atk) continue;
               battle.addBuff(a, { key: RHODES_KEY, mods: { atkPct: atk }, persist: true, allowDead: true, data: { v: atk }, source: unit, tags: ['talent'] });

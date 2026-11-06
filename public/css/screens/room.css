@@ -1,17 +1,214 @@
 /* ==========================================================================================
+   screens/room.css — room/waiting screen: invite key, 4 seat cards, bottom action bar.
+   ========================================================================================== */
+
+/* ==========================================================================================
    screens/room.css — room/waiting screen, laid out like the event's room: the top bar (leave, mode and ping, tools,
    干员调配, 同盟密钥), 4 tall seat cards with their name plates, the bottom (status, the difficulty pill with ⚙, the big
    开始模拟 / 准备就绪 — `.proto-start`, screens/lobby.css). Text follows 文字大小 (calc(k * var(--t))).
    ========================================================================================== */
 
+.room-screen .topbar { height: 1.36rem; }
+
+.room-ping { display: flex; flex-direction: column; align-items: flex-start; gap: .04rem; }
+
 .rs { background: #0a0b0b; color: #eef0ef; }
+
+/* ---- invite key ---------------------------------------------------------------------------------------- */
+
 /* Korean breaks between words, not between the syllables of one (§35.18 review: 「시뮬레이션 시|작」 on the big button, and
    the seat cards' labels once they wrap); a word too long for its box still breaks rather than running out of it */
+
+.invite {
+  --bk-c: var(--mint-500);
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: .2rem;
+  row-gap: .06rem;
+  align-items: center;
+  padding: .1rem .16rem .12rem;
+  background: rgba(0, 0, 0, .38);
+  border: 1px solid var(--line);
+}
+
+.invite__label .icon { width: .16rem; height: .16rem; color: var(--mint-500); }
+
+.invite__code { display: flex; gap: .06rem; }
+
+.invite__code span {
+  display: grid;
+  place-items: center;
+  width: .46rem;
+  height: .58rem;
+  background: linear-gradient(180deg, rgba(78, 216, 175, .1), rgba(78, 216, 175, .02));
+  border-bottom: 2px solid var(--mint-600);
+  color: var(--mint-400);
+  font-size: calc(.44 * var(--t));
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 0 .16rem rgba(23, 249, 183, .45);
+}
+
+.invite__btns { display: flex; flex-direction: column; gap: .06rem; }
+
 .rs:lang(ko) { word-break: keep-all; overflow-wrap: break-word; }
+
+/* ---- seats ------------------------------------------------------------------------------------------------ */
+
 /* Japanese never starts a line with a small kana, ー or a closing mark (§35.18 review: 「シミュレーシ|ョン開始」 on the big
    button, 「ドクタ|ーの画面」 in a spectator's status line, 「シークレ|ットコア」 in 独立模拟's briefing — line-break: normal
    allows a break before a small kana and ー) */
+
+.seats {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 3.8rem));
+  grid-template-rows: minmax(0, 6rem);
+  justify-content: center;
+  align-content: center;
+  gap: .3rem;
+  padding: .3rem .6rem .24rem;
+}
+
+.seats--solo { grid-template-columns: 3.8rem minmax(0, 6.4rem); }
+
+.room-capacity { font-size: calc(.14 * var(--t)); color: var(--amber); }
+
+.seats.seats--expanded { grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: minmax(208px, max-content); align-content: start; gap: 12px; padding: 16px; overflow-y: auto; }
+
+.seats--expanded .seat { padding: 10px; gap: 4px; animation-delay: 0ms; }
+
+.seats--expanded .seat__head { gap: 4px; }
+
+.seats--expanded .seat__head > .micro { display: none; }
+
+.seats--expanded .seat__no { font-size: min(calc(.375 * var(--t)), calc(15px + var(--t-step))); }
+
+.seats--expanded .seat__host { font-size: min(calc(.275 * var(--t)), calc(11px + var(--t-step))); }
+
+.seats--expanded .seat__art { min-height: 64px; margin: 0; }
+
+.seats--expanded .seat__art .avatar { --av: 64px; }
+
+.seats--expanded .seat__name { font-size: min(calc(.375 * var(--t)), calc(15px + var(--t-step))); max-width: 100%; }
+
+.seats--expanded .seat > .micro { font-size: calc(.25 * var(--t)); }
+
+.seats--expanded .seat__wait { font-size: min(calc(.325 * var(--t)), calc(13px + var(--t-step))); }
+
+.seats--expanded .seat__art--empty > .micro { display: none; }
+
+.seats--expanded .seat__radar { width: 48px; height: 48px; }
+
+.seats--expanded .seat__foot { min-height: 36px; padding-top: 6px; margin-top: 2px; }
+
+.seats--expanded .seat__foot .btn { min-height: 36px; height: auto; font-size: min(calc(.3 * var(--t)), calc(12px + var(--t-step))); padding-inline: 6px; letter-spacing: 0; }
+
+.seats--expanded .seat__state { font-size: min(calc(.325 * var(--t)), calc(13px + var(--t-step))); }
+
+.seats--expanded .seat__state .icon { width: 16px; height: 16px; }
+
+@media (max-width: 1100px) {
+  .seats.seats--expanded { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .seats.seats--expanded { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.seat {
+  --bk-c: var(--line-3);
+  --bk-l: .18rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .07rem;
+  height: 100%;
+  min-height: 0;
+  padding: .16rem .2rem .18rem;
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, .014) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, rgba(29, 35, 32, .95), rgba(11, 14, 13, .97));
+  border: 1px solid var(--line);
+  box-shadow: 0 .14rem .34rem rgba(0, 0, 0, .4);
+  transition: border-color var(--t-med), box-shadow var(--t-med);
+  animation: seat-in var(--t-slow) var(--ease-out) backwards;
+  animation-delay: calc(var(--seat-i, 0) * 60ms);
+}
+
+@keyframes seat-in {
+  from { opacity: 0; transform: translateY(.18rem); }
+}
+
+.seat::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: var(--line-2);
+  transition: background var(--t-med), box-shadow var(--t-med);
+}
+
+.seat__no { font-size: calc(.22 * var(--t)); font-weight: 700; color: var(--text-md); padding-left: .08rem; border-left: 3px solid var(--line-3); line-height: 1.1; }
+
+.seat__host {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: .04rem;
+  padding: .02rem .09rem;
+  background: var(--gold);
+  color: #1d1400;
+  font-size: calc(.13 * var(--t));
+  font-weight: 700;
+}
+
+.seat__host .icon { width: .15rem; height: .15rem; }
+
+.seat__art {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .08rem;
+  margin: .06rem 0 .04rem;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(78, 216, 175, .08), transparent 62%),
+    linear-gradient(rgba(78, 216, 175, .04) 1px, transparent 1px) 0 0 / .3rem .3rem,
+    linear-gradient(90deg, rgba(78, 216, 175, .04) 1px, transparent 1px) 0 0 / .3rem .3rem,
+    #0b0e0d;
+  border: 1px solid rgba(255, 255, 255, .04);
+}
+
+.seat__art .avatar { --av: 2.1rem; }
+
+.seat__bot-label .icon { width: .16rem; height: .16rem; }
+
+.seat__who { display: flex; align-items: center; gap: .08rem; max-width: 100%; }
+
+.seat__name { font-size: calc(.26 * var(--t)); font-weight: 700; max-width: 3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.seat__you { flex: none; padding: .01rem .07rem; background: var(--mint-500); color: var(--text-on-mint); font-size: calc(.13 * var(--t)); font-weight: 700; }
+
+.seat__foot .tt-anchor { position: absolute; right: .14rem; bottom: .14rem; }
+
+.seat__state { display: flex; align-items: center; gap: .06rem; font-size: calc(.18 * var(--t)); font-weight: 700; letter-spacing: .06em; }
+
+.seat__state .icon { width: .22rem; height: .22rem; }
+
 .rs:lang(ja) { line-break: strict; }
+
+/* a room with gameplay plugins (DESIGN §32.6): whether the seat's page has loaded and checked the room's content */
+
 /* a last line of one character (§35.18 review of the text-fit fixes: 「…各位博|士」 in the room's status line, 「ドクターの
    参加待|ち」, 「添加AI队|友」 at 特大). The paragraphs wrap `pretty` (Chrome never adds a line for it); the short labels
    `balance` (the line count stays): WebKit's `pretty` adds lines to short labels (review of that review: 「AI同盟者を追加」
@@ -19,12 +216,20 @@
    Firefox 121+; `pretty`: Chrome 117+, Safari 26+, Firefox wraps as before. The big button's label wraps plainly (in
    Safari `pretty` and `balance` broke 「シミュレー|ション開始」 inside the word at 小 on the phones; 选择模拟协议's own button
    keeps `pretty`, lobby.css); the picker's names below */
+
+.seat__content { display: block; padding: 0 .12rem; font-size: calc(.13 * var(--t)); color: var(--text-lo); letter-spacing: .04em; }
+
 .rs-hint, .rs-brief p, .rs-brief li { text-wrap: pretty; }
+
 /* (§35.51: the empty seat's invite hint too — 「…仲間を招|待」 at 大 in a 1024×600 window) */
+
 .rseat__add, .rseat__wait small, .rseat__invite small { text-wrap: balance; }
+
 /* `balance` broke Japanese 「AI同盟|者を追加」 inside the word at 特大 on the phones (review of 6f34f380; 「AI同盟者を|追加」
    with `pretty`): phrase breaks (BudouX) in Chrome 119+; Safari and Firefox ignore it */
+
 .rseat__add:lang(ja) { word-break: auto-phrase; }
+
 .rs__bg {
   position: absolute;
   inset: 0;
@@ -36,9 +241,11 @@
     linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px) 0 0 / 1.1rem 1.1rem,
     radial-gradient(120% 90% at 50% 30%, #161818, #070808);
 }
+
 .rs-top, .rs-seats, .rs .specbar, .rs-foot { position: relative; }
 
 /* ---- top bar ------------------------------------------------------------------------------------------- */
+
 .rs .rs-top {
   flex: none;
   display: flex;
@@ -51,7 +258,9 @@
   border-bottom: 0;
   z-index: 3;
 }
+
 .rs-top__left { display: flex; align-items: center; flex-wrap: wrap; gap: .16rem; min-width: 0; }
+
 .rs-exit {
   display: grid;
   place-items: center;
@@ -64,12 +273,19 @@
   border-radius: .06rem;
   box-shadow: 0 .03rem .1rem rgba(0, 0, 0, .5);
 }
+
 .rs-exit:hover:not(:disabled), .rs-exit:focus-visible { filter: brightness(1.08); }
+
 .rs-exit .icon { width: 60%; height: 60%; }
+
 .rs-clock { display: flex; flex-direction: column; gap: .02rem; min-width: 0; }
+
 .rs-clock > b { display: inline-flex; align-items: center; gap: .1rem; font-size: calc(.2 * var(--t)); font-weight: 700; white-space: nowrap; }
+
 .rs-clock__sep { width: 1px; height: .9em; background: rgba(255, 255, 255, .3); }
+
 /* the plugin mode the host chose (0.3.0, DESIGN §32.6), beside the mode name: the orange chip of the old room bar */
+
 .rs-clock .room-mode {
   min-width: 0;
   max-width: min(3.6rem, 30vw);
@@ -81,12 +297,18 @@
   font-weight: 600;
   text-overflow: ellipsis;
 }
+
 .rs-clock__ping { display: inline-flex; align-items: center; gap: .08rem; font-size: calc(.15 * var(--t)); color: #9aa19e; }
+
 /* the shared ping pill has a fixed .32rem (12.8 px on a phone) its text outgrows at 大 / 特大: in the room's top bar it
    grows with it (§35.18 review; older than the event UI). Scoped: title.css and the match's bars size their own pill */
+
 .rs-clock__ping .ping { height: auto; min-height: .32rem; padding-top: 1px; padding-bottom: 1px; }
+
 .rs-tools { display: flex; gap: .08rem; margin-left: .1rem; }
+
 .rs-top__right { display: flex; align-items: center; gap: .14rem; }
+
 .rs .rs-loadout {
   --pl-ink: #222b28;
   display: flex;
@@ -103,7 +325,9 @@
   border: 1px solid rgba(255, 255, 255, .5);
   box-shadow: 0 .04rem .14rem rgba(0, 0, 0, .5);
 }
+
 .rs .rs-loadout:not(:disabled):hover { border-color: #fff; filter: brightness(1.05); }
+
 .rs .rs-loadout .lo-entry__icon, .rs .rs-loadout > .btn__icon {
   width: max(.36rem, 22px);
   height: max(.36rem, 22px);
@@ -112,7 +336,9 @@
   color: var(--mint-400);
   background: #182120;
 }
+
 .rs .rs-loadout .btn__label { font-weight: 900; color: #111816; }
+
 .rs-key {
   display: flex;
   align-items: center;
@@ -123,8 +349,11 @@
   border: 1px solid rgba(255, 255, 255, .1);
   border-radius: .06rem;
 }
+
 .rs-key__k { padding-right: .14rem; font-size: calc(.17 * var(--t)); color: #b7bdbb; border-right: 1px solid rgba(255, 255, 255, .25); white-space: nowrap; }
+
 .rs-key__code { font-size: calc(.28 * var(--t)); letter-spacing: .06em; color: #f2f4f3; white-space: nowrap; }
+
 .rs-key__copy {
   height: 78%;
   padding: 0 .26rem;
@@ -140,7 +369,9 @@
   border: 0;
   border-radius: .05rem;
 }
+
 .rs-key__copy:hover, .rs-key__copy:focus-visible { filter: brightness(1.06); }
+
 .rs-key__link {
   display: grid;
   place-items: center;
@@ -152,11 +383,15 @@
   border: 1px solid rgba(255, 255, 255, .15);
   border-radius: .05rem;
 }
+
 .rs-key__link:hover, .rs-key__link:focus-visible { border-color: rgba(255, 255, 255, .4); }
+
 .rs-key__link .icon { width: 60%; height: 60%; }
+
 .rs-key--solo { gap: .1rem; padding-right: .2rem; font-size: calc(.16 * var(--t)); color: #b7bdbb; }
 
 /* ---- seats: a tall card (strip, portrait, state) and the name plate under it ---------------------------------- */
+
 .rs-seats {
   flex: 1 1 auto;
   min-height: 0;
@@ -169,6 +404,7 @@
   overflow-y: hidden;
   scrollbar-width: thin;
 }
+
 .rseat {
   --w: min(18vw, 3.4rem, calc((100vw - 1.6rem) / var(--n, 4) - .3rem));
   position: relative;
@@ -179,40 +415,87 @@
   animation: rseat-in 480ms cubic-bezier(.16, .84, .3, 1) backwards;
   animation-delay: calc(150ms + var(--i) * 70ms);
 }
+
 /* 转场 (PR #643): the room comes up from black, card by card — each lights up as it lands. [ASSUMED] The motion and its
    timings are the community PR #643 design, not a recording of the event. */
-@keyframes rseat-in { from { opacity: 0; transform: translateY(.16rem) scale(1.03); filter: brightness(1.9) saturate(.3); } 55% { filter: none; } }
+
+@keyframes rseat-in {
+  from { opacity: 0; transform: translateY(.16rem) scale(1.03); filter: brightness(1.9) saturate(.3); }
+  55% { filter: none; }
+}
+
 .rs__bg { animation: rs-fade 440ms ease-out backwards; }
+
 .rs-top { animation: rs-fade 320ms ease-out 120ms backwards; }
+
 .rs-brief { animation: rs-right 440ms cubic-bezier(.16, .84, .3, 1) 260ms backwards; }
+
 .rs-foot { animation: rs-rise 420ms cubic-bezier(.16, .84, .3, 1) 300ms backwards; }
-@keyframes rs-fade { from { opacity: 0; } }
-@keyframes rs-right { from { opacity: 0; transform: translateX(.36rem); } }
-@keyframes rs-rise { from { opacity: 0; transform: translateY(.22rem); } }
+
+@keyframes rs-fade {
+  from { opacity: 0; }
+}
+
+@keyframes rs-right {
+  from { opacity: 0; transform: translateX(.36rem); }
+}
+
+@keyframes rs-rise {
+  from { opacity: 0; transform: translateY(.22rem); }
+}
+
 /* a doctor turns ready or an AI teammate is added (ui/transitions.js useRise): a green flash over the portrait, a beam from
    the clip, the state pops */
+
 .rseat.is-flash .rseat__art { animation: rseat-glow 700ms ease-out; }
-@keyframes rseat-glow { 20% { box-shadow: 0 0 .5rem rgba(120, 255, 215, .9), 0 0 .12rem #b9ffe9; border-color: #b9ffe9; } }
+
+@keyframes rseat-glow {
+  20% { box-shadow: 0 0 .5rem rgba(120, 255, 215, .9), 0 0 .12rem #b9ffe9; border-color: #b9ffe9; }
+}
+
 .rseat.is-flash .rseat__art::before { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
   background: linear-gradient(180deg, rgba(214, 255, 243, .95), rgba(79, 232, 192, .7)); animation: rseat-wash 700ms ease-out forwards; }
-@keyframes rseat-wash { 0% { opacity: 0; } 14% { opacity: 1; } 100% { opacity: 0; } }
+
+@keyframes rseat-wash {
+  0% { opacity: 0; }
+  14% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 .rseat.is-flash .rseat__clip::after { content: ''; position: absolute; left: 50%; bottom: 100%; width: 6px; height: .16rem; transform-origin: 50% 100%;
   background: linear-gradient(0deg, #c9fff0, rgba(93, 240, 198, 0)); box-shadow: 0 0 8px #5df0c6; animation: rseat-beam 700ms ease-out forwards; }
-@keyframes rseat-beam { 0% { opacity: 0; transform: translateX(-50%) scaleY(0); } 22% { opacity: 1; transform: translateX(-50%) scaleY(1); }
-  100% { opacity: 0; transform: translateX(-50%) scaleY(1.3); } }
+
+@keyframes rseat-beam {
+  0% { opacity: 0; transform: translateX(-50%) scaleY(0); }
+  22% { opacity: 1; transform: translateX(-50%) scaleY(1); }
+  100% { opacity: 0; transform: translateX(-50%) scaleY(1.3); }
+}
+
 .rseat.is-flash .rseat__state { animation: rseat-pop 380ms cubic-bezier(.3, 1.7, .5, 1) 100ms backwards; }
-@keyframes rseat-pop { from { opacity: 0; transform: scale(.4); } }
+
+@keyframes rseat-pop {
+  from { opacity: 0; transform: scale(.4); }
+}
+
 /* 2.7 × --t: 2.7rem at 小 as before, wider with the text (§35.18 review: at a fixed 2.7rem 独立模拟's single card was the
    narrowest, and its 「Standing by」 broke inside the word at 特大 in an 800–1100 px window) */
-.rs--solo .rseat { --w: min(calc(2.7 * var(--t)), 34vw); }  /* (capped on a short screen: below) */
+
+.rs--solo .rseat { --w: min(calc(2.7 * var(--t)), 34vw); }
+
+/* (capped on a short screen: below) */
+
 .rseat__clip { position: absolute; left: 50%; top: -.14rem; z-index: 2; width: .16rem; height: .2rem; transform: translateX(-50%); background: #3a3e3d; border: 2px solid #1a1c1c; }
+
 .rseat.is-lit .rseat__clip { background: #4fe8c0; }
-.rseat__strip { position: relative; display: flex; align-items: center; justify-content: space-between; height: max(.26rem, 16px); padding: 0 .08rem; background: #2b2e2e; }
-.rseat__strip i { width: .5rem; height: 4px; background: repeating-linear-gradient(90deg, rgba(255, 255, 255, .45) 0 3px, transparent 3px 5px); }
+
+.rseat__strip { position: relative; display: flex; align-items: center; justify-content: flex-end; height: max(.26rem, 16px); padding: 0 .08rem; background: #2b2e2e; }
+
 .rseat__strip span { font-size: calc(.12 * var(--t)); color: #8d9391; }
+
 .rseat.is-lit .rseat__strip { background: #4fe8c0; }
-.rseat.is-lit .rseat__strip i { background: repeating-linear-gradient(90deg, rgba(8, 34, 27, .6) 0 3px, transparent 3px 5px); }
+
 .rseat.is-lit .rseat__strip span { color: #08221b; }
+
 .rseat__art {
   position: relative;
   flex: 1 1 auto;
@@ -224,11 +507,14 @@
   border: 2px solid #2b2e2e;
   border-top: 0;
 }
+
 .rseat.is-lit .rseat__art { border-color: #4fe8c0; box-shadow: 0 0 .2rem rgba(79, 232, 192, .35); }
+
 /* an occupied card's art: the badge (创建者 / AI 队友), 更换立绘 and the tags at the top, the avatar frame (a bot, no art pack)
    between, the operator's name and the state at the bottom — in flow, so a larger 文字大小 or a longer language pushes
    them apart and wraps them instead of drawing one over another (§35.18 review: they were placed by fixed offsets, and on
    a phone at 大 / 特大 「Standing by」 ran past the card and over 创建者) */
+
 .seat__art.rseat__art {
   display: flex;
   flex-direction: column;
@@ -237,14 +523,23 @@
   gap: .04rem;
   padding: .14rem .08rem;
 }
+
 /* the avatar frame gives way first (it shrinks, square, when the text above and below needs the height) */
+
 .seat__art.rseat__art > .avatar { align-self: center; flex: 0 1 var(--av); width: auto; height: auto; min-height: 0; aspect-ratio: 1; }
+
 .rseat__top, .rseat__low { position: relative; z-index: 1; display: flex; flex-direction: column; gap: .04rem; min-width: 0; }
+
 .rseat__top { order: -1; align-items: center; }
+
 .rseat__low { align-items: stretch; }
+
 .rseat__art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 12%; }
+
 .rseat.is-lit .rseat__art::after { content: ''; position: absolute; inset: 50% 0 0; background: linear-gradient(180deg, transparent, rgba(47, 207, 159, .85)); pointer-events: none; }
+
 .rseat.is-offline .rseat__art img { filter: grayscale(.8) brightness(.6); }
+
 .seat__op {
   align-self: flex-start;
   max-width: 100%;
@@ -255,6 +550,7 @@
   background: rgba(0, 0, 0, .5);
   border-left: 2px solid #4fe8c0;
 }
+
 .rseat__host, .rseat__bot {
   display: inline-flex;
   align-items: center;
@@ -270,8 +566,11 @@
   background: #4fe8c0;
   border-radius: .04rem;
 }
+
 .rseat__bot { background: #c9cecc; }
+
 .rseat__host .icon, .rseat__bot .icon { flex: none; width: 1em; height: 1em; }
+
 .rseat__tag {
   align-self: flex-start;
   max-width: 100%;
@@ -281,8 +580,68 @@
   background: rgba(0, 0, 0, .6);
   border: 1px solid rgba(255, 255, 255, .25);
 }
-.seat__content.is-ready { border-color: #4fe8c0; color: #8ff3d6; }
-.seat__content.is-failed { border-color: #ff7a8a; color: #ff9aa6; }
+
+.seat__content.is-ready { color: var(--mint-400); border-color: #4fe8c0; }
+
+.seat__content.is-failed { color: var(--orange-hi); border-color: #ff7a8a; }
+
+.room-mode { margin-left: .1rem; padding: 0 .08rem; border: 1px solid rgba(255, 106, 61, .6); color: #ff8a5c; font-size: calc(.16 * var(--t)); vertical-align: middle; }
+
+.seat.is-ready { --bk-c: var(--mint-500); border-color: var(--mint-800); }
+
+.seat.is-ready::before { background: var(--mint-500); box-shadow: 0 0 .12rem rgba(23, 249, 183, .6); }
+
+.seat.is-host .seat__no { border-left-color: var(--gold); }
+
+.seat.is-me { box-shadow: 0 0 0 1px rgba(78, 216, 175, .28), 0 0 .44rem rgba(23, 249, 183, .12), 0 .14rem .34rem rgba(0, 0, 0, .4); }
+
+.seat.is-me .seat__no { color: var(--mint-400); }
+
+.seat.is-offline::before { background: var(--orange); }
+
+.seat.is-bot .seat__art { background:
+    radial-gradient(circle at 50% 42%, rgba(159, 212, 255, .08), transparent 62%),
+    linear-gradient(rgba(159, 212, 255, .04) 1px, transparent 1px) 0 0 / .3rem .3rem,
+    linear-gradient(90deg, rgba(159, 212, 255, .04) 1px, transparent 1px) 0 0 / .3rem .3rem,
+    #0b0e10; }
+
+.seat--empty { background: rgba(10, 13, 12, .5); border-style: dashed; border-color: var(--line-2); box-shadow: none; }
+
+.seat--empty .seat__art { background: transparent; border: 0; }
+
+@keyframes radar-sweep {
+  to { transform: rotate(360deg); }
+}
+
+.seat__wait { font-size: calc(.2 * var(--t)); color: var(--text-lo); letter-spacing: .08em; }
+
+.seat--empty .seat__foot { border-top-style: dashed; }
+
+.solo-brief {
+  --bk-c: var(--mint-500);
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: .14rem;
+  height: 100%;
+  padding: .34rem .4rem;
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, .014) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, rgba(24, 29, 27, .92), rgba(11, 14, 13, .95));
+  border: 1px solid var(--line);
+  animation: seat-in var(--t-slow) 80ms var(--ease-out) backwards;
+}
+
+.solo-brief h2 { font-size: calc(.36 * var(--t)); font-weight: 900; letter-spacing: .06em; }
+
+.solo-brief p { font-size: calc(.18 * var(--t)); color: var(--text-md); }
+
+.solo-brief ul { margin: .06rem 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .08rem; font-size: calc(.16 * var(--t)); color: var(--text-lo); }
+
+.solo-brief li::before { content: ''; display: inline-block; width: .06rem; height: .06rem; margin: 0 .12rem .02rem 0; background: var(--mint-600); transform: rotate(45deg); vertical-align: middle; }
+
+.solo-brief b { color: var(--text-hi); }
+
 .rseat__lost {
   /* in flow between the top and the bottom text, across the art (§35.18 review: at 40% from the top it ran over the state
      below and the tags above once the card was short) */
@@ -299,7 +658,9 @@
   color: #ff7a8a;
   background: rgba(80, 10, 18, .85);
 }
+
 .rseat__lost .icon { width: 1.2em; height: 1.2em; }
+
 .rseat__state {
   display: flex;
   align-items: center;
@@ -315,10 +676,15 @@
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
 }
+
 .rseat:not(.is-lit) .rseat__state { font-size: calc(.2 * var(--t)); color: #c9cecc; }
+
 .rseat__said { min-width: 0; overflow-wrap: break-word; }
+
 .rseat__box { flex: none; display: grid; place-items: center; width: max(.34rem, 20px); height: max(.34rem, 20px); background: rgba(0, 0, 0, .25); border: 2px solid currentColor; border-radius: 4px; }
+
 .rseat__box .icon { width: 80%; height: 80%; }
+
 .rseat__kick {
   position: absolute;
   right: -.08rem;
@@ -333,31 +699,13 @@
   border: 1px solid rgba(255, 120, 130, .6);
   border-radius: 999px;
 }
+
 .rseat__kick .icon { width: max(.2rem, 12px); height: max(.2rem, 12px); }
+
 .rseat__kick .icon + .icon { width: max(.14rem, 9px); margin-left: -2px; }
+
 .rseat__kick:hover:not(:disabled), .rseat__kick:focus-visible { filter: brightness(1.3); }
-.rseat__pick {
-  align-self: flex-end;
-  display: inline-flex;
-  align-items: center;
-  gap: .04rem;
-  max-width: 100%;
-  min-height: max(.36rem, 22px);
-  padding: .02rem .1rem;
-  font: inherit;
-  font-size: calc(.14 * var(--t));
-  font-weight: 700;
-  line-height: 1.1;
-  text-align: left;
-  color: #eef0ef;
-  background: rgba(0, 0, 0, .55);
-  border: 1px solid rgba(255, 255, 255, .3);
-  border-radius: max(.18rem, calc(11px * var(--sp-ui, 1)));
-  opacity: .8;
-  transition: opacity var(--t-fast), border-color var(--t-fast);
-}
-.rseat__pick .icon { flex: none; width: 1.1em; height: 1.1em; }
-.rseat__art:hover .rseat__pick, .rseat__pick:focus-visible { opacity: 1; border-color: #5df0c6; }
+
 .rseat__plate {
   position: relative;
   display: grid;
@@ -371,50 +719,91 @@
   background: linear-gradient(90deg, #232626, #161818);
   border: 1px solid rgba(255, 255, 255, .1);
 }
+
 .rseat.is-lit .rseat__plate { border-color: rgba(79, 232, 192, .55); }
+
 .rseat.is-me .rseat__plate { background: linear-gradient(90deg, #26302d, #161a19); }
+
 .rseat__plate .avatar { grid-row: 1 / 3; }
+
 .rseat__who { display: flex; align-items: center; gap: .06rem; min-width: 0; font-size: calc(.18 * var(--t)); }
+
+.rseat__who .seat__name { max-width: 100%; }
+
 .seat__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .seat__you { flex: none; padding: 0 .06rem; font-size: calc(.12 * var(--t)); font-weight: 700; color: var(--text-on-mint); background: var(--mint-500); }
+
 .rseat__doc { font-size: calc(.11 * var(--t)); letter-spacing: .1em; color: #7f8583; }
+
 .rseat__me { position: absolute; left: -.1rem; top: -.1rem; display: grid; place-items: center; width: max(.26rem, 16px); height: max(.26rem, 16px); color: #08221b; background: #4fe8c0; border-radius: 3px; }
+
+/* where the name row shows the 你 tag (screens taller than the short-phone layout) the corner mark would be a second
+   你 badge; it stays in the DOM (it is what screen readers hear as 你) but takes no visible part */
+@media (min-height: 521px) {
+  .rseat__me { opacity: 0; pointer-events: none; }
+}
+
 .rseat__me .icon { width: 80%; height: 80%; }
+
 .rseat__plate--empty { display: flex; justify-content: center; border-style: dashed; border-color: rgba(255, 255, 255, .12); background: none; font-size: calc(.15 * var(--t)); }
+
 .rseat--empty .rseat__art { grid-template-rows: 1fr auto; padding-bottom: .5rem; background: linear-gradient(135deg, transparent 47%, rgba(255, 255, 255, .06) 50%, transparent 53%), #141616; }
+
 .rseat__invite { align-self: end; display: flex; flex-direction: column; align-items: center; gap: .1rem; padding: .2rem .1rem; font: inherit; color: #eef0ef; background: none; border: 0; }
+
 .rseat__plus { position: relative; width: max(.9rem, 32px, calc(46px * var(--sp-ui, 1))); height: max(.9rem, 32px, calc(46px * var(--sp-ui, 1))); }
+
 .rseat__plus::before, .rseat__plus::after { content: ''; position: absolute; background: #f2f4f3; box-shadow: 0 0 .1rem rgba(255, 255, 255, .5); }
+
 .rseat__plus::before { left: 50%; top: 0; bottom: 0; width: 7px; transform: translateX(-50%); }
+
 .rseat__plus::after { top: 50%; left: 0; right: 0; height: 7px; transform: translateY(-50%); }
+
 .rseat__invite b { font-size: calc(.26 * var(--t)); }
+
 .rseat__invite small { font-size: calc(.15 * var(--t)); color: #8d9391; text-align: center; }
+
 .rseat__invite:hover .rseat__plus::before, .rseat__invite:hover .rseat__plus::after,
 .rseat__invite:focus-visible .rseat__plus::before, .rseat__invite:focus-visible .rseat__plus::after { background: #5df0c6; }
+
 .rseat__add { align-self: start; max-width: calc(100% - .12rem); height: auto; min-height: .36rem; padding-block: .03rem; margin-top: .1rem; white-space: normal; line-height: 1.1; text-align: center; }
+
 .rseat__wait { display: flex; flex-direction: column; align-items: center; gap: .1rem; color: #b7bdbb; }
+
 .rseat__wait small { font-size: calc(.16 * var(--t)); text-align: center; }
+
 .rseat__noinfo { position: absolute; right: .12rem; bottom: .14rem; font-family: var(--font-display); font-size: calc(.12 * var(--t)); letter-spacing: .1em; color: rgba(255, 255, 255, .15); }
 
+/* ---- spectator seats (观战席, community report #26) -------------------------------------------------------------- */
+
 /* 独立模拟: the briefing beside the single seat */
+
 .rs-brief { align-self: center; max-width: min(5rem, 46vw); max-height: 100%; overflow-y: auto; scrollbar-width: thin; padding: .24rem .3rem; background: rgba(10, 13, 12, .8); border: 1px solid var(--line); }
+
 .rs-brief h2 { margin: .06rem 0; font-size: calc(.32 * var(--t)); color: var(--d-color); }
+
 /* the difficulty's code on one line: the title breaks before it, not after its hyphen (§35.18 review of the text-fit fixes:
    「Perilous Simulation AC-」 / 「2」 in a window ≤ 640 px tall at 特大, the briefing wider since its review). The title
    wraps plainly (with `pretty` and the nowrap code, Chrome broke 「Perilous Simulation / AC-2」 in a 1024×600 window at 小,
    where it fits on one line) */
+
 .rs-brief h2 .num { white-space: nowrap; }
+
 .rs-brief p { margin: 0 0 .1rem; font-size: calc(.17 * var(--t)); color: var(--text-md); }
+
 .rs-brief ul { margin: 0; padding-left: .24rem; font-size: calc(.16 * var(--t)); color: var(--text-lo); line-height: 1.7; }
 
 /* a short window (≤ 640 px tall, phones below): the briefing wider and its list tighter, so its text fits beside the seat
    at 特大 instead of scrolling (§35.18 review: 1100×530 at 特大 hid 55 px). [ASSUMED] the widths */
+
 @media (max-height: 640px) {
   .rs-brief { max-width: min(7rem, 46vw); }
   .rs-brief ul { line-height: 1.45; }
 }
 
 /* ---- spectator seats (观战席, community report #26) -------------------------------------------------------------- */
+
 .specbar {
   flex: none;
   display: flex;
@@ -426,9 +815,13 @@
   font-size: calc(.15 * var(--t));
   color: var(--text-lo);
 }
+
 .specbar__label { display: flex; align-items: baseline; gap: .06rem; font-weight: 700; color: var(--text-md); }
+
 .specbar__label .icon { width: .18rem; height: .18rem; align-self: center; color: var(--mint-500); }
+
 .specbar__label b { color: var(--mint-400); }
+
 .specbar__who {
   display: inline-flex;
   align-items: center;
@@ -439,15 +832,57 @@
   background: rgba(0, 0, 0, .32);
   color: var(--text-hi);
 }
+
 .specbar__who.is-me { border-color: var(--mint-600); }
+
 .specbar__who.is-offline { color: var(--text-dim); }
+
 .specbar__who > .icon { width: .16rem; height: .16rem; }
 
+/* ---- bottom bar ----------------------------------------------------------------------------------------- */
+
 /* ---- 名片干员 picker (PR #643 split 6) --------------------------------------------------------------------------- */
+
+.room-bar {
+  position: relative;
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "settings status actions";
+  align-items: center;
+  gap: .3rem;
+  min-height: 1.5rem;
+  padding: .16rem .6rem;
+  background: linear-gradient(0deg, rgba(7, 9, 8, .96), rgba(10, 13, 12, .7));
+  border-top: 1px solid var(--line);
+}
+
+.room-bar::before {
+  content: '';
+  position: absolute;
+  left: .6rem;
+  right: .6rem;
+  top: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--mint-700), transparent 30%, transparent 70%, var(--mint-700));
+}
+
+.room-bar__left { grid-area: settings; display: flex; flex-direction: column; align-items: flex-start; gap: .12rem; min-width: 0; }
+
+.room-bar__center { grid-area: status; display: flex; flex-direction: column; align-items: center; gap: .06rem; min-width: 0; text-align: center; }
+
+.room-bar__right { grid-area: actions; justify-self: end; display: flex; align-items: center; gap: .16rem; min-width: 0; }
+
+.room-bar__status { font-size: calc(.15 * var(--t)); }
+
 .cardpick .modal__body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: .12rem; overflow: hidden; }
+
 .cardpick__bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: .12rem; }
+
 .cardpick__search { flex: 1 1 2.6rem; min-width: 0; }
+
 .cardpick__stars { display: inline-flex; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .3); }
+
 .cardpick__stars button {
   min-height: .44rem;
   padding: 0 .16rem;
@@ -458,9 +893,13 @@
   font-size: calc(.16 * var(--t));
   font-weight: 700;
 }
+
 .cardpick__stars button:last-child { border-right: 0; }
+
 .cardpick__stars button:hover { color: var(--text-hi); }
+
 .cardpick__stars button.is-on { background: var(--mint-500); color: var(--text-on-mint); }
+
 .cardpick__grid {
   flex: 1 1 auto;
   min-height: 0;
@@ -476,6 +915,7 @@
   overflow-y: auto;
   scrollbar-width: thin;
 }
+
 .cardpick__op {
   position: relative;
   display: flex;
@@ -488,24 +928,40 @@
   color: var(--text-md);
   transition: border-color var(--t-fast), color var(--t-fast);
 }
+
 .cardpick__op:hover { border-color: var(--line-3); color: var(--text-hi); }
+
 .cardpick__op.is-on { border-color: var(--mint-400); box-shadow: 0 0 0 1px var(--mint-400); color: var(--text-hi); }
+
 .cardpick__img { display: grid; place-items: center; aspect-ratio: 1; overflow: hidden; background: linear-gradient(180deg, #2a302d, #151917); }
+
 .cardpick__img img { width: 100%; height: 100%; object-fit: cover; }
+
 .cardpick__img .icon { width: 45%; height: 45%; color: var(--mint-400); }
+
 .cardpick__glyph { font-size: calc(.36 * var(--t)); font-weight: 900; color: rgba(255, 255, 255, .3); }
+
 .cardpick__name { text-align: center; font-size: calc(.14 * var(--t)); line-height: 1.15; }
+
 /* a name's lines balanced, so none ends in one character (§35.18 review: 「アンジェリー|ナ」, 「维娜·维多利|亚」 at 小, and
    「ファートゥー|ス」, which `pretty` kept in Chrome and none of which it changed in Safari) */
+
 .cardpick__name { text-wrap: balance; }
+
 .cardpick__star { position: absolute; top: .04rem; right: .04rem; padding: 0 .04rem; background: #d9dedc; color: #111; font-size: calc(.12 * var(--t)); font-weight: 800; }
+
 .cardpick__op.r6 .cardpick__star { background: #ffcf5a; }
+
 .cardpick__op.r5 .cardpick__star { background: #f2e06b; }
+
 .cardpick__empty { flex: none; margin: 0; font-size: calc(.16 * var(--t)); color: var(--text-lo); }
+
 .cardpick__note { flex: none; display: flex; align-items: center; gap: .06rem; margin: 0; font-size: calc(.15 * var(--t)); color: var(--text-lo); }
+
 .cardpick__note .icon { flex: none; width: .18rem; height: .18rem; }
 
 /* ---- bottom: status, the difficulty pill with ⚙, the big button ------------------------------------------------ */
+
 .rs-foot {
   flex: none;
   display: grid;
@@ -517,14 +973,23 @@
   padding: .1rem .3rem .2rem .22rem;
   z-index: 2;
 }
+
 .rs-foot__left { min-width: 0; }
+
 .rs-foot__center { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: .08rem; }
+
 .rs-hint { margin: 0; font-size: calc(.18 * var(--t)); color: #d6dad8; text-align: center; }
+
 .room-bar__status .icon { width: 1.1em; height: 1.1em; margin-right: 4px; vertical-align: -2px; }
+
 .rs-ready { display: inline-flex; align-items: center; gap: 2px; margin-right: .14rem; font-size: calc(.16 * var(--t)); color: #9aa19e; vertical-align: middle; }
+
 .rs-ready .icon { width: max(.2rem, 13px); height: max(.2rem, 13px); color: #4b504e; }
+
 .rs-ready .icon.is-on { color: #4fe8c0; }
+
 .rs-ready b { margin-left: .06rem; color: #eef0ef; }
+
 .rs-pill {
   position: relative;
   display: inline-flex;
@@ -538,6 +1003,7 @@
   border-radius: 999px;
   box-shadow: 0 .04rem .16rem rgba(0, 0, 0, .5);
 }
+
 .rs-pill__diff, .rs-pill__ver {
   display: inline-flex;
   align-items: center;
@@ -551,17 +1017,25 @@
   border: 0;
   border-radius: 999px;
 }
+
 .rs-pill__diff {
   color: var(--d-color);
   background: rgba(255, 255, 255, .06);
   background: color-mix(in srgb, var(--d-color) 22%, #151616);
 }
+
 .rs-pill__diff .icon, .rs-pill__ver .icon { flex: none; width: 1.2em; height: 1.2em; }
+
 .rs-pill__code { font-size: calc(.13 * var(--t)); color: #9aa19e; }
+
 .rs-pill__diff:disabled { cursor: default; }
+
 .rs-pill__diff:hover:not(:disabled), .rs-pill__diff:focus-visible { filter: brightness(1.2); }
+
 /* another doctor's pill: opens the read-only 选择模拟协议 (the host chooses) */
+
 .rs-pill__diff.is-ro { cursor: help; }
+
 .rs-pill__gear {
   display: grid;
   place-items: center;
@@ -573,16 +1047,21 @@
   border: 2px solid #0e0f0f;
   border-radius: 50%;
 }
+
 .rs-pill__gear svg { width: 62%; height: 62%; fill: currentColor; }
+
 .rs-pill__gear.is-on, .rs-pill__gear:hover, .rs-pill__gear:focus-visible { background: #fff; }
+
 .rs-opts {
   position: absolute;
   left: 50%;
   bottom: calc(100% + .14rem);
   z-index: 10;
-  display: flex;
-  flex-direction: column;
-  gap: .12rem;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: .16rem;
+  row-gap: .1rem;
+  align-items: center;
   width: max-content;
   max-width: 92vw;
   padding: .16rem .2rem;
@@ -591,21 +1070,111 @@
   border: 1px solid rgba(255, 255, 255, .16);
   box-shadow: 0 .1rem .4rem rgba(0, 0, 0, .7);
 }
-.rs-opts h4 { margin: 0; font-size: calc(.2 * var(--t)); }
-/* 同盟设置's 模拟难度 row: the difficulty (the host's 更改 opens 选择模拟协议; the others read it) */
-.rs-opts__row { display: flex; align-items: center; gap: .12rem; font-size: calc(.14 * var(--t)); }
-.rs-opts__k { color: var(--text-lo); }
+
+.rs-opts h4 { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: .14rem; margin: 0; font-size: calc(.2 * var(--t)); }
+
+.rs-opts h4 small { font-size: calc(.14 * var(--t)); font-weight: 500; color: #8d9391; }
+
+/* The rows line up in two shared columns: the label, then the control. `display: contents` puts a row's label and its
+   control group into those columns, so the labels' left edges line up and so do the controls' (the switches and the
+   1× / 2× rule included). A switch keeps its name inside its button (test/ui/room-settings.e2e.test.js reads the
+   button's text), so its row leaves the label cell empty and the button starts at the controls' edge. [ASSUMED] the
+   columns — the event's ⚙ dialog has no label column. */
+
+.rs-opts__row { display: contents; }
+
+.rs-opts__k { color: var(--text-lo); font-size: calc(.14 * var(--t)); white-space: nowrap; }
+
+.rs-opts__ctl { display: flex; align-items: center; gap: .1rem; min-width: 0; font-size: calc(.14 * var(--t)); }
+
+.rs-opts .t-dim { margin-left: auto; }
+
+.rs-opts .tt-anchor { display: flex; min-width: 0; }
+
 .rs-opts__diff {
   display: inline-flex; align-items: center; gap: .06rem; min-height: .36rem; padding: .02rem .14rem;
   font: inherit; font-size: calc(.15 * var(--t)); font-weight: 700; white-space: nowrap;
   color: var(--d-color); background: rgba(0, 0, 0, .3); border: 1px solid var(--line-2);
 }
+
 .rs-opts__diff .icon { width: 1.1em; height: 1.1em; }
+
 .rs-opts__diff em { margin-left: .06rem; font-style: normal; color: var(--text-hi); text-decoration: underline; text-underline-offset: 2px; }
+
 .rs-opts__diff:hover:not(:disabled), .rs-opts__diff:focus-visible { border-color: var(--d-color); }
+
 .rs-opts__diff:disabled { cursor: default; opacity: .6; }
+
+/* 实验性选项 at the left of the bottom bar (this fork). The fork's rules lived in lobby.css and were lost in the
+   2026-10-14 rebase, so the button drew as a plain browser button; it joins the pill family of the bottom bar. */
+
+.rs-foot__left { display: flex; align-items: flex-end; }
+
+.rs-exp {
+  display: inline-flex; align-items: center; gap: .1rem; max-width: 100%; min-height: max(.6rem, 32px, calc(40px * var(--sp-ui, 1)));
+  padding: .06rem .18rem .06rem .14rem; font: inherit; font-size: calc(.18 * var(--t)); color: var(--text-hi);
+  text-align: left; background: rgba(12, 15, 15, .82); border: 1px solid rgba(255, 255, 255, .22); cursor: pointer;
+}
+
+.rs-exp > .icon { flex: none; width: 1.2em; height: 1.2em; color: var(--text-lo); }
+
+.rs-exp > span { display: flex; flex-direction: column; min-width: 0; }
+
+.rs-exp b { font-weight: 700; white-space: nowrap; }
+
+.rs-exp small { overflow: hidden; font-size: calc(.14 * var(--t)); color: var(--text-lo); text-overflow: ellipsis; white-space: nowrap; }
+
+.rs-exp:hover:not(:disabled) { border-color: var(--mint-a35); background: rgba(20, 30, 28, .9); }
+
+.rs-exp:disabled { cursor: default; opacity: .6; }
+
+.rs-exp.is-on { border-color: var(--mint-a35); }
+
+.rs-exp.is-on > .icon, .rs-exp.is-on small { color: var(--mint-400); }
+
+/* 组队匹配 (this fork): the same button as 开始模拟 (`.proto-start`, screens/lobby.css) — the dark frame and that label
+   size — only as wide as its four characters, without the mark and without 开始模拟's striped band (it crowded the
+   compact width). Its ground is the theme's ice accent (the version pill's blue), so it reads apart from the mint 开始模拟
+   beside it. */
+
+.rs-queue-go {
+  flex: none;
+  width: auto;
+  gap: 0;
+  padding: .03rem .3rem;
+  color: #07131f;
+  background: linear-gradient(180deg, var(--ice), color-mix(in srgb, var(--ice) 78%, #000));
+  box-shadow: 0 0 0 1px rgba(159, 212, 255, .5), 0 .06rem .2rem rgba(0, 0, 0, .55);
+}
+
+.rs-queue-go .proto-start__label { flex: none; padding-right: 0; font-size: min(calc(.4 * var(--t)), .46rem); white-space: nowrap; }
+
+/* the party queue (this fork): a full-screen overlay over the room — the team on the left, the queue on the right, the
+   seats still visible behind. Without these rules the panel is a plain flex child of the screen: it grows over the whole
+   page and pushes 取消 out of view. The panel keeps its own height so `.mf-stop` (margin-top: auto) stays at its bottom
+   edge and stays clickable. */
+
+.rs-queue {
+  position: absolute; inset: 0; z-index: var(--z-modal);
+  display: grid; grid-template-columns: minmax(0, 1fr) min(6.2rem, 46vw);
+  background: rgba(5, 6, 6, .55);
+}
+
+.rs-queue__team {
+  align-self: end; margin: 0 0 1.4rem .4rem; max-width: 5.4rem; padding: .16rem .2rem;
+  background: rgba(8, 15, 14, .9); border-left: 3px solid var(--mint-500);
+}
+
+.rs-queue__team h2 { margin: .04rem 0; font-size: max(calc(.28 * var(--t)), 16px); }
+
+.rs-queue__team p { margin: 0; font-size: max(calc(.15 * var(--t)), 12px); line-height: 1.5; color: var(--text-md); }
+
+.rs-queue > .rs-searchpanel { position: relative; inset: auto; width: auto; height: 100%; }
+
 .room-bar__right { display: flex; align-items: center; justify-content: flex-end; gap: .14rem; }
+
 .rs-go.proto-start { flex: none; width: min(4.6rem, 40vw); }
+
 /* the label (§35.18 review: it shared 选择模拟协议's wrapping label by accident, and on a phone a fixed 46 px button then cut
    every line): like the dialog's, it wraps onto a second line and the button grows (`.proto-start` min-height) rather than
    cutting it — on one line English 开始模拟 ran off the right at 中 and above at every desktop size, Japanese and Korean
@@ -613,17 +1182,27 @@
    STRONGHOLD PROTOCOL at .1rem (the design's .08rem at 小:
    at 特大 its 88 px floor made it 54 px wide in a 960 px window, which left 「Simulation」 no line of its own); on a short
    screen below. [ASSUMED] the caps */
+
 .rs-go .proto-start__label { flex: 1 1 auto; padding-right: 8%; font-size: min(calc(.4 * var(--t)), .46rem); white-space: normal; line-height: 1.1; }
+
 .rs-go .proto-start__rook { font-size: min(calc(.36 * var(--t)), .4rem); }
+
 .rs-go .proto-start__mark small { font-size: min(calc(.08 * var(--t)), .1rem); }
+
 .rs-go__box { flex: none; display: grid; place-items: center; width: max(.5rem, 28px); height: max(.5rem, 28px); border: 3px solid currentColor; border-radius: 6px; }
+
 .rs-go__box .icon { width: 80%; height: 80%; }
+
 .rs-go__icon { flex: none; display: grid; place-items: center; width: max(.5rem, 28px); height: max(.5rem, 28px); }
+
 .rs-go__icon .icon { width: 100%; height: 100%; }
+
 .rs-go.is-ready { background: linear-gradient(180deg, #7ff3d4, #4fe0bf); }
 
 /* the plugin panel's mode picker (ui/pluginPanel.js) and the 「AI 队友最后选择」 switch share these */
+
 .dpick { display: flex; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .3); }
+
 .dpick__opt {
   --d-color: var(--amber);
   position: relative;
@@ -641,31 +1220,162 @@
   letter-spacing: .08em;
   transition: color var(--t-fast), background-color var(--t-med), box-shadow var(--t-med);
 }
+
 .dpick__opt:last-child { border-right: 0; }
+
 .dpick__opt .icon { width: .2rem; height: .2rem; color: var(--d-color); opacity: .55; transition: opacity var(--t-fast); }
+
 .dpick__opt:hover:not(:disabled) { color: var(--text-hi); background: rgba(255, 255, 255, .03); }
+
 .dpick__opt:hover:not(:disabled) .icon { opacity: 1; }
+
 .dpick__opt:disabled { cursor: default; }
+
 .dpick__opt.is-active {
   color: var(--d-color);
   background: transparent; background: color-mix(in srgb, var(--d-color) 17%, transparent);
   box-shadow: inset 0 -3px 0 var(--d-color);
 }
+
 .dpick__opt.is-active .icon { opacity: 1; filter: drop-shadow(0 0 5px var(--d-color)); }
-.dpick--ro { border: 0; background: none; gap: .18rem; align-items: center; font-size: calc(.14 * var(--t)); }
-.ailast { display: flex; align-items: center; gap: .12rem; font-size: calc(.14 * var(--t)); }
-.ailast__opt { --d-color: var(--mint-400); height: auto; min-height: .36rem; padding: .02rem .14rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .3); font-size: calc(.15 * var(--t)); letter-spacing: .04em; }
+
+.dpick--ro { border: 0; background: none; gap: .18rem; align-items: center; }
+
+/* 「AI 队友最后选择」 (GitHub #338, co-op): one switch styled like a difficulty option, under the difficulty picker */
+
+.ailast__opt { --d-color: var(--mint-400); height: .36rem; padding: 0 .14rem; border: 1px solid var(--line-2); background: rgba(0, 0, 0, .3); font-size: calc(.15 * var(--t)); letter-spacing: .04em; min-height: .36rem; }
+
 .ailast__opt:last-child { border-right: 1px solid var(--line-2); }
+
 .ailast__opt .icon { opacity: .25; }
+
 .ailast__opt .icon.is-on { opacity: 1; }
 
+.ready-count .t-dim { font-size: calc(.22 * var(--t)); }
 
+.ready-count__icons .icon { width: .28rem; height: .28rem; color: var(--line-3); transition: color var(--t-med); }
+
+.ready-count__icons .icon.is-on { color: var(--mint-400); filter: drop-shadow(0 0 4px var(--mint-glow)); }
+
+.room-bar .btn--xl { min-width: 3.2rem; letter-spacing: .2em; }
+
+@media (max-width: 1100px) {
+  .room-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "settings actions" "status status"; gap: max(.12rem, calc(8px * var(--sp-ui, 1))) .24rem; }
+  .room-bar__difficulty, .room-bar .dpick { flex-wrap: wrap; max-width: 100%; }
+  .room-bar__right { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+  .room-bar__center { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: .16rem; }
+}
+
+@media (max-width: 600px) {
+  .room-bar { grid-template-columns: minmax(0, 1fr); grid-template-areas: "settings" "status" "actions"; }
+  .room-bar__left { align-items: center; }
+  .room-bar__right { justify-self: stretch; justify-content: center; }
+}
+
+/* ---- phones and narrow windows (the lobby's breakpoints, screens/lobby.css): one row of 44 px controls — 离开, 统计,
+   设置, 玩法说明 as icons, the invite key — and the connection status on its own strip under it (it was squeezed into a
+   column over the seat cards). Short landscape screens drop the title: the difficulty stays in the bottom bar. ------ */
+
+@media (max-width: 767px), (max-height: 460px) {
+  .room-screen .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; height: auto; min-height: 0;
+      padding: 4px calc(12px + var(--sa-r, 0px)) 4px calc(12px + var(--sa-l, 0px)); }
+  .room-screen .topbar__left { display: contents; }
+  .room-screen .topbar__left .btn--square.btn--lg { --sq: 44px; height: 44px; }
+  .room-screen .topbar__left > .btn:not(.btn--square) { order: 1; width: 44px; min-width: 44px; height: 44px; padding: 0; justify-content: center; }
+  /* the label's text goes (设置 draws its gear inside the label); the name stays on aria-label / title */
+  .room-screen .topbar__left > .btn:not(.btn--square) .btn__label { font-size: calc(.0 * var(--t)); letter-spacing: 0; }
+  .room-screen .topbar__left > .btn .btn__icon, .room-screen .topbar__left > .btn .btn__label > .icon { width: 20px; height: 20px; }
+  .room-screen .stats-entry .btn__icon + .btn__label { position: static; width: auto; height: auto; margin: 0; clip: auto; }
+  .room-screen .topbar__center { order: 2; flex: 1 1 100%; min-width: 0; }
+  .room-screen .topbar__center .micro { display: none; }
+  .room-screen .topbar__title { font-size: calc(.25 * var(--t)); }
+  .room-screen .topbar__right { order: 1; margin-left: auto; }
+  .room-ping { order: 3; flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; min-width: 0; }
+  .room-ping .latency-status { flex-wrap: wrap; gap: 4px 6px; }
+  .room-ping .ping, .room-ping .server-load-button, .room-ping .latency-status > * { min-height: 28px; }
+  .invite { grid-template-columns: auto auto; padding: 4px 8px; column-gap: 8px; }
+  .invite__code span { width: 28px; height: 36px; font-size: calc(.55 * var(--t)); }
+  .invite__btns { flex-direction: row; }
+  .invite__btns .btn { min-height: 36px; font-size: min(calc(.3 * var(--t)), calc(12px + var(--t-step))); padding-inline: 8px; }
+  .solo-note .micro, .room-screen .seat .micro, .room-bar .micro { display: none; }
+  /* small buttons of the seat cards and the bottom bar: readable and 36–44 px tall at the 40 px root */
+  .room-screen .seat__foot .btn, .room-bar .btn--sm, .room-bar .dpick button, .room-screen .ailast__opt { font-size: min(calc(.3 * var(--t)), calc(12px + var(--t-step))); min-height: 36px; letter-spacing: .02em; }
+}
+
+@media (max-height: 460px) {
+  .room-screen .topbar__center { display: none; }
+  /* the bottom bar in two compact rows (it took half of a 360 px screen and squeezed the seat cards) */
+  .room-bar { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "settings actions" "status actions"; gap: 4px 12px; min-height: 0;
+      padding: 6px calc(12px + var(--sa-r, 0px)) calc(6px + var(--sa-b, 0px)) calc(12px + var(--sa-l, 0px)); }
+  .room-bar__left { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .room-bar__center { flex-direction: row; justify-content: flex-start; gap: 8px; }
+  .room-bar__right { flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 260px; }
+  .room-bar__right .btn--lg { height: 36px; min-height: 36px; font-size: min(calc(.3 * var(--t)), calc(12px + var(--t-step))); padding-inline: 10px; }
+  .room-bar .btn--xl { height: 44px; min-width: 0; font-size: min(calc(.375 * var(--t)), calc(15px + var(--t-step))); letter-spacing: .1em; }
+}
+
+/* a portrait phone: the four seats in two rows of two (one row left most of the screen empty) */
+
+@media (max-width: 600px) and (min-height: 461px) {
+  .seats:not(.seats--expanded):not(.seats--solo) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: minmax(0, 1fr);
+      align-content: stretch; gap: 10px; padding: 10px 12px; }
+}
+
+/* AI 指定策略: the AI seat's strategy chip (the host's opens the picker) and the picker dialog */
+
+.seat__band { display: inline-flex; align-items: center; gap: .05rem; max-width: 100%; margin: .04rem auto 0; padding: .02rem .08rem;
+  border: 1px solid rgba(159, 212, 255, .3); background: rgba(159, 212, 255, .06); color: var(--text-md);
+  font-size: calc(.13 * var(--t)); }
+
+.seat__band .bandicon { --bi: .26rem; }
+
+.seat__band .icon { width: .14rem; height: .14rem; flex: none; }
+
+.seat__band-k { color: var(--ice); font-weight: 700; }
+
+.seat__band-name { max-width: 1.6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-hi); }
+
+.seat__band.is-editable { cursor: pointer; }
+
+.seat__band.is-editable:hover { border-color: var(--ice); }
+
+.seat__band.is-editable:disabled { cursor: default; opacity: .7; }
+
+.botband-dlg__tip { margin: 0 0 .12rem; font-size: calc(.13 * var(--t)); }
+
+.botband-dlg__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(1.4rem, 1fr)); gap: .08rem; }
+
+.botband { display: flex; flex-direction: column; align-items: center; gap: .04rem; padding: .08rem .06rem; cursor: pointer;
+  background: rgba(12, 15, 14, .82); border: 1px solid var(--line); color: var(--text-md); }
+
+.botband:hover:not(:disabled) { border-color: var(--line-3); }
+
+.botband .bandicon { --bi: .7rem; border: 1px solid var(--line-2); }
+
+.botband__auto { display: grid; place-items: center; width: .7rem; height: .7rem; border: 1px dashed var(--line-3); color: var(--ice); }
+
+.botband__auto .icon { width: .36rem; height: .36rem; }
+
+.botband__name { font-size: calc(.14 * var(--t)); font-weight: 700; color: var(--text-hi); text-align: center; }
+
+.botband__eff, .botband__used { font-size: calc(.11 * var(--t)); color: var(--text-dim, #8a9590); text-align: center; }
+
+.botband__used { color: var(--gold, #f6a329); }
+
+.botband.is-sel { border-color: var(--mint-400); background: linear-gradient(180deg, rgba(78, 216, 175, .18), rgba(12, 15, 14, .85)); }
+
+.botband.is-used { cursor: not-allowed; }
+
+.botband.is-used .bandicon { filter: grayscale(.8) brightness(.62); }
 
 .trusted-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 90; padding: 5px 16px; background: #9b202b; color: #fff; display: flex; justify-content: space-between; gap: 12px; }
+
 .trusted-banner button { color: inherit; text-decoration: underline; }
+
 .trusted-hash { overflow-wrap: anywhere; font-family: monospace; }
 
 /* ---- short landscape phones (≤ 520 CSS px tall; 1rem is ~40 px: the text gets its own sizes) ------------------- */
+
 @media (max-height: 520px) {
   .rs .rs-top { padding-top: 6px; }
   .rs-seats { padding-top: 14px; gap: 12px; }
@@ -699,13 +1409,11 @@
   /* an AI teammate's name without its 「AI·」 prefix (room.js): the avatar's AI badge and the card's AI 队友 tag already say
      it, and at 特大 on the 640 / 667 px phones it left 「AI·华…」 (review of 6f34f380). [ASSUMED] */
   .seat__name-pre { display: none; }
-  .rseat__pick { min-height: 22px; font-size: min(calc(.22 * var(--t)), calc(16px + var(--t-step) / 2)); }
-  .rseat__pick span { display: none; }
-  /* the badge and 更换立绘 share a row, the tags wrap under them; the 连接中断 band gives way to the state, which says the
+  /* the badge and the tags share a row and wrap under it; the 连接中断 band gives way to the state, which says the
      same, and an offline doctor's state drops its empty box (§35.18 review: a modded room's two tags and an offline
      doctor's card ran past the art) */
   .rseat__top { flex-direction: row; flex-wrap: wrap; justify-content: center; }
-  .rseat__top > .rseat__pick, .rseat__top > .rseat__tag { align-self: auto; }
+  .rseat__top > .rseat__tag { align-self: auto; }
   .rseat__lost, .rseat.is-offline .rseat__box { display: none; }
   /* in a modded room the 插件内容就绪 tag gives way here, the expected state (载入中 / 校验失败 stay, and the status line
      waits for every doctor's content): with 已同意 as well, the badge and the tag's two lines left no room for the state —
@@ -764,11 +1472,13 @@
    whatever the names; the art gives up that height. On the 360 px tall phones the art has none to give at 大 / 特大
    (「Standing by」, the AI frame's tag and 添加 AI 队友 ran past it with a modded room's tags), so the name keeps its one
    line there. [ASSUMED] two lines, the 370 px */
+
 @media (max-height: 520px) and (min-height: 370px) {
   .rseat__plate { min-height: max(32px, calc(36px * var(--sp-ui, 1)), calc(2.2 * min(calc(.28 * var(--t)), calc(18px + var(--t-step) / 2)) + 8px)); }
   .rseat__who { grid-row: 1 / 3; align-self: center; }
   .rseat__who .seat__name { white-space: normal; overflow-wrap: anywhere; line-height: 1.1; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 }
+
 @media (max-width: 900px) {
   /* the centre column takes what the button leaves (it keeps its width); the status line and the pill sit at its start, as
      narrow as their text (left-aligned, as before the §35.18 review) */
@@ -776,44 +1486,68 @@
   .rs-foot__left { display: none; }
   .rs-foot__center { justify-self: start; max-width: 100%; }
 }
+
 @media (max-aspect-ratio: 1/1) {
   .rs-seats { justify-content: flex-start; }
   .rseat { --w: max(1.8rem, 42vw); }
 }
+
 @media (prefers-reduced-motion: reduce) {
   .rseat, .rs__bg, .rs-top, .rs-brief, .rs-foot { animation: none; }
 }
 
 /* ---- official versions (DESIGN §35.23): the version pill beside the difficulty, ⚙'s 版本 row, the banner; the name ends
    in an ellipsis in the pill (a phone, a long language) ---- */
+
 .rs-clock__ver { margin-left: .1rem; }
+
 /* The tooltip must carry the pill's height: an auto-height wrapper makes its child's 78% resolve to auto. */
+
 .rs-pill__version { height: 100%; min-width: 0; align-items: center; }
+
 .rs-pill__ver {
   min-width: 0; max-width: 2.6rem;
   color: #cfe9ff; background: rgba(120, 196, 255, .12);
 }
+
 .rs-pill__ver .icon { color: #9fd3ff; }
+
 .rs-pill__vername { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
 .rs-pill__ver:disabled { cursor: default; opacity: .7; }
+
 .rs-pill__ver.is-ro { cursor: help; }
+
 .rs-pill__ver:hover:not(:disabled), .rs-pill__ver:focus-visible { filter: brightness(1.2); }
-.rs-opts__ver { color: #cfe9ff; }
+
 .rs-verbanner {
   position: relative; flex: none; display: flex; align-items: center; justify-content: center; gap: .08rem;
   margin: 0 .6rem .1rem; padding: .06rem .16rem; color: var(--text-md); font-size: calc(.14 * var(--t)); text-align: center; overflow-wrap: anywhere;
   background: rgba(120, 196, 255, .08); border: 1px solid rgba(120, 196, 255, .35);
 }
+
 .rs-verbanner .icon { flex: none; width: 1.1em; height: 1.1em; color: #9fd3ff; }
+
 /* a short screen (a phone in landscape): the seats and the footer keep the height — the strip floats over the seats while
    the vote runs (it wraps and scrolls inside), the banner gives its line up (the pill's tooltip says it) */
+
 @media (max-height: 520px) {
   .rs-verbanner { display: none; }
   .rs .vervote {
-    position: fixed; left: 50%; top: 50%; z-index: 30; width: min(calc(100vw - 24px), 9rem); max-height: 70svh; margin: 0; overflow-y: auto;
-    transform: translate(-50%, -50%); box-shadow: 0 .1rem .5rem rgba(0, 0, 0, .8);
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    z-index: 30;
+    width: min(calc(100vw - 24px), 9rem);
+    max-height: 70svh;
+    margin: 0;
+    overflow-y: auto;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 .1rem .5rem rgba(0, 0, 0, .8);
     /* too tall for the screen: the text scrolls, the buttons stay in view below it (like the floating strip's) */
-    flex-direction: column; flex-wrap: nowrap; align-items: stretch;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
   }
   .rs .vervote .vervote__text { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
   .rs .vervote .vervote__actions { flex: none; }

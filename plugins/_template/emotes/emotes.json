@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "表情套组：Ciallo",
+  "sortId": 100003,
+  "emotes": [
+    { "id": "emote_ciallo_murasame", "sortId": 20001, "picId": "pic_ciallo_murasame_battle", "label": "丛雨 Ciallo" },
+    { "id": "emote_ciallo_yoshino", "sortId": 20002, "picId": "pic_ciallo_yoshino_battle", "label": "芳乃 Ciallo" },
+    { "id": "emote_ciallo_lena", "sortId": 20003, "picId": "pic_ciallo_lena_battle", "label": "蕾娜 Ciallo" },
+    { "id": "emote_ciallo_mako", "sortId": 20004, "picId": "pic_ciallo_mako_battle", "label": "茉子 Ciallo" },
+    { "id": "emote_ciallo_nene", "sortId": 20005, "picId": "pic_ciallo_nene_battle", "label": "宁宁 Ciallo" },
+    { "id": "emote_ciallo_meguri", "sortId": 20006, "picId": "pic_ciallo_meguri_battle", "label": "巡 Ciallo" }
+  ]
+}

@@ -11,9 +11,6 @@
 //
 // `server/http/media.js` resolves /media/… back to the real file under public/assets/audio and still answers with
 // `Content-Type: audio/mpeg` + range support; Web Audio sniffs the container, so the URL is all the same to it.
-// A served manifest's content-hashed URL keeps its segment (shared/assetPaths.js; host bandwidth, layer 1):
-//
-//     /assets/~0123456789abcdef/audio/bgm/act1.mp3   →   /media/~0123456789abcdef/bgm/act1
 // A cosmetic plugin's audio (DESIGN §32 P1a, docs/PLUGINS.md §9) is served without its extension at its own URL — the
 // same plugin route, its /p/<id>/<hash8>/ prefix kept (server/http/static.js):
 //
@@ -23,12 +20,14 @@
 // /media/ response is unusable (a 404, or a 200 that is not audio at all — some static hosts answer a missing
 // path with the SPA's index.html).
 import { MEDIA_PREFIX, AUDIO_EXTS } from '../../shared/media.js';
-import { splitHashedPath } from '../../shared/assetPaths.js';
 import { PLUGIN_AUDIO_EXTS } from '../../shared/plugins/manifest.js';
 
-const AUDIO_PATH = /^\/assets\/audio\/(.+)$/i;
+// The content-hash segment a served manifest carries (shared/assetPaths.js) is kept alongside the path:
+// `/assets/~<hash>/audio/bgm/act1.mp3` → `/media/~<hash>/bgm/act1` (shared/media.js).
+const AUDIO_PATH = /^\/assets\/(~[0-9a-f]{16}\/)?audio\/(.+)$/i;
 /** A cosmetic plugin's audio file: /p/<id>/<hash8>/<path>.<mp3 | ogg> (shared/plugins/visual.js pluginFileUrl). */
-const PLUGIN_AUDIO = /^\/p\/[a-z0-9][a-z0-9-]{1,31}\/[0-9a-f]{8}\/(.+)$/;
+// (fork) behind the router the URL carries the page's generation prefix (shared/gen.js): /_build/<gen>/_/p/…
+const PLUGIN_AUDIO = /^(?:\/_build\/[A-Za-z0-9][A-Za-z0-9-]{0,31}\/_)?\/p\/[a-z0-9][a-z0-9-]{1,31}\/[0-9a-f]{8}\/(.+)$/;
 
 /**
  * Rewrite an audio URL to its extension-less `/media/…` form.
@@ -57,14 +56,18 @@ export function mediaUrl(url, origin = globalThis.location?.origin) {
     if (!ext || /\.[A-Za-z0-9]+$/.test(stem) || stem.endsWith('/') || stem.split('/').some((x) => x === '.' || x === '..')) return url;
     return `${stem}${u.search}`;
   }
-  const { hash, path: plain } = splitHashedPath(u.pathname);
-  const m = AUDIO_PATH.exec(plain);
+  // A release-namespace URL (server/assetVersion.js) keeps its `/_v/<tag>/` prefix: /_v/<tag>/assets/audio/a.mp3
+  // → /_v/<tag>/media/a. The tag is 16 hex digits at the very start (case-insensitive, matching AUDIO_PATH).
+  const re = /^\/_v\/[0-9a-fA-F]{16}(?=\/)/.exec(u.pathname);
+  const prefix = re ? re[0] : '';
+  const m = AUDIO_PATH.exec(prefix ? u.pathname.slice(prefix.length) : u.pathname);
   if (!m) return url;
-  let rest = m[1];
+  const hash = m[1] || '';        // the content-hash segment of a content-indexed manifest, kept (shared/media.js)
+  let rest = m[2];
   const ext = AUDIO_EXTS.find((e) => rest.toLowerCase().endsWith(e));
   if (!ext) return url;             // not a file we serve as audio (e.g. "x.mp3.bak") — leave it alone
   rest = rest.slice(0, -ext.length);
   const segments = rest.split('/');
   if (!rest || segments.some((s) => !s || s === '.' || s === '..' || s.startsWith('.'))) return url;
-  return `${MEDIA_PREFIX}${hash ? `~${hash}/` : ''}${rest}${u.search}`;
+  return `${prefix}${MEDIA_PREFIX}${hash}${rest}${u.search}`;
 }

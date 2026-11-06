@@ -99,6 +99,8 @@ export class MatchClientCombat {
   _startMsg(f, pid, { watch = false } = {}) {
     return {
       t: 'b.start', battleId: f.battleId, fieldId: f.fieldId, kind: f.kind,
+      // 2V2: the field's team — the client picks its entry out of b.pool.pools (the scalar hp is null there)
+      team: f.team ?? null,
       spec: this.spectators.has(pid) ? this._spectatorSpec(f) : f.spec,
       authoritative: !!(!f.done && !f.verifyJob && f.mode === 'client' && f.authority === pid && !watch),
       startAt: f.startAt, serverNow: this.sched.now(), elapsed: Math.round(this._fieldElapsed(f) * 1000) / 1000,
@@ -140,7 +142,7 @@ export class MatchClientCombat {
     if (f.verifyJob) return;
     const lim = f.spec.timeLimit > 0 ? f.spec.timeLimit : 60;
     const at = f.startAt + Math.round((lim / this.gameSpeed) * 1000) + RESULT_GRACE_MS;
-    f.deadlineTimer = this.later(Math.max(0, at - this.sched.now()), () => {
+    f.deadlineTimer = this.later(Math.max(0, at - this.sched.gameNow()), () => {
       f.deadlineTimer = null;
       if (f.done || f.mode !== 'client') return;
       this._runOnServer(f, 'timeout');
@@ -153,7 +155,7 @@ export class MatchClientCombat {
     if (f.done || f.result == null) return;
     if (this.paused) { f.rearmRelease = true; return; }
     const doneAt = f.startAt + Math.round(((f.endGt || 0) / this.gameSpeed) * 1000);
-    const wait = this.sched.instant ? 0 : Math.max(0, doneAt - this.sched.now());
+    const wait = this.sched.instant ? 0 : Math.max(0, doneAt - this.sched.gameNow());
     f.doneTimer = this.later(wait, () => { f.doneTimer = null; this._fieldDone(f); });
   }
 
@@ -188,6 +190,8 @@ export class MatchClientCombat {
       f.resultSource = 'server';
       f.timeline = run.timeline;
       f.endGt = Number(run.battle.time) || 0;
+      // P2: the finished battle graph is released now, not at the phase end (see _releaseFieldBattle)
+      this._releaseFieldBattle(f, run);
       this._armRelease(f);
     };
     const sliceCtl = testSlice(this);
@@ -211,13 +215,35 @@ export class MatchClientCombat {
   /** m.public ~1 Hz while server-run fields progress along their timelines. */
   _armProgressTicker() {
     if (this._progressTimer || this.sched.instant) return;
+    // A frozen match (the owner's solo pause, an idle suspension) wakes up for nothing: park the
+    // 1 Hz ticker on `_progressWanted` and let `_resume` hand it its next tick exactly once
+    // (server/match/match/pause.js). Ported from the fork's pause guard.
+    if (this.paused) { this._progressWanted = true; return; }
     const tick = () => {
       this._progressTimer = null;
+      if (this.paused) { this._progressWanted = true; return; }
       if (!this.fields.some((f) => f.cc && f.mode === 'server' && !f.done && f.timeline)) return;
       this.markPublic();
       this._progressTimer = this.later(1000, tick);
     };
     this._progressTimer = this.later(1000, tick);
+  }
+
+  /**
+   * Release a server-run field's finished battle graph (M3, ported from the fork's P2). Called from
+   * `complete()` the moment the field's `HeadlessJob` is done: the job was the only thing stepping it, and
+   * everything the match still reads travels beside it — `f.result` (settlement / LP / lastResults),
+   * `f.timeline` (the teammates' progress UI on the field clock), `f.endGt` (what `_armRelease` waits for)
+   * and `f.battleErrors` (the engine-error records `_collectSimErrors` folds into `m.simErrorLog`).
+   * Keeping the whole graph until the phase end — `f.result` is released at the battle's natural end on the
+   * field clock, up to a whole battle's length later — costs one bot seat ~100 KB at R1 and ~200-400 KB at
+   * R7/R13 per match. A field run in a worker already leaves `f.battle` null for its whole life, so every
+   * reader tolerates this. Overridable (a test keeps the graph to compare the two paths); it changes no
+   * recorded value.
+   */
+  _releaseFieldBattle(f, run) {
+    f.battleErrors = Array.isArray(run.battle && run.battle.errors) ? run.battle.errors : null;
+    f.battle = null;
   }
 
   /** A field has its final result. */
@@ -227,12 +253,16 @@ export class MatchClientCombat {
     f.live = false;
     this._clearFieldTimers(f);
     if (!f.result) f.result = syntheticResult(f.players, { bossBy: f.bossBy });
+    // Client/headless compatibility: credit only after the validated result's natural release, not ahead of its clock.
+    if (!f.result.synthetic) this._syncNormalLayers(f, Object.fromEntries(
+      Object.entries(f.result.perPlayer || {}).map(([pid, pp]) => [pid, pp.layerGains || {}])));
     f.progress.done = true;
     this.markPublic();
     this._maybeFieldsDone();
   }
 
   _maybeFieldsDone() {
+    if (this.emergencyFrozen) return;
     if (!this.fields.length || this.fields.some((f) => f.cc && !f.done)) return;
     if (!this.fields.every((f) => f.cc)) return;
     if (this.phase === PHASE.COMBAT) this._finishCombat((f) => f.result);

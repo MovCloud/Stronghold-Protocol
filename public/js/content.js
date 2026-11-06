@@ -59,6 +59,7 @@ import { createStore, loadPref, savePref, store as appStore } from './store.js';
 import { data as dataStore } from './data.js';
 import { net as appNet } from './net.js';
 import { cosmetics, loadVisual, visualNow } from './cosmetics.js';
+import { restoreLocalSkins } from './skinWorkshop.js';
 import { PLUGINS_URL } from '../../shared/plugins/manifest.js';
 import { contentHashOf, csUrlPart, isContentHash, isContentHash as isVisualHash } from '../../shared/plugins/identity.js';
 import { resolveThemeVars, themeVarsOf } from '../../shared/plugins/theme.js';
@@ -68,6 +69,7 @@ import { getLang, langChain, t, N_ } from '../../shared/i18n.js';
 import { DEV_BUILD } from '../../shared/constants.js';
 import { DEFAULT_VERSION, versionById, versionSlug } from '../../shared/versions.js';
 import { shownVersion, welcomeVersion } from './versions.js';
+import { genUrl } from './gen.js';
 
 /** The localStorage preference (`sp.pref.<key>`) of the personal cosmetic plugins: their ids. */
 export const PERSONAL_PREF = 'cosmetics';
@@ -81,7 +83,9 @@ const PARTLY = N_('部分外观插件素材无法使用，相应位置显示原�
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isIds = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string' && /^[a-z0-9][a-z0-9-]{1,31}$/.test(x));
-const defaultFetch = (...a) => globalThis.fetch(...a);
+// (fork) every root URL of a plugin catalogue, visual set or content set in this page's server generation (gen.js):
+// they live in one server process only. URLs are checked unprefixed (loadContentSet) and prefixed only here.
+const defaultFetch = (url, ...a) => globalThis.fetch(typeof url === 'string' ? genUrl(url) : url, ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -285,6 +289,20 @@ export function installContent({ store = appStore, data = dataStore, layers = co
   retryDelays = VISUAL_RETRY_MS } = {}) {
   const view = (v) => layers.apply(v);
   data.setView('assets', view);
+  // the local skin workshop's document (P6 §3.4, skinWorkshop.js): registered once, when the art manifest is in — the
+  // charIds of its skins are checked against it (skinWorkshop.js restoreLocalSkins). The layer itself rides
+  // cosmetics.setSkins' pending handling, so it lands whether shared/plugins/visual.js is loaded yet or not. An empty
+  // document registers nothing and no layer changes: a page without workshop skins runs the main-line path.
+  let localSkinsTold = false;
+  const syncLocalSkins = () => {
+    if (localSkinsTold) return;
+    const manifest = data.status('assets') === 'ready' ? data.get('assets') : null;
+    if (!manifest) return;
+    localSkinsTold = true;
+    restoreLocalSkins({ manifest });
+  };
+  const offLocalSkins = data.subscribe(syncLocalSkins);
+  syncLocalSkins();
   // every layer change: data.js tells the `assets` subscribers (useData('assets') re-renders the interface's art)
   const offLayers = layers.subscribe(() => data.setView('assets', view));
   // the page says it once, whatever the trouble: a document that will not load, writes left out, a file that failed
@@ -309,7 +327,12 @@ export function installContent({ store = appStore, data = dataStore, layers = co
   let roomVs = null;
   let roomReq = 0;
   const syncRoom = (s) => {
-    const vs = isVisualHash(s?.room?.content?.vs) ? s.room.content.vs : null;
+    // (fork) a player the matchmaker brought here (搜寻队友 / 单人匹配: seat `matched`) does not get the host's cosmetic
+    // plugins — their own personal ones still apply; once they host the room, its plugins are theirs again
+    const me = s?.me?.playerId;
+    const mine = me && s?.room ? [...(s.room.seats || []), ...(s.room.spectators || [])].find((x) => x && x.playerId === me) : null;
+    const skip = !!mine?.matched && s.room.hostId !== me;
+    const vs = !skip && isVisualHash(s?.room?.content?.vs) ? s.room.content.vs : null;
     if (vs === roomVs) return;
     roomVs = vs;
     const req = ++roomReq;
@@ -376,7 +399,7 @@ export function installContent({ store = appStore, data = dataStore, layers = co
   if (personal.get().ids.length) syncPersonal();
   return () => {
     ++personalReq; ++roomReq; // Drop in-flight answers before removing this install's properties and layers.
-    offStore(); offPersonal(); offCatalog(); offLayers(); offFailed(); layers.onDrop(null);
+    offStore(); offPersonal(); offCatalog(); offLayers(); offFailed(); offLocalSkins(); layers.onDrop(null);
     doc?.removeEventListener?.('error', onImgError, true);
     data.setView('assets', null); layers.setRoom(null); layers.setPersonal([]);
     themeApplied = applyThemeProperties(globalThis.document?.documentElement, [], themeApplied);

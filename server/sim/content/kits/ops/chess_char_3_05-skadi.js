@@ -1,4 +1,5 @@
 // server/sim/content/kits/ops/chess_char_3_05-skadi.js — 斯卡蒂 (char_263_skadi) kit, tier 3.
+import { nativeOperator } from '../shared/nativeIdentity.js';
 // Conventions of the tier-3 kits: ../shared/tier3.js; kit contract and rules: ../README.md.
 
 import { num, defOf, talentBb, traitBb, altSkills, statSkill, fx } from '../shared/tier3.js';
@@ -30,7 +31,7 @@ export default {
       talents: [
         { install(battle, unit) { // "编入队伍时": every Abyssal Hunter of this player, for the whole battle
           for (const a of battle.allyUnits) {
-            if (a.kind === 'op' && a.ownerId === unit.ownerId && ABYSSAL.has(a.def?.charId)) {
+            if (nativeOperator(a) && a.ownerId === unit.ownerId && ABYSSAL.has(a.def?.charId)) {
               battle.addBuff(a, { key: 'talent:skadi_predator', mods: { atkPct: num(t0.atk) }, persist: true, allowDead: true, source: unit });
             }
           }

@@ -14,6 +14,9 @@
 //   of silence (猎狗 / 深池侦察犬 bark on 20 of 100 attacks), and give each sound a volume; `indexAudio().mixOf(paths)`
 //   returns { p?, vol? } of the bank a picked path list came from (plan.mjs writes it as sfx.units[id].mix).
 
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
+
 const PREFIX_RE = /^audio\/sound_beta_2\//i;
 
 /**
@@ -631,6 +634,22 @@ export const VOICE_DIRS = Object.freeze({ cn: 'voice_cn', jp: 'voice', en: 'voic
 export const VOICE_CUSTOM_DIR = 'voice_custom';
 
 /**
+ * The operators whose only dub is the collab one (charword `voiceLangDict[charId].dict` holds LINKAGE and no
+ * CN_MANDARIN — 丰川祥子 and the other 联动 operators): the official client plays those Japanese lines, from the `voice/`
+ * dump, under every voice setting — there is no `voice_cn/` folder for them (checked on the mirror 2026-10-15).
+ * @param {any} charword excel/charword_table.json
+ * @returns {Set<string>} charIds
+ */
+export function linkageOnlyVoice(charword) {
+  const out = new Set();
+  for (const [id, v] of Object.entries(charword?.voiceLangDict || {})) {
+    const dubs = Object.keys(v?.dict || {});
+    if (dubs.includes('LINKAGE') && !dubs.includes('CN_MANDARIN')) out.add(id);
+  }
+  return out;
+}
+
+/**
  * The own-language dub of each operator that has one: charword `voiceLangDict` entries whose language is of
  * `groupType` CUSTOM in `voiceLangTypeDict` (collab voices, LINKAGE, are not). The dub's folder under
  * VOICE_CUSTOM_DIR is its word key in lower case (`char_102_texas_ITA` → `char_102_texas_ita`; some dubs, e.g.
@@ -653,6 +672,55 @@ export function nativeVoiceDirs(charword) {
   return out;
 }
 
+/** Validate and deduplicate a language list; an unknown dump is never a guessed source path. */
+export function normalizeVoiceLangs(value) {
+  const values = typeof value === 'string' ? [value] : Array.from(value || []);
+  const out = [];
+  for (const item of values) {
+    if (typeof item !== 'string') throw new Error('voice languages must be strings');
+    for (const lang of item.split(',').map((s) => s.trim())) {
+      if (!Object.hasOwn(VOICE_DIRS, lang)) throw new Error(`unknown voice language ${lang || '(empty)'} (cn | jp | en | kr)`);
+      if (!out.includes(lang)) out.push(lang);
+    }
+  }
+  if (!out.length) throw new Error('voice languages must not be empty');
+  return out;
+}
+
+/** Keep installed, unrequested language slots referenced even during a later --prune rebuild. */
+export function retainInstalledVoices(current, next, assetRoot) {
+  if (!current?.voiceByLang && !next?.voiceByLang) return { audio: next, files: new Set() };
+  const files = new Set(), voiceByLang = {};
+  const installed = (slots, lang) => {
+    const chars = {};
+    for (const [id, rec] of Object.entries(slots || {})) {
+      if (!/^char_\d+_[a-z0-9]+$/i.test(id)) continue;
+      const kept = {};
+      for (const [slot, value] of Object.entries(rec || {})) {
+        const lines = Array.isArray(value) ? value : [value];
+        if (!lines.length || lines.some((url) => {
+          if (typeof url !== 'string' || !new RegExp(`^/assets/audio/voice/${lang}/${id}/cn_\\d{3}\\.mp3$`).test(url)) return true;
+          try { return !statSync(join(assetRoot, url.slice('/assets/'.length))).isFile(); } catch { return true; }
+        })) continue;
+        kept[slot] = value;
+      }
+      if (Object.keys(kept).length) chars[id] = kept;
+    }
+    return chars;
+  };
+  for (const lang of Object.keys(VOICE_DIRS)) {
+    const old = installed(current?.voiceByLang?.[lang] || (lang === 'cn' ? current?.voice : null), lang);
+    const fresh = installed(next?.voiceByLang?.[lang] || next?.voice, lang);
+    const chars = { ...old };
+    for (const [id, slots] of Object.entries(fresh)) chars[id] = { ...old[id], ...slots };
+    if (Object.keys(chars).length || Object.hasOwn(next?.voiceByLang || {}, lang) || Object.hasOwn(current?.voiceByLang || {}, lang)) voiceByLang[lang] = chars;
+  }
+  for (const chars of Object.values(voiceByLang)) for (const slots of Object.values(chars)) for (const value of Object.values(slots)) {
+    for (const url of Array.isArray(value) ? value : [value]) files.add(url.slice('/assets/'.length));
+  }
+  return { audio: { ...next, voice: voiceByLang.cn || {}, voiceByLang }, files };
+}
+
 /** Official `placeType` → the manifest's voice slot (public/js/audio.js VOICE_PRIORITY / VOICE_COOLDOWN_MS). */
 export const VOICE_SLOTS = Object.freeze({
   BATTLE_START: 'start',            // 行动出发: 开战
@@ -673,10 +741,10 @@ export const VOICE_SLOTS = Object.freeze({
 });
 
 /**
- * The slots the client can actually request — the only ones `public/js/audio.js` ever asks for: 行动出发 start, 首次接敌
- * faceEnemy, 作战中1-4 skillN, 部署 place (a running battle's deploy events), the settlement lines resultFour /
- * resultThree / resultTwo / resultLose (public/js/screens/game.js onResult) and 选中干员 select (the detail panel opening
- * on an operator the player tapped, in every phase since 0.2.2).
+ * The slots a running battle can actually request — the only ones `public/js/audio.js` ever asks for (the 休整期 is
+ * silent, so nothing else is played): 行动出发 start, 首次接敌 faceEnemy, 作战中1-4 skillN, 部署 place (the deploy
+ * events) and 选中干员 select (the detail panel, behind its combat flag), plus the settlement lines
+ * resultFour / resultThree / resultTwo / resultLose (public/js/screens/game.js onResult).
  * `buildPlan` plans these by default; `--voice-all` widens it to every slot of VOICE_SLOTS.
  */
 export const VOICE_BATTLE_SLOTS = Object.freeze(['start', 'faceEnemy', 'select', 'place',
@@ -687,21 +755,25 @@ export const VOICE_BATTLE_SLOTS = Object.freeze(['start', 'faceEnemy', 'select',
  * 任命队长 squadFirst). `test/docs-consistency.test.js` proves the client never asks for one, so planning them only
  * makes every `npm run assets` download 360 files (19.3 MB, CN dub) that no player will ever hear — they are left out
  * unless `--voice-all` is passed. 部署 `place` and 选中干员 `select` deliberately stay in: the official client groups
- * them with the prep lines, but the client does play them (the deploy events; a tap on an operator).
+ * them with the prep lines, but a battle does play them (the deploy events; the detail panel behind its combat flag).
  */
 export const VOICE_PREP_SLOTS = Object.freeze(['gacha', 'squad', 'squadFirst']);
 
 /**
  * Index charword_table.json into per-character voice slots, in voiceIndex order (one slot may have several lines).
- * Only the base word key (`wordKey === charId`) is used: the dump has no folder for a skin variant's word key
- * (`char_x_ita`, `char_x_epoque#28`, …) — those files simply do not exist upstream.
+ * By default only the base word key (`wordKey === charId`) is used. An outfit's own voice set has its own word key
+ * (`char_4064_mlynar_epoque#28`): the dump does have those folders (`voice_cn/char_4064_mlynar_epoque%2328/`, verified
+ * 2026-10-11 — the '#' must be URL-encoded), and `wordKeys` (fork, docs/OUTFITS.md: data/outfits.json `voice`) indexes
+ * them under the word key instead of the charId.
  * @param {any} charword parsed excel/charword_table.json
  * @param {string} [lang] voiceId prefix — the zh_CN table carries the `CN_*` lines; the other dubs share the numbering
  * @param {Iterable<string>|null} [only] slot names to keep; null/omitted keeps every slot (VOICE_BATTLE_SLOTS is what
  *   the plan uses by default, so a battle's own lines are planned and the prep-only ones are not)
- * @returns {Map<string, Record<string, string[]>>} charId → slot → voiceAsset ('char_263_skadi/CN_023')
+ * @param {Iterable<string>} [wordKeys] outfit word keys to index too (each under its own key)
+ * @returns {Map<string, Record<string, string[]>>} charId (or outfit word key) → slot → voiceAsset ('char_263_skadi/CN_023')
  */
-export function indexVoice(charword, lang = 'CN', only = null) {
+export function indexVoice(charword, lang = 'CN', only = null, wordKeys = []) {
+  const extra = new Set(wordKeys || []);
   const keep = only ? new Set(only) : null;
   const out = new Map();
   const words = charword?.charWords;
@@ -710,7 +782,8 @@ export function indexVoice(charword, lang = 'CN', only = null) {
   const seen = new Map();
   for (const e of Object.values(words)) {
     if (!e || typeof e !== 'object') continue;
-    const charId = e.charId, slot = VOICE_SLOTS[e.placeType], vid = e.voiceId;
+    const slot = VOICE_SLOTS[e.placeType], vid = e.voiceId;
+    const charId = extra.has(e.wordKey) ? e.wordKey : e.charId;
     if (!charId || !slot || (keep && !keep.has(slot)) || typeof vid !== 'string' || !vid.startsWith(`${lang}_`)) continue;
     if (e.wordKey !== charId) continue;
     if (typeof e.voiceAsset !== 'string' || !e.voiceAsset) continue;

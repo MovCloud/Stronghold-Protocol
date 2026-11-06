@@ -16,8 +16,8 @@
 //   opts.mode        'solo' | 'coop'
 //   opts.difficulty  'FUNNY'|'NORMAL'|'HARD'|'ABYSS'
 //   opts.modeId      string                     modeIdFor(mode, difficulty), e.g. 'mode_multi_hard'
-//   opts.seats       Array<{ seat: 0..3, playerId: string, name: string, isBot: boolean, connected: boolean }>
-//                    sorted by seat, 1–4 entries, ≥ 1 human; solo ⇒ exactly 1 human and no bots.
+//   opts.seats       Array<{ seat: 0..19, playerId: string, name: string, isBot: boolean, connected: boolean }>
+//                    sorted by seat, 1–20 entries, ≥ 1 human; solo ⇒ exactly 1 human and no bots.
 //                    Bot playerIds start with 'ai_'. Seat indexes may have gaps (e.g. seats 0 and 2).
 //   opts.seed        uint32                     master seed for all match randomness
 //   opts.data        frozen game data (server/data.js getData()); may lack keys while data is generated
@@ -60,11 +60,13 @@
 // onEnd — so the lobby's "play again" loop can be exercised, also from a browser that has no briefing UI.
 // 'g.emote' is relayed as m.emote (1 s cooldown) so clients can test broadcast plumbing.
 
-import { C2S } from '../../shared/protocol.js';
+import { C2S, C2S_FORK } from '../../shared/protocol.js';
 import { PHASE, ERR, EMOTE_COOLDOWN_MS, GEO, modeIdFor } from '../../shared/constants.js';
 import { getConfig, getMode } from '../data.js';
+import { t } from '../../shared/i18n.js';
 
-const GAME_TYPES = new Set(Object.keys(C2S).filter((t) => Object.hasOwn(C2S, t) && t.startsWith('g.')));
+// Fork types (C2S_FORK, validated identically per protocol.js) join the published v1 registry here.
+const GAME_TYPES = new Set([...Object.keys(C2S), ...Object.keys(C2S_FORK)].filter((t) => t.startsWith('g.')));
 const DEFAULT_INFO_CHECK_S = 25;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
@@ -172,6 +174,16 @@ export class StubMatch {
     this.maybeFinish(false);
   }
 
+  /** The host removed a bot seat mid-match (room.kick on an AI seat): treated like a quit (the seat is departed). */
+  onBotRemove(playerId) {
+    const p = this.players.get(playerId);
+    if (!p || !p.isBot || p.left || this.disposed) return;
+    p.left = true;
+    if (this.ended) return;
+    this.broadcastFn(this.publicView());
+    this.maybeFinish(false);
+  }
+
   dispose() {
     this.disposed = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
@@ -225,7 +237,7 @@ export class StubMatch {
       })),
       fields: [],
       stub: true,
-      message: '对局核心尚未实现（平台占位 STUB）：全员确认本局信息或倒计时结束后将直接结算。', // i18n-ignore: development placeholder
+      message: t('对局核心尚未实现（平台占位 STUB）：全员确认本局信息或倒计时结束后将直接结算。'), // development placeholder
     };
   }
 

@@ -550,8 +550,9 @@ test('a switch: others un-readied, settings cleared, a card the version lacks dr
   // the last match's replay, still owed to everyone — a spectator too (buildReplay): the old version's chess ids, so the
   // WHOLE replay goes with the switch, not only the proposer's (proposeVersion drops that one itself)
   room.replay = { publicFrame: null, frames: new Map([[a.playerId, '{}'], [b.playerId, '{}'], [spy.playerId, '{}']]), pending: new Set([a.playerId, b.playerId, spy.playerId]) };
-  ok(h.lobby.card(b, { charId: 'char_494_vendla' }));
-  ok(h.lobby.card(a, { charId: 'char_102_texas' }));
+  // this repo's room.card is the full display card (server/lobby.js setCard), not only a charId
+  ok(h.lobby.setCard(b, { charId: 'char_494_vendla' }));
+  ok(h.lobby.setCard(a, { charId: 'char_102_texas' }));
   ok(h.lobby.loadout(b, { entries: { chess_char_1_02_a: { skill: 0 } } }));
   ok(h.lobby.ownership(b, { notOwned: ['chess_char_1_02_a'] }));
   ok(h.lobby.ready(b, { ready: true }));
@@ -563,7 +564,7 @@ test('a switch: others un-readied, settings cleared, a card the version lacks dr
   assert.equal(seat.notOwned, null);
   assert.equal(seat.loadoutCs, null);
   assert.equal(seat.card, null, '本 version has no 温蒂 (char_494_vendla)');
-  assert.equal(room.seatOf(a.playerId).card, 'char_102_texas');
+  assert.equal(room.seatOf(a.playerId).card?.charId, 'char_102_texas');
   assert.equal(b.loadout?.chess_char_1_02_a?.skill, 0, 'the session keeps its own copy (the page sends again)');
   assert.deepEqual(h.last(a).seats.filter(Boolean).map((s) => s.content), ['loading', 'loading']);
   assert.equal(room.replay, null, 'the replay is gone');
@@ -661,7 +662,12 @@ test('startMatch: a version room plays in its version host (version + requireCs)
   ok(h.lobby.start(q));
   assert.equal(hosted.length, 1);
   const keys = Object.keys(Rec.last).sort();
-  assert.deepEqual(keys, ['aiPicksLast', 'broadcast', 'cs', 'data', 'difficulty', 'hostId', 'log', 'matchNo', 'mode', 'modeId', 'now', 'onEnd', 'roomCode', 'seats', 'seed', 'send', 'spectators']);
+  // the match opts object belongs to this repo (AGENTS.md: protocol / server / state-ownership segments),
+  // so a default room keeps the fork's keys: the upstream list plus this repo's own pools, experimental
+  // rules, revival, checkpoint/removal callbacks and the encoded-send channel
+  assert.deepEqual(keys, ['afkRemoveRounds', 'aiPicksLast', 'broadcast', 'combatPool', 'combatSpeed', 'cs', 'data', 'difficulty',
+    'disableSharedPool', 'experimental', 'hostId', 'log', 'matchNo', 'mode', 'modeId', 'now', 'onCheckpoint', 'onEnd', 'onRemove',
+    'revivalEnabled', 'roomCode', 'seats', 'seed', 'send', 'sendEncoded', 'snapshotHz', 'spectators', 'trialPool']);
   // a version room without a version host, and the real Match class: never in this process
   const lone = new Lobby({ registry: new SessionRegistry(), log: quiet, content: { cs: VANILLA }, getData, versions: versionStub() });
   const s = lone.registry.create('C');

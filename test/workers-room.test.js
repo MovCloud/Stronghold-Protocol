@@ -1,7 +1,8 @@
 // test/workers-room.test.js — the shared simulation pool every room submits its rehearsals into
 // (server/workers/roomPool.js).
 //
-// Two things are checked here: it is ONE pool (no lane and no room can add threads of its own), and the work it runs —
+// Two things are checked here: it is ONE thread budget (no lane and no room can add threads of its own — SP_ROOM_WORKERS
+// only splits that budget into lanes, and with the default single lane it is the one pool upstream uses), and the work it runs —
 // a bot prep's layout rehearsal — picks exactly the candidate the main thread picks from the same candidates. That
 // second one is the maintainer's comparison: one real prep's candidates, two places to run them, one answer.
 
@@ -27,7 +28,7 @@ test('every room submits into the one pool and the pool never exceeds its size',
   assert.equal(first, same, 'a room keeps resolving to the same pool');
   assert.equal(first, second, 'and every room submits into that one pool');
   let stats = pool.stats();
-  assert.equal(stats.kind, 'room-pool');
+  assert.equal(stats.kind, 'room-lanes', 'the fork reports the lanes it pins rooms to');
   assert.equal(stats.size, 2, 'the size is the whole pool, not a size per room');
   assert.equal(stats.rooms, 2);
 
@@ -53,14 +54,21 @@ test('an overloaded pool refuses the task instead of starting another thread', a
   assert.equal(pool.stats().threads, 1);
 });
 
-test('no pool is created unless SP_WORKERS says which size', async () => {
-  assert.equal(createRoomWorkerPool({ data: DATA, env: {} }), null, 'unset starts no pool');
-  assert.equal(createRoomWorkerPool({ data: DATA, env: { SP_WORKERS: 'junk' } }), null);
-  assert.equal(createRoomWorkerPool({ data: DATA, env: { SP_WORKERS: '0' } }), null);
+test('the pool is built from the CPU-derived default and only the explicit 0 turns it off', async () => {
+  // Same semantics as the pool test above: this fork derives the size from the CPU count, so only the explicit 0
+  // leaves the work inline. SP_ROOM_WORKERS splits that budget into lanes and defaults to the single shared queue.
+  assert.equal(createRoomWorkerPool({ data: DATA, env: { SP_WORKERS: '0' } }), null, 'no pool, the work stays inline');
   const pool = createRoomWorkerPool({ data: DATA, env: { SP_WORKERS: '2' }, workerUrl: fixture });
   assert.ok(pool instanceof RoomWorkerPool);
   assert.equal(pool.stats().size, 2);
-  return pool.close();
+  assert.equal(pool.stats().lanes.length, 1, 'the default is the one shared queue');
+  await pool.close();
+
+  const lanes = createRoomWorkerPool({ data: DATA, env: { SP_WORKERS: '4', SP_ROOM_WORKERS: '2' }, workerUrl: fixture });
+  assert.equal(lanes.stats().kind, 'room-lanes');
+  assert.equal(lanes.stats().lanes.length, 2);
+  assert.equal(lanes.stats().size, 4, 'the lanes share the total budget, they do not each get one');
+  await lanes.close();
 });
 
 /**

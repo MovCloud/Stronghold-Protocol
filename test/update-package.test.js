@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { removeTree } from './helpers/rmtree.js';
 import zlib from 'node:zlib';
 import { APPLIED_FILE, MANIFEST_FILE, UPDATE_FILE, applyPendingUpdate, checkInstall, parseUpdate, removalProblem } from '../server/update.js';
 import { compareVersions, diffBases, readBase, readZip } from '../tools/package-update.mjs';
@@ -103,7 +104,7 @@ test('MANIFEST.json and UPDATE.json pass the personal-info scan: paths are scann
     fs.writeFileSync(path.join(dir, UPDATE_FILE), `{"removed":[{"path":"${['', 'home', 'someone'].join('/')}/x"}]}`);
     assert.deepEqual(stageProblems(dir, new Set([MANIFEST_FILE, UPDATE_FILE]), { env: ENV }).problems, [`personal info: ${UPDATE_FILE} (home-directory path)`]);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -124,7 +125,7 @@ function zipProbe(names) {
     const bytes = fs.readFileSync(zip);
     return { result: names.every((n) => bytes.includes(Buffer.from(n, 'utf8'))) ? 'wrote' : 'missing', error: '' };
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 }
 const asciiProbe = zipProbe(['a.png']);
@@ -252,7 +253,7 @@ test('a whole update: base zip v9.9.8 → --update v9.9.9 ships only what change
       fs.rmSync(fresh, { recursive: true, force: true });
     }
   } finally {
-    for (const d of [co.dir, out, inst]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [co.dir, out, inst]) removeTree(d);
   }
 });
 
@@ -289,7 +290,7 @@ test('bases are refused when they cannot be one: lite, an update zip, not older,
       assert.equal(r.status, 2, args.join(' '));
     }
   } finally {
-    fs.rmSync(co.dir, { recursive: true, force: true });
+    removeTree(co.dir);
     fs.rmSync(out, { recursive: true, force: true });
   }
 });
@@ -316,7 +317,7 @@ test('a base folder: npm\'s files are compared like the stage\'s, per-machine an
     assert.equal(r.status, 1, r.stdout);
     assert.match(r.stderr, /v9\.9\.8 ships node_modules\/ but this build has none \(--no-install\?\): an update built so would delete it from every install/);
   } finally {
-    for (const d of [co.dir, out, base]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [co.dir, out, base]) removeTree(d);
   }
 });
 
@@ -359,7 +360,7 @@ test('the zip reader: stored and deflated entries, zip64, UTF-8 names; damaged a
     const z = spawnSync('zip', ['-q', '-r', 'foreign.zip', 'other'], { cwd: dir });
     if (!z.error && z.status === 0) assert.throws(() => readBase(path.join(dir, 'foreign.zip')), /outside the Stronghold-Protocol\/ folder/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -381,7 +382,7 @@ test('zipFolder\'s error names every attempt and keeps the install hint only whe
       /^Error: zipping failed: zip: ENOENT; tar: ENOENT — install `zip` \(or a bsdtar `tar`\)$/);
   } finally {
     process.env.PATH = PATH;
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -397,7 +398,7 @@ test('a zipper that cannot write the folder names the tool that failed and why, 
     });
     assert.equal(fs.existsSync(zip), false, 'a failed attempt leaves no half-written zip behind');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 /**
@@ -456,7 +457,7 @@ test('the zip reader takes the UTF-8 name of Info-ZIP\'s Unicode Path field for 
     readZip(zip, (name) => names.push(name));
     assert.deepEqual(names, ['F/卫戍 a.png', 'F/卫戍 b.png', 'F/卫戍 c.png', 'F/plain.txt']);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   }
 });
 
@@ -508,5 +509,5 @@ test('0.2.6 → 0.3.0 update adds author resources, records retired files and pr
       assert.equal(read(root, 'plugins/mine/plugin.json'), '{"owner":true}');
       assert.equal(read(root, 'plugins/config.json'), '{"rooms":"off"}');
     }
-  } finally { for (const dir of [co.dir, out, inst]) fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const dir of [co.dir, out, inst]) removeTree(dir); }
 });

@@ -738,8 +738,16 @@ describe('keyboard & settings', () => {
     assert.equal(shortcutFor(null), null);
   });
   test('sanitizeSettings', () => {
-    assert.deepEqual(sanitizeSettings(null), { ...DEFAULT_SETTINGS });
-    assert.deepEqual(sanitizeSettings({ bgm: 3, sfx: -1, voice: 2, muted: 'yes', damageNumbers: false, quality: 'ultra' }),
+    // C3 (the owner's decision of 2026-10-21): the fork-only keys `bgmPrep` / `bgmCombat` stay in the core, so this
+    // assertion only checks the mainline keys. A fork that wants its own default carries it in its plugin; the core
+    // default is the mainline's. `uiScale` is out of the fork's list: 界面大小 is the mainline's screenFit.js `ui`
+    // (the owner's decision of 2026-10-27, --sp-ui).
+    const MAINLINE_KEYS = ['bgm', 'sfx', 'voice', 'voiceLang', 'voiceNative', 'voiceOverrides', 'muted', 'damageNumbers',
+      'officialDamageNumbers', 'ammoEnergyCount', 'fullscreenWakeLock', 'bondTimers', 'combatMetrics', 'prepDeployFold',
+      'quality', 'officialFx', 'otherSkins', 'textSize', 'keys'];
+    const mainlineOnly = (o) => Object.fromEntries(MAINLINE_KEYS.map((k) => [k, o[k]]));
+    assert.deepEqual(mainlineOnly(sanitizeSettings(null)), mainlineOnly(DEFAULT_SETTINGS));
+    assert.deepEqual(mainlineOnly(sanitizeSettings({ bgm: 3, sfx: -1, voice: 2, muted: 'yes', damageNumbers: false, quality: 'ultra' })),
       { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', voiceNative: false, voiceOverrides: {}, muted: false, damageNumbers: false, officialDamageNumbers: false, ammoEnergyCount: false, fullscreenWakeLock: false, bondTimers: false, combatMetrics: false, prepDeployFold: true, quality: 'high', officialFx: 'auto', otherSkins: true, textSize: 'sm', keys: { ...DEFAULT_SETTINGS.keys } },
       'a saved profile without `keys` (before 0.2.0) gets the default key map (test/ui/feedback5-hotkeys.test.js)');
     // 显示其他玩家的皮肤 (docs/SKINS.md): on by default, and off only when the profile says so

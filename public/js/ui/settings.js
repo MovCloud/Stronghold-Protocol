@@ -1,6 +1,6 @@
 // Player settings (BGM/SFX/voice volume, the voice dub 语音语言, mute, damage numbers, the optional 弹药数量 under an ammo
-// skill's bar — not in the official HUD, off by default, PR #552 —, the optional 作战统计 panel — off by default,
-// PR #618 —, render quality, 文字大小, the
+// skill's bar — not in the official HUD, off by default, PR #552 —, render quality (PR #618's 作战统计 switch is not
+// offered: fork 2026-10-16 merged its healing and DPS / HPS into the damage board, ui/damageBoard.js), 文字大小, 界面大小, the
 // shortcut keys): a tiny observable store persisted in localStorage (`sp.pref.settings`), applied to the audio manager
 // and to the document on every change, plus the settings modal — which also holds the language switch (ui/lang.js; kept
 // apart in `sp.pref.lang`; under it a note while the current language's pack is a machine translation,
@@ -22,41 +22,53 @@
 // settings only inflate the glyphs inside fixed boxes (and page zoom is off: index.html's viewport, ui/device.js).
 // Only font-size declarations read `--t`, so the board, the HUD bands the prep camera keeps clear and the detail
 // card's side do not move — the field is sized from the host element's clientWidth (render/app.js).
-// 异形屏适配 (ui/screenFit.js): imported here, ahead of main.js's first render, so the stored offsets are on at boot.
+//
+// 界面大小 (the global `--sp-ui`, applied by ui/screenFit.js applyFit): the whole interface — css/theme.css scales the
+// layout root and every pixel floor with it. It lives in the 异形屏适配 section (the fork's default-collapsed box), so the
+// fork's own 对局界面缩放 step and its `--ui` namespace are retired: the upstream row covers the same thing and the
+// fork's 70–120 % steps are inside the upstream 75–100 % range.
 
 import { useEffect, useLayoutEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html, Modal, Button, Icon, MicroLabel, Tooltip, confirmDialog } from './components.js';
 import { GIcon } from './gameComponents.js';
-import { useStore, savePref, store } from '../store.js';
+import { createStore, useStore, loadPref, savePref, store } from '../store.js';
+// The single settings store is the upstream module (ui/settingsStore.js): screenFit.js, gameComponents.js and the room
+// read it, so a second instance here would split the persisted profile in two. It is re-exported for the callers that
+// have always imported it from this file.
 import { settingsStore } from './settingsStore.js';
 export { settingsStore } from './settingsStore.js';
-import { sanitizeSettings, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, hotkeyLabel, rebindHotkey, isDefaultHotkeys, captureHotkey, VOICE_LANGS, TEXT_SIZES } from './gameLogic.js';
+import { sanitizeSettings, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, hotkeyLabel, rebindHotkey, isDefaultHotkeys, captureHotkey, TEXT_SIZES, BOARD_VIEWS, sanitizeHotkeys } from './gameLogic.js';
 import { audio } from '../audio.js';
 import { openGuide } from './guide.js';
 import { detectFeatures, isIOS } from './device.js';
-import { LangToggle, machineTranslationNote } from './lang.js';
+import { LanguageSettings } from './languageSettings.js';
+import { voiceLanguageStore, setVoiceLanguage } from './voiceLanguage.js';
 import { t, tc, tParts, N_ } from '../../../shared/i18n.js';
 import { errorCount, currentBattle, diagnosticsText } from '../diag.js';
 import { copyText } from './clipboard.js';
+// 异形屏适配 (ui/screenFit.js): imported here, ahead of main.js's first render, so the stored offsets are on at boot
+import { ScreenFitSection } from './screenFit.js';
+import { OwnerKeySection } from './ownerName.js';
+import { AssetSection } from './assetSection.js';
+import { SkinWorkshopSection } from './skinWorkshop.js';
 import { catalog, loadCatalog, cosmeticPlugins, installedCount, isPersonalCosmetic, personal, personalApplied, personalSet, pluginName, setPersonalPlugin } from '../content.js';
 import { resolveThemeVars, themeVarsOf } from '../../../shared/plugins/theme.js';
 import { setUiPlugin, uiPluginEntries, uiPlugins } from './uiPlugins.js';
 import { UI_LIMITS } from '../../../shared/plugins/ui.js';
 import { toast, describeError } from './toasts.js';
 import { pluginMicro } from './pluginTag.js';
-// 皮肤 (docs/SKINS.md): the global display rule the 显示其他玩家的皮肤 switch follows. ui/skins.js costs nothing new here:
-// it is already on the boot path (main.js → screens/loadout.js / ui/loadoutSync.js) and imports only store.js and
-// data.js, both of which settings.js reaches through content.js — no cycle, no asset store (it must NOT load assets.js:
-// test/ui/plugins.e2e.test.js pins that a server without plugins never fetches it).
-import { hasAnySkinChoices } from './skins.js';
 import { fxAvailable } from '../render/vfx/available.js';
 import { resolveOfficialFx } from '../render/vfx/tier.js';
-import { ScreenFitSection } from './screenFit.js';
 import { askPersistStorage, importSupport, storagePersisted } from '../assetCache.js';
 import { assetImport, pruneImportedAssets } from '../assetPack.js';
 import { cosmetics } from '../cosmetics.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
+
+/** Settings store (ui/settingsStore.js): { bgm, sfx, voice, voiceLang, voiceNative, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoEnergyCount, fullscreenWakeLock, bondTimers, combatMetrics, prepDeployFold, quality, officialFx, otherSkins, textSize, keys, bgmPrep, bgmCombat, boardView }. */
+// The fork keeps the voice dub in its own `sp.pref.voiceLang` (ui/voiceLanguage.js), so the shared store takes it as the
+// voice language before the first render; every later change is mirrored by the subscription below.
+if (settingsStore.get().voiceLang !== voiceLanguageStore.get().language) settingsStore.set({ voiceLang: voiceLanguageStore.get().language });
 
 /**
  * 设置 →「文字大小」: put the step on <html data-text> — css/theme.css turns it into the text root `--t`
@@ -74,22 +86,42 @@ settingsStore.subscribe((s) => {
   savePref('settings', sanitizeSettings(s));
   audio.setVolumes(s);
   audio.setVoiceLang(s.voiceLang, s.voiceOverrides);
+  audio.setBgmChoice({ prep: s.bgmPrep, combat: s.bgmCombat });
   audio.setVoiceNative(s.voiceNative);
   applyTextSize(s.textSize);
 });
 audio.setVolumes(settingsStore.get());
 audio.setVoiceLang(settingsStore.get().voiceLang, settingsStore.get().voiceOverrides);
+audio.setBgmChoice({ prep: settingsStore.get().bgmPrep, combat: settingsStore.get().bgmCombat });
 audio.setVoiceNative(settingsStore.get().voiceNative);
 // before the first render (main.js boot renders after its imports ran): the stored step is on screen without a flash
+// (界面大小 is applied by ui/screenFit.js at the same moment)
 applyTextSize(settingsStore.get().textSize);
+// Keep the upstream settings field as a mirror, never a second independently selected dub.
+voiceLanguageStore.subscribe(({ language }) => {
+  if (settingsStore.get().voiceLang !== language) settingsStore.set({ voiceLang: language });
+});
 
 /** @param {Partial<ReturnType<typeof sanitizeSettings>>} patch */
 export function updateSettings(patch) {
-  settingsStore.set(sanitizeSettings({ ...settingsStore.get(), ...patch }));
+  const next = sanitizeSettings({ ...settingsStore.get(), ...patch });
+  if (Object.hasOwn(patch ?? {}, 'voiceLang')) setVoiceLanguage(next.voiceLang);
+  settingsStore.set(next);
 }
 
 /** Preact hook: current settings. */
 export const useSettings = () => useStore((s) => s, Object.is, settingsStore);
+
+/**
+ * In-match keyboard shortcuts, a persisted store of its own (设置 → 快捷键): the same map shape the game screen's
+ * shortcut helpers read (ui/gameLogic/shortcuts.js), so modules outside the settings dialog (the facing wheel, the
+ * underframe strip) get the player's key map without subscribing to the whole settings profile.
+ */
+export const shortcutsStore = createStore(sanitizeHotkeys(loadPref('shortcuts', DEFAULT_HOTKEYS)));
+shortcutsStore.subscribe((s) => savePref('shortcuts', sanitizeHotkeys(s)));
+
+/** Preact hook: the persisted in-match shortcut map (ui/gameLogic/shortcuts.js DEFAULT_HOTKEYS shape). */
+export const useShortcuts = () => useStore((s) => s, Object.is, shortcutsStore);
 
 /**
  * The label of the key a rebindable shortcut has right now ('R', 'Space' …) — the HUD's key hints (shop bar, ready /
@@ -132,12 +164,13 @@ const OFFICIAL_FX = [['off', N_('关')], ['lite', N_('精简')], ['full', N_('�
  */
 const TEXT_SCALES = [['sm', N_('小')], ['md', N_('中')], ['lg', N_('大')], ['xl', N_('特大')]];
 /**
- * 语音语言: each dub named in its own language, like the interface language switch (ui/lang.js) — the owner's
- * 「中文 / 日本語 / English / 한국어」; VOICE_LANGS order. Each name is that language's own script.
- * The 本土语言 switch beside them is a separate boolean (voiceNative), not a fifth global dub.
+ * 棋盘样式 (boardView, render/app.js): 官方贴图 / 3D. 官方贴图 = the three.js official board scene (owner-verified,
+ * the default — do not replace it with another texture set); 3D (the stored value '2d') = the procedural metal tiles on
+ * the very same camera for mobile performance. Both styles draw the skeletal unit models (owner decision 2026-10-25);
+ * a unit whose model is missing falls back to its avatar diamond on its own. The owner does not want a flat / reframed
+ * view (2026-10-25). Switching applies at once and is a local preference only.
  */
-const VOICE_LANG_NAMES = { cn: '中文', jp: '日本語', en: 'English', kr: '한국어' }; // i18n-ignore
-const VOICE_LANG_TAGS = { cn: 'zh', jp: 'ja', en: 'en', kr: 'ko' };
+const BOARD_STYLES = { '3d': N_('官方贴图'), '2d': N_('3D') };
 /** The rebindable shortcuts' names (msgids), by action. */
 const HOTKEY_NAMES = { buy: N_('购买鼠标指向的商品'), refresh: N_('刷新商店'), freeze: N_('冻结 / 解冻商店'), levelUp: N_('升级调度中心'), retreat: N_('撤退干员（选中优先）'),
   sell: N_('出售干员（选中优先）'), ready: N_('准备就绪 / 暂停（独立模拟）') };
@@ -223,7 +256,8 @@ function HotkeySection({ keys, touchUi }) {
 }
 
 /** Where a report goes: the upstream issue tracker (shown as text the player can select; a link may open nothing). */
-export const ISSUES_URL = 'https://github.com/sganggs/Stronghold-Protocol/issues';
+// this fork: the site's own feedback board (deploy/stardust/feedback), not the upstream repository's issues
+export const ISSUES_URL = '/feedback/';
 
 /**
  * 问题反馈: copy the diagnostics of this page (diag.js) for a GitHub issue — the errors recorded since the page opened,
@@ -233,7 +267,7 @@ export const ISSUES_URL = 'https://github.com/sganggs/Stronghold-Protocol/issues
  * when the clipboard refuses (some in-app browsers), the report is shown selected in a box styled like 干员调配's 导出.
  */
 /** The result line of 复制诊断信息, by outcome (msgids: translated when shown, so a language switch reaches it). */
-const DIAG_NOTES = { copied: N_('已复制诊断信息，可以粘贴到 GitHub issue 中'), refused: N_('无法写入剪贴板，请手动复制下面的内容') };
+const DIAG_NOTES = { copied: N_('已复制诊断信息，可以粘贴到反馈板中'), refused: N_('无法写入剪贴板，请手动复制下面的内容') };
 
 function DiagSection() {
   const [attach, setAttach] = useState(true);
@@ -258,10 +292,10 @@ function DiagSection() {
       <span class="set-row__label" id="set-diag-title">${t('问题反馈')}<${MicroLabel}>DIAGNOSTICS<//></span>
       <${Button} variant="ghost" size="sm" icon="copy" class="set-diag__copy" data-testid="diag-copy" onClick=${copy}>${t('复制诊断信息')}<//>
     </div>
-    <p class="set-hint">${t('遇到问题时，复制诊断信息并粘贴到 GitHub issue 中，开发者就能看到出错时的情况。诊断信息只在本机生成，不会自动上传；玩家名和房间号会被替换。')}</p>
+    <p class="set-hint">${t('遇到问题时，复制诊断信息并粘贴到反馈板（大厅的「反馈板」）中，开发者就能看到出错时的情况。诊断信息只在本机生成，不会自动上传；玩家名和房间号会被替换。')}</p>
     <div class="set-diag__meta">
       <span class="set-diag__stat">${t('已记录的错误')}<b class=${cx('set-diag__count num', n > 0 && 'is-warn')} data-testid="diag-count">${n}</b></span>
-      <span class="set-diag__url">${ISSUES_URL.replace(/^https:\/\//, '')}</span>
+      <a class="set-diag__url" href=${ISSUES_URL} target="_blank" rel="noopener">${t('反馈板')}</a>
     </div>
     ${battle ? html`<${Toggle} label=${t('附上本场战斗')} micro="BATTLE DATA" value=${attach} onChange=${setAttach} />
       <p class="set-hint set-diag__battle-hint">${t('开发者可以用附上的战斗数据重现这场战斗。')}</p>` : null}
@@ -284,17 +318,12 @@ function CosmeticSection() {
   useEffect(() => { if (installed) loadCatalog({ force: true }); }, [installed]);
   const entries = installed ? cosmeticPlugins(cat.plugins, 'personal') : [];
   const list = entries.filter(isPersonalCosmetic);
-  // The 显示其他玩家的皮肤 switch is on screen with or without a PERSONAL plugin — an appearance can also come from a
-  // set the player is not in (a watched match's cosmetics are the watcher's own layers), and a switch that appears only
-  // when the catalogue happens to have loaded would look like a bug. It follows the same GLOBAL rule the 皮肤 section
-  // does (ui/skins.js hasAnySkinChoices: at least one operator of the composed manifest has a wear-able skin), so a
-  // session with no such appearance draws nothing here — an installation without a cosmetic layer keeps exactly the
-  // settings it had before this feature, the switch included (test/ui/plugins.e2e.test.js asserts the section is absent
-  // on a server without plugins). The list below is NOT gated: it is where a switched-off plugin is switched back on.
+  // The 显示其他玩家的皮肤 switch (this fork's catalogue skins, shared/skins.js — always available) is on screen with or
+  // without a PERSONAL plugin; without one it stands in a 皮肤 section of its own. The list below is where a switched-off
+  // plugin is switched back on.
   if (!list.length) {
-    if (!hasAnySkinChoices()) return null;
-    return html`<section class="set-plugins" aria-labelledby="set-skins-title" data-testid="personal-plugins">
-      <div class="set-keys__head"><span class="set-row__label" id="set-skins-title">${t('外观插件')}<${MicroLabel}>COSMETIC PLUGINS<//></span></div>
+    return html`<section class="set-plugins" aria-labelledby="set-skins-title" data-testid="other-skins">
+      <div class="set-keys__head"><span class="set-row__label" id="set-skins-title">${t('皮肤')}<${MicroLabel}>SKINS<//></span></div>
       <${OtherSkinsRow} value=${s.otherSkins !== false} onSet=${(v) => updateSettings({ otherSkins: v })} />
     </section>`;
   }
@@ -456,7 +485,6 @@ export function SettingsModal({ open, onClose }) {
   const s = useSettings();
   const [tested, setTested] = useState(false);
   const [touchUi] = useState(() => detectFeatures().coarse && !detectFeatures().fine);
-  const mtNote = machineTranslationNote(); // a pack marked as machine translation says so under the switch
   const [fxOk, setFxOk] = useState(false);  // effects extracted from the local client: the 官方特效 row shows
   // only while it is open (the title page keeps the modal mounted, closed), and from the effects' own file list: the
   // asset store (assets.js) is not loaded before a match (test/ui/plugins.e2e.test.js). A Phase 1a extraction (0.3.0
@@ -474,24 +502,11 @@ export function SettingsModal({ open, onClose }) {
                         actions=${html`<${Button} variant="secondary" icon="book" class="set-guide" onClick=${() => openGuide(0)}>${t('玩法说明')}<//>
                         <${Button} variant="primary" icon="check" onClick=${onClose}>${t('完成')}<//>`}>
     <div class="set-list">
-      <div class="set-row">
-        <span class="set-row__label">${t('语言')}<${MicroLabel}>LANGUAGE<//></span>
-        <${LangToggle} class="set-lang" />
-      </div>
-      ${mtNote ? html`<p class="set-hint set-lang-note" data-testid="lang-mt-note">${mtNote}</p>` : null}
+      <${LanguageSettings} />
+      <${Toggle} label=${tc('voice-lang', '本土语言')} micro="NATIVE VOICE" value=${s.voiceNative} onChange=${(v) => updateSettings({ voiceNative: v })} />
+      <p class="set-hint">${t('有本土语言配音时使用')}</p>
       <${Slider} label=${t('背景音乐')} micro="BGM" icon="play" value=${s.bgm} onInput=${(v) => updateSettings({ bgm: v })} />
       <${Slider} label=${t('干员语音')} micro="VOICE" icon="mic" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
-      <div class="set-row">
-        <span class="set-row__label">${t('语音语言')}<${MicroLabel}>VOICE LANGUAGE<//></span>
-        <div class="set-voice">
-          <div class="set-seg" role="radiogroup" aria-label=${t('语音语言')} data-testid="voice-lang">
-            ${VOICE_LANGS.map((id) => html`<button key=${id} type="button" role="radio" aria-checked=${s.voiceLang === id ? 'true' : 'false'}
-              lang=${VOICE_LANG_TAGS[id]} class=${s.voiceLang === id ? 'is-on' : ''} onClick=${() => updateSettings({ voiceLang: id })}>${VOICE_LANG_NAMES[id]}</button>`)}
-          </div>
-          <button type="button" class=${s.voiceNative ? 'set-native is-on' : 'set-native'} data-testid="voice-native" aria-pressed=${s.voiceNative ? 'true' : 'false'}
-            title=${t('有本土语言配音时使用')} onClick=${() => updateSettings({ voiceNative: !s.voiceNative })}>${tc('voice-lang', '本土语言')}</button>
-        </div>
-      </div>
       <${Slider} label=${t('音效')} micro="SFX" icon="signal" value=${s.sfx}
                  onInput=${(v) => { updateSettings({ sfx: v }); if (!tested) { setTested(true); setTimeout(() => setTested(false), 400); audio.sfx('click'); } }} />
       <${Toggle} label=${t('静音')} micro="MUTE" value=${s.muted} onChange=${(v) => updateSettings({ muted: v })} />
@@ -502,8 +517,6 @@ export function SettingsModal({ open, onClose }) {
       <p class="set-hint">${t('弹药类技能开启时，在弹药条下方显示剩余弹药 / 总弹药数（如 13/14）；秘术师的血条下方显示储存的攻击能量 / 上限（如 2/3）。官方界面没有这些数字。')}</p>
       <${Toggle} label=${t('盟约效果剩余时间')} micro="BOND TIMERS" value=${s.bondTimers} onChange=${(v) => updateSettings({ bondTimers: v })} />
       <p class="set-hint">${t('在选中单位的详情中显示叙拉古、萨尔贡效果的剩余时间；萨尔贡显示层数与下一层到期时间。官方界面没有这些数字。')}</p>
-      <${Toggle} label=${t('作战统计')} micro="COMBAT STATS" value=${s.combatMetrics} onChange=${(v) => updateSettings({ combatMetrics: v })} />
-      <p class="set-hint">${t('打开后，对局左下角可以查看自己干员的伤害、治疗和 DPS / HPS。官方界面没有这个窗口。改变玩法的插件对局在 Worker 里演算，统计不到，按钮不显示。')}</p>
       <${Toggle} label=${t('部署时收起商店')} micro="DEPLOY FOLD" value=${s.prepDeployFold} onChange=${(v) => updateSettings({ prepDeployFold: v })} />
       <p class="set-hint">${t('拖起干员、装备或召唤物，以及放下后选择朝向时，临时收起商店并放大棋盘。关闭后，拿起时既不改变商店的收起状态，也不缩放镜头。')}</p>
       <${Toggle} label=${t('全屏时保持屏幕常亮')} micro="SCREEN WAKE LOCK" value=${s.fullscreenWakeLock} onChange=${(v) => updateSettings({ fullscreenWakeLock: v })} />
@@ -522,6 +535,14 @@ export function SettingsModal({ open, onClose }) {
             class=${s.quality === id ? 'is-on' : ''} onClick=${() => updateSettings({ quality: id })}>${t(label)}</button>`)}
         </div>
       </div>
+      <div class="set-row" data-testid="board-view">
+        <span class="set-row__label">${t('棋盘样式')}<${MicroLabel}>BOARD VIEW<//></span>
+        <div class="set-seg" role="radiogroup" aria-label=${t('棋盘样式')}>
+          ${BOARD_VIEWS.map((id) => html`<button key=${id} type="button" role="radio" aria-checked=${s.boardView === id ? 'true' : 'false'}
+            class=${s.boardView === id ? 'is-on' : ''} onClick=${() => updateSettings({ boardView: id })}>${t(BOARD_STYLES[id])}</button>`)}
+        </div>
+      </div>
+      <p class="set-hint">${t('官方贴图：使用官方三维场景与棋盘素材。3D：视角与官方贴图相同，棋盘改用程序化地块、不加载官方场景，适合移动设备。两档的干员、召唤物和敌人均使用骨骼模型，缺少资源时回退为头像菱形标记。切换立即生效。')}</p>
       ${fxOk ? html`<div class="set-row" data-testid="official-fx">
         <span class="set-row__label">${t('官方特效')}<${MicroLabel}>OFFICIAL FX<//></span>
         <div class="set-seg" role="radiogroup" aria-label=${t('官方特效')}>
@@ -538,12 +559,15 @@ export function SettingsModal({ open, onClose }) {
         </div>
       </div>
       <p class="set-hint set-textsize-note">${t('调整界面文字大小，棋盘保持原比例。')}</p>
-      <${ScreenFitSection} />
+      <${AssetSection} voice=${s.voiceLang} native=${s.voiceNative} />
       <${HotkeySection} keys=${s.keys} touchUi=${touchUi} />
+      <${ScreenFitSection} />
       <${CosmeticSection} />
+      <${SkinWorkshopSection} />
       <${UiPluginSection} />
       <${StorageSection} />
       <${DiagSection} />
+      <${OwnerKeySection} />
       <p class="set-hint">${touchUi ? t('触屏操作：点击单位选中（撤退 / 出售）· 长按单位或卡牌查看详情 · 拖动部署后滑动选择朝向') : t('右键查看详情')}</p>
     </div>
   <//>`;

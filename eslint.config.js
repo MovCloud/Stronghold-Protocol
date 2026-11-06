@@ -59,11 +59,17 @@ export default [
     ignores: [
       'node_modules/**',
       'public/vendor/**',
+      'public/build/**', // the Vite bundle (npm run build)
       'public/assets/**',
       'public/fonts/**',
       'public/dev/**',
       '.cache/**',
+      '.claude/**',
+      'deploy/stardust/build/**',
       'coverage/**',
+      // local clones for tools/i18n (git-ignored); they carry their own eslint configs
+      'ArknightsGamedata/**',
+      'stronghold-protocol-alliance-database-main/**',
     ],
   },
   {
@@ -76,11 +82,31 @@ export default [
     rules,
   },
   {
+    // The page-check scripts run their callbacks inside a browser page (page.evaluate), so they read DOM globals and the
+    // page's `__SP__` entry (public/js/main.js).
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser, __SP__: 'readonly' },
+    },
+    rules,
+  },
+  {
     files: ['public/js/**/*.js', 'public/studio/**/*.js'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
       globals: { ...globals.browser, process: 'readonly' },
+    },
+    rules,
+  },
+  {
+    files: ['public/asset-cache-sw.js', 'public/js/asset-cache-worker.js'],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: { ...globals.browser, ...globals.worker, zip: 'readonly' },
     },
     rules,
   },

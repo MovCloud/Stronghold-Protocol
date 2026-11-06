@@ -90,6 +90,36 @@ export function hasClipping(data) {
   return false;
 }
 
+const EYEISH = /eye|lid|pupil/i;
+
+/**
+ * Whether the skeleton has a clip that is NOT an eyelid. [ASSUMED: name-based — a clip whose slot,
+ * attachment, endSlot, or every covered slot reads eye/lid/pupil is treated as an eyelid.]
+ * _eyeMaskFallback can only hide whole slots, so it approximates eyelids; a weapon/rope/chain clip
+ * cuts part of a slot that stays drawn, and without the stencil the art draws uncut. Those masks
+ * must stay on even when the field budget turns masks off (app.js pickClipping).
+ */
+export function needsClipping(data) {
+  try {
+    const slots = data?.slots || [];
+    for (const skin of data?.skins || []) {
+      const list = typeof skin.getAttachments === 'function' ? skin.getAttachments() : [];
+      for (const e of list) {
+        const a = e && e.attachment;
+        if (!isClip(a)) continue;
+        const slot = slots[e.slotIndex];
+        const end = a.endSlot;
+        if (EYEISH.test(`${slot?.name} ${a.name} ${end?.name}`)) continue;
+        const from = slot?.index, to = end?.index;
+        const covered = Number.isInteger(from) && Number.isInteger(to) ? slots.slice(from, to + 1) : [];
+        if (covered.length && covered.every((s) => EYEISH.test(s.name))) continue;
+        return true;
+      }
+    }
+  } catch { /* unknown runtime shape: assume eyelid-only */ }
+  return false;
+}
+
 /**
  * Is (x, y) inside the polygon of `n` points `pts` (flat [x0, y0, x1, y1, …])? Ray casting (PR #384 by @Convey123).
  */
@@ -427,8 +457,11 @@ export class SpineActor {
      * Clipping attachments render as stencil masks (≈1.5 ms of GPU each per frame on tiled GPUs): such skeletons
      * are drawn through the impostor atlas while clipping is on, and clipping is switched off when too many of them
      * share a field (app.js budget) — then _eyeMaskFallback hides what a closed eyelid would cut (GitHub #177).
+     * A clip that is not an eyelid (weapon/rope/chain) is exempt from that budget: the fallback cannot cut part
+     * of a slot that stays drawn, so its mask stays on (needsClipping).
      */
     this.clipped = hasClipping(spineData);
+    this.clipNeeded = this.clipped && needsClipping(spineData); // a non-eyelid clip can't be approximated by the fallback
     this.clipOn = true;
     this._clipHidden = new Set(); // slot indexes the eyelid fallback hid in its last pass (_eyeMaskFallback)
     if (this.clipped) {
@@ -467,11 +500,17 @@ export class SpineActor {
     this._posed = false;          // the skeleton was ever posed (a model frozen before that shows its clip's first frame)
     this._appliedTint = undefined; // the tint that update put on the slots (pixi-spine applies `tint` in update)
     this._play(this._idleName(), true);
+    // Async PREP loads may be drawn or measured before the first tick; pose the idle without advancing its clock.
+    this.spine.update(0);
+    // …still as never played: a clip set before the first tick replaces it without a mix from it (spine's
+    // setAnimation skips mixing from an entry with nextTrackLast -1, as before this pose)
+    const posed = this.spine.state?.tracks?.[0];
+    if (posed) posed.nextTrackLast = -1;
   }
 
   /** Enable / disable the skeleton's clipping masks. */
   setClipping(on) {
-    on = !!on;
+    on = !!on || this.clipNeeded; // a non-eyelid clip keeps its mask — the fallback can only hide whole slots
     if (!this.clipped || on === this.clipOn) return;
     this.clipOn = on;
     if (on) this._showClipHidden();   // the stencil takes over from the eyelid fallback

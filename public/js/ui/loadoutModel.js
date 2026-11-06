@@ -33,7 +33,7 @@ export const LOADOUT_PREF = 'loadout';
 export const LOADOUT_VERSION = 2;
 
 export const PROF_ORDER = ['PIONEER', 'WARRIOR', 'TANK', 'SNIPER', 'CASTER', 'MEDIC', 'SUPPORT', 'SPECIAL'];
-export const PROF_NAME = Object.freeze({ PIONEER: N_('先锋'), WARRIOR: N_('近卫'), TANK: N_('重装'), SNIPER: N_('狙击'), CASTER: N_('术师'), MEDIC: N_('医疗'), SUPPORT: N_('辅助'), SPECIAL: N_('特种') });
+export const PROF_NAME = Object.freeze({ PIONEER: N_('先锋'), WARRIOR: N_('近卫'), TANK: N_('重装'), SNIPER: N_('狙击'), CASTER: N_('术师'), MEDIC: N_('医疗'), SUPPORT: N_('辅助'), SPECIAL: N_('特种'), TOKEN: N_('召唤物') });
 export const SP_TYPE = Object.freeze({ INCREASE_WITH_TIME: N_('自动回复'), INCREASE_WHEN_ATTACK: N_('攻击回复'), INCREASE_WHEN_TAKEN_DAMAGE: N_('受击回复'), ON_DEPLOY: N_('被动'), 8: N_('被动') });
 /** Module attribute keys (ModuleRecord.attr / battle_equip attributeBlackboard) → label + unit. */
 export const ATTR_LABEL = Object.freeze({
@@ -261,15 +261,22 @@ export const LOADOUT_IMPORT_MAX_BYTES = 256 * 1024;
 
 /**
  * Portable payload of a loadout, as downloaded / copied by 导出 — v2 (DESIGN §35.23): the choices by operator
- * (`byChar`, every version's), with the per-operator 潜能 / 练度 (`ops`, 0.2.2).
+ * (`byChar`, every version's), with the per-operator 潜能 / 练度 (`ops`, 0.2.2; an older build reading it ignores
+ * the field) and the 皮肤 choices (`skins` / `portraits`, docs/SKINS.md: the battle model is public, the 商店立绘
+ * is local; an older build reading them ignores the fields).
  * @param {Record<string, any>} byChar the stored choices by charId
- * @param {{ now?: number, ops?: Record<string, any> }} [o]
+ * @param {{ now?: number, ops?: Record<string, any>, skins?: Record<string, string>, portraits?: Record<string, string> }} [o]
  */
-export function exportPayload(byChar, { now = Date.now(), ops = {} } = {}) {
+export function exportPayload(byChar, { now = Date.now(), ops = {}, skins = {}, portraits = {} } = {}) {
   const clean = {};
   for (const [id, e] of Object.entries(byChar || {})) if (isObj(e)) clean[id] = { ...e };
   const cleanOps = {};
   for (const [id, e] of Object.entries(ops || {})) if (isObj(e)) cleanOps[id] = { ...e };
+  const cleanMap = (m) => {
+    const out = {};
+    for (const [id, v] of Object.entries(m || {})) if (typeof v === 'string' && v) out[id] = v;
+    return out;
+  };
   return {
     kind: LOADOUT_EXPORT_KIND,
     v: LOADOUT_VERSION,
@@ -277,6 +284,8 @@ export function exportPayload(byChar, { now = Date.now(), ops = {} } = {}) {
     count: Object.keys(clean).length,
     byChar: clean,
     ops: cleanOps,
+    skins: cleanMap(skins),
+    portraits: cleanMap(portraits),
   };
 }
 
@@ -319,7 +328,23 @@ export function parseImport(input) {
   }
   const entries = parseStored(raw);
   if (!Object.keys(entries).length && !(ops && Object.keys(ops).length)) return { ok: false, error: t('里面没有有效的调配条目') };
-  return ops ? { ok: true, entries, ops } : { ok: true, entries };
+  // 皮肤 / 商店立绘 (docs/SKINS.md), carried like `ops`: present (empty included) = the file's choice replaces the
+  // current one, absent = an older export, the current settings stay. Structural only — a chessId this build does
+  // not know resolves to nothing in spineEntry(), exactly as the server's freezeSkins treats it.
+  const skinMap = (m) => {
+    const out = {};
+    if (!isObj(m)) return null;
+    for (const [id, v] of Object.entries(m)) if (typeof v === 'string' && v) out[id] = v;
+    return out;
+  };
+  const skins = skinMap(raw.skins);
+  const portraits = skinMap(raw.portraits);
+  return {
+    ok: true, entries,
+    ...(ops ? { ops } : {}),
+    ...(skins ? { skins } : {}),
+    ...(portraits ? { portraits } : {}),
+  };
 }
 
 // ---- options & choices ---------------------------------------------------------------------------------------------
@@ -615,4 +640,19 @@ export function quickSkillTags(rec) {
   const duration = rec.durationType === 'AMMO' ? t('弹药') : seconds > 0 ? `${seconds}s`
     : tags.passive ? t('常驻') : Number(rec.duration) < 0 ? '∞' : t('瞬发');
   return { ...tags, sp: deployment ? t('部署触发') : tags.sp, recovery, duration };
+}
+
+/**
+ * (stronghold-ui-hub package) 干员调配 import: the imported skin choices over the current ones (chessId → skinId; an
+ * empty value clears that operator's choice).
+ * @param {Record<string, string>|undefined} currentSkins @param {unknown} importedSkins @returns {Record<string, string>}
+ */
+export function mergeSkins(currentSkins, importedSkins) {
+  if (!importedSkins || typeof importedSkins !== 'object' || Array.isArray(importedSkins)) return currentSkins || {};
+  const next = { ...(currentSkins || {}) };
+  for (const [id, skinId] of Object.entries(importedSkins)) {
+    if (skinId) next[id] = skinId;
+    else delete next[id];
+  }
+  return next;
 }

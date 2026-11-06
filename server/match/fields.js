@@ -8,8 +8,8 @@
 //     remainder is dropped so a stalled server never spirals.
 //   * instant (VirtualScheduler default): every field is stepped to completion synchronously.
 //   * a solo pause (Match.paused, g.pause) skips the intervals: the field clock stands still (HeadlessPacer too).
-// Every SNAP_EVERY (3) ticks of a field its events are drained; watchers of that field get `b.ev` then `b.snap`, both
-// carrying the field's game time `gt` (`emit: false` skips the streaming: server-run fields under client-side combat).
+// Every SNAP_EVERY (3) ticks of a field its events are drained; watchers get `b.ev`, then `b.snap` when due. Lower
+// snapshot rates do not change event boundaries/gt (`emit: false` skips streaming under client-side combat).
 // Per-field isolation: an exception from step() force-ends that field as a timeout (and, if even that throws, the
 // field is closed with a synthetic result). A hard cap (HARD_CAP_SECONDS of game time) force-ends anything left.
 // Results that did not come from a finished battle carry `synthetic: true` (the match never charges LP for them).
@@ -43,6 +43,30 @@ export const GAME_SPEED = 2;
 export const HARD_CAP_SECONDS = 3700;
 const SNAP_EVERY = Number.isInteger(SNAPSHOT_EVERY) && SNAPSHOT_EVERY > 0 ? SNAPSHOT_EVERY : 3;
 
+/** Periodic snapshots only; events and simulation keep their original cadence. */
+export function parseSnapshotHz(value) {
+  if (value == null || value === '') return 20;
+  if (typeof value === 'string' ? !['5', '10', '20'].includes(value) : ![5, 10, 20].includes(value)) {
+    throw new RangeError('SP_SNAPSHOT_HZ must be 20, 10 or 5');
+  }
+  return Number(value);
+}
+
+/** Committed cumulative gains only; never builds a result or depends on watched/drained events. */
+export function battleLayerGains(battle) {
+  const out = {};
+  if (battle?.kind !== 'normal' || battle.flags?.layerGainsEnabled === false) return out;
+  for (const [pid, stats] of Object.entries(battle._perPlayer || {})) {
+    if (stats.layerGains && Object.keys(stats.layerGains).length) out[pid] = { ...stats.layerGains };
+  }
+  return out;
+}
+
+export function eventFrame(fieldId, battle, events) {
+  const time = Number(battle.time);
+  return { t: 'b.ev', fieldId, gt: Number.isFinite(time) ? Math.round(time * 1000) / 1000 : 0, ev: events };
+}
+
 /** Catch-up cap per pacing interval: 8 ticks at the normal 2× speed, proportionally more when sped up. */
 export function maxTicksPerInterval(speed) {
   return Math.max(MAX_TICKS_PER_INTERVAL, Math.ceil((Number(speed) || GAME_SPEED) * 4));
@@ -54,7 +78,8 @@ export function maxTicksPerInterval(speed) {
  */
 export function snapFrame(fieldId, snap) {
   const { t: gt, ...rest } = snap || {};
-  return { ...rest, t: 'b.snap', fieldId, gt: typeof gt === 'number' && Number.isFinite(gt) ? gt : 0 };
+  // Ingress classifies the leading type for compression and snapshot backpressure.
+  return { t: 'b.snap', ...rest, fieldId, gt: typeof gt === 'number' && Number.isFinite(gt) ? gt : 0 };
 }
 
 /** Synthetic per-player result used when a field could not run at all (never punishes the player). */
@@ -81,7 +106,9 @@ export class DeadBattle {
   step() {}
   forceEnd() {}
   result() { return this._result; }
-  snapshot() { return { fieldId: this.fieldId, t: 0, units: [], dp: 0, killed: 0, total: 0, resolved: 0 }; }
+  snapshot({ includeUnitStats = false } = {}) {
+    return { fieldId: this.fieldId, t: 0, units: [], ...(includeUnitStats ? { unitStats: [] } : {}), dp: 0, killed: 0, total: 0, resolved: 0 };
+  }
   drainEvents() { return []; }
   fieldMeta() { return { fieldId: this.fieldId, kind: this.kind, rect: this.rect, stageId: this.stageId, units: [] }; }
   on() { return null; }
@@ -98,6 +125,11 @@ export class FieldRunner {
     this.m = m;
     this.fields = fields;
     this.emit = emit !== false;
+    const hz = parseSnapshotHz(m.snapshotHz);
+    const speed = Number.isFinite(m.gameSpeed) && m.gameSpeed > 0 ? m.gameSpeed : GAME_SPEED;
+    // Default20 preserves legacy/tool pacing; lower rates sample only at existing event boundaries.
+    this.snapshotEvery = hz === 20 ? SNAP_EVERY : Math.max(SNAP_EVERY, Math.ceil(speed / (TICK * hz * SNAP_EVERY)) * SNAP_EVERY);
+    this.snapshotAt = new Map();
     for (const f of fields) f.live = !f.battle.finished;
     this.onTick = onTick;
     this.onDone = onDone;
@@ -108,10 +140,27 @@ export class FieldRunner {
     this.done = false;
     this.stopped = false;
     this.crashes = 0;
+    /** optional (field) => void, called right before each field's step (CombatEngine: the boss pool record of b.ext) */
+    this.beforeStep = null;
+    /** optional (field) => void, called right after each field's step (CombatEngine: local replica digests) */
+    this.afterStep = null;
   }
 
   /** Game seconds elapsed on the master clock (all fields step in lockstep). */
   get time() { return this.ticks * TICK; }
+
+  /**
+   * Battles this runner is stepping right now. `/healthz` sums it over every match: it is the server's own
+   * simulation load (DESIGN §27), and the number that predicts event-loop delay — a single-threaded process
+   * pays for each hosted battle on the same core that answers players. A frozen match (solo pause, or the idle
+   * suspension of a match nobody is connected to) steps nothing, so it counts nothing.
+   */
+  get hosted() {
+    if (this.m.paused) return 0;
+    let n = 0;
+    for (const f of this.fields) if (f.live) n++;
+    return n;
+  }
 
   start() {
     if (this.fields.every((f) => !f.live)) { this._finish(); return; }
@@ -163,6 +212,8 @@ export class FieldRunner {
     for (const f of this.fields) {
       if (!f.live) continue;
       const b = f.battle;
+      // the pool other fields changed since this field's previous step (CombatEngine: local display replicas, b.ext)
+      if (this.beforeStep) this.beforeStep(f);
       try {
         b.step();
       } catch (e) {
@@ -170,7 +221,10 @@ export class FieldRunner {
         this.m.reportError(`field ${f.fieldId} step`, e);
         this._forceField(f, 'timeout');
       }
+      // before this tick's snapshot reads anything lazily (local display replica digests, syncHash.js)
+      if (this.afterStep) this.afterStep(f);
       if (b.finished) { f.live = false; this.m.markPublic(); }
+      if (this.ticks === 1) this._emitStart(f);
       if (this.ticks % SNAP_EVERY === 0 || !f.live) this._emit(f);
     }
     if (this.onTick) {
@@ -201,17 +255,37 @@ export class FieldRunner {
 
   forceAll(reason = 'forced') { this._forceAll(reason); this._checkDone(); }
 
+  _snapshotDue(f) {
+    if (!f.live || this.snapshotEvery === SNAP_EVERY) return true;
+    const last = this.snapshotAt.get(f.fieldId);
+    if (last != null && this.ticks - last < this.snapshotEvery) return false;
+    this.snapshotAt.set(f.fieldId, this.ticks);
+    return true;
+  }
+
+  _emitStart(f) {
+    if (!this.emit || !Array.isArray(f.battle._startUnitStats)) return;
+    try {
+      const meta = f.battle.fieldMeta({ includeUnitStats: true });
+      if (!Array.isArray(meta.unitStats)) return;
+      const msg = { t: 'm.field', ...meta, fieldId: f.fieldId, kind: f.kind, live: !!f.live };
+      for (const pid of this.m.watchersOf(f.fieldId)) this.m.sendTo(pid, msg);
+    } catch (e) { this.m.reportError(`field ${f.fieldId} start stats`, e); }
+  }
+
   _emit(f) {
+    this.m._syncNormalLayers?.(f, battleLayerGains(f.battle));
     let ev = [];
     try { ev = f.battle.drainEvents() || []; } catch (e) { this.m.reportError(`field ${f.fieldId} drainEvents`, e); }
     if (!this.emit) return;
     const watchers = this.m.watchersOf(f.fieldId);
     if (!watchers.length) return;
     let snapMsg = null;
-    try { snapMsg = snapFrame(f.fieldId, f.battle.snapshot()); } catch (e) { this.m.reportError(`field ${f.fieldId} snapshot`, e); }
-    const time = Number(f.battle.time);
-    const gt = snapMsg ? snapMsg.gt : Number.isFinite(time) ? time : 0;
-    const evMsg = ev.length ? { t: 'b.ev', fieldId: f.fieldId, gt, ev } : null;
+    if (this._snapshotDue(f)) {
+      try { snapMsg = snapFrame(f.fieldId, f.battle.snapshot()); } catch (e) { this.m.reportError(`field ${f.fieldId} snapshot`, e); }
+    }
+    const evMsg = ev.length ? eventFrame(f.fieldId, f.battle, ev) : null;
+    if (evMsg && snapMsg) evMsg.gt = snapMsg.gt;
     for (const pid of watchers) {
       if (evMsg) this.m.sendTo(pid, evMsg);
       if (snapMsg) this.m.sendTo(pid, snapMsg);
@@ -569,27 +643,84 @@ function ownerlessSummons(gd) { return summonIndex(gd).ownerless; }
 const WORD_RE = /[A-Za-z][A-Za-z0-9_]*/g;
 const recJson = (rec) => { try { return rec ? JSON.stringify(rec) : ''; } catch { return ''; } };
 
+/** The bond ids a text names: every word `gd.bond` accepts, first occurrence first, no duplicates. */
+function scanBondWords(gd, text) {
+  const isBond = typeof gd.bond === 'function' ? (w) => gd.bond(w) : () => false;
+  const out = [];
+  const seen = new Set();
+  for (const w of String(text ?? '').match(WORD_RE) || []) if (!seen.has(w) && isBond(w)) { seen.add(w); out.push(w); }
+  return out;
+}
+
+/**
+ * Content-keyed memo of the per-record layer work (task A): `layerBondsOf` used to stringify a player's band / effect
+ * / unit / item records and regex-scan them for bond ids on every field of every round, and `layerAllowanceOf` walked
+ * the garrisons of every unit — the same content every time, because `gd.chess` / `gd.token` / `gd.item` / `gd.band` /
+ * `gd.effect` / `gd.garrison` hand back the process-wide FROZEN data records (server/data.js deepFreeze), so the
+ * values repeat across players, fields, rounds and matches.
+ *
+ * Both caches are WeakMaps keyed on those record objects — never on ids or strings, so an entry lives exactly as long
+ * as the record it describes and the memo is bounded by the data, not by how many matches ran. The data graph the
+ * answer was computed from travels beside the value (see `dataSourceOf`): a record examined under another data source
+ * must not be served the first one's answer. A record that is not an object (an unknown id resolves to null) is
+ * computed but not cached — there is nothing to key a WeakMap on.
+ */
+const recordWordsCache = new WeakMap();
+/** @type {WeakMap<object, { src: any, entries: Array<{ extra?: true, bonds?: string[]|null, cap?: number, handed?: boolean }> }>} */
+const chessAllowCache = new WeakMap();
+
+/**
+ * The data graph a `gd` answers from: `gd.raw` (the process-wide frozen records AND the bond / garrison maps every
+ * record lookup goes through) — or `gd` itself for a data source without one. Keying on the raw graph rather than on
+ * the `GameData` object matters: every Match builds its own `new GameData(data, modeId)` over the same `getData()`
+ * singleton, so keying on the instance would make two rooms evict each other's entries field by field and the memo
+ * would never pay off outside one match.
+ */
+function dataSourceOf(gd) {
+  return gd && typeof gd === 'object' && gd.raw && typeof gd.raw === 'object' ? gd.raw : gd;
+}
+
+/**
+ * Bond ids a shared data record's own text names, memoized per record object.
+ * @returns {string[]} the record's bond ids, in the text's word order
+ */
+function recordBondWords(gd, rec) {
+  if (!rec || typeof rec !== 'object') return scanBondWords(gd, recJson(rec));
+  const src = dataSourceOf(gd);
+  const hit = recordWordsCache.get(rec);
+  if (hit && hit.src === src) return hit.words;
+  const words = scanBondWords(gd, recJson(rec));
+  recordWordsCache.set(rec, { src, words });
+  return words;
+}
+
 /**
  * Bonds an IN_BATTLE layer gain of this player can name: its bond snapshot (every bond its lineup counts), plus bonds
  * its band, its effects (机变 cards, 驻守 …), its units and their items mention (content grants layers to those —
- * including referenced bonds outside the lineup snapshot). Anything else is a forged gain.
+ * e.g. 克莱门莎's <阿戈尔>, requireActive: false). Anything else is a forged gain.
+ *
+ * The player's own effects / bond snapshot are freshly built per field (PlayerBattleInput) and so are scanned as
+ * text; every content record behind them goes through `recordBondWords`, whose words are added in the same order the
+ * uncached scan added them, so the returned Set is bit-identical either way.
  */
 function layerBondsOf(p, gd) {
   const out = new Set(Object.keys(p.bonds && typeof p.bonds === 'object' ? p.bonds : {}));
   if (typeof gd.bond !== 'function') return out;
-  const texts = [recJson(p.playerEffects), recJson(p.bonds)];
+  const scan = (text) => { for (const w of String(text ?? '').match(WORD_RE) || []) if (!out.has(w) && gd.bond(w)) out.add(w); };
+  const add = (words) => { for (const w of words) if (!out.has(w)) out.add(w); };
+  scan(recJson(p.playerEffects));
+  scan(recJson(p.bonds));
   const band = p.bandId && typeof gd.band === 'function' ? gd.band(p.bandId) : null;
   if (band) {
-    texts.push(recJson(band));
-    if (band.effectId && typeof gd.effect === 'function') texts.push(recJson(gd.effect(band.effectId)));
+    add(recordBondWords(gd, band));
+    if (band.effectId && typeof gd.effect === 'function') add(recordBondWords(gd, gd.effect(band.effectId)));
   }
   for (const u of Array.isArray(p.units) ? p.units : []) {
     if (!u) continue;
-    if (u.kind === 'token') { if (typeof gd.token === 'function') texts.push(recJson(gd.token(u.tokenId))); continue; }
-    if (typeof gd.chess === 'function') texts.push(recJson(gd.chess(u.chessId)));
-    for (const it of Array.isArray(u.items) ? u.items : []) if (typeof gd.item === 'function') texts.push(recJson(gd.item(it)));
+    if (u.kind === 'token') { if (typeof gd.token === 'function') add(recordBondWords(gd, gd.token(u.tokenId))); continue; }
+    if (typeof gd.chess === 'function') add(recordBondWords(gd, gd.chess(u.chessId)));
+    for (const it of Array.isArray(u.items) ? u.items : []) if (typeof gd.item === 'function') add(recordBondWords(gd, gd.item(it)));
   }
-  for (const t of texts) for (const w of t.match(WORD_RE) || []) if (!out.has(w) && gd.bond(w)) out.add(w);
   return out;
 }
 
@@ -611,22 +742,14 @@ function layerAllowanceOf(p, gd) {
   const lineup = new Set(Object.keys(p.bonds && typeof p.bonds === 'object' ? p.bonds : {}));
   for (const u of units) for (const b of gd.chess(u.chessId)?.bonds || []) lineup.add(b);
   let extra = false;
-  const credit = (g, times) => {
-    const bb = g.bb || {};
-    if (Number.isFinite(bb.extra_cnt)) { extra = true; return; }
-    if (!Number.isFinite(bb.bond_add_count) && !Number.isFinite(bb.bond_add_count_multi)) return;
-    const s = g.bbStr || {};
-    const bonds = s.bond_type === 'bond_by_id' ? String(s.bond_id ?? '').split(',').map((x) => x.trim()).filter((x) => gd.bond(x)) : [...lineup];
-    const cap = Number(bb.max_add_count_per_battle) > 0 ? Number(bb.max_add_count_per_battle) : Infinity;
-    for (const b of bonds) out.set(b, (out.get(b) || 0) + cap * times);
-  };
   for (const u of units) {
-    for (const gid of gd.chess(u.chessId)?.garrisonIds || []) {
-      const g = gd.garrison(gid);
-      if (!g || g.eventType !== 'IN_BATTLE') continue;
-      if (g.effectKey !== 'ADD_BOND') { credit(g, 1); continue; }
-      const given = gd.garrison(g.bbStr?.give_garrison_id);
-      if (given && given.eventType === 'IN_BATTLE') credit(given, units.length);
+    // the garrison walk belongs to the chess record, not to this player: each entry is one garrison's contribution,
+    // `handed` marking the ones an ADD_BOND trait handed out (counted for every operator of the player)
+    for (const e of chessAllowanceEntries(gd, gd.chess(u.chessId))) {
+      if (e.extra) { extra = true; continue; }
+      const bonds = e.bonds || [...lineup]; // null = every bond of the player's lineup; an empty list stays empty
+      const n = e.cap * (e.handed ? units.length : 1);
+      for (const b of bonds) out.set(b, (out.get(b) || 0) + n);
     }
   }
   if (extra) for (const b of out.keys()) out.set(b, Infinity);
@@ -634,15 +757,76 @@ function layerAllowanceOf(p, gd) {
 }
 
 /**
+ * The per-battle layer contributions of one chess's own garrisons (the walk `layerAllowanceOf` used to redo for every
+ * unit of every field), memoized on the shared chess record.
+ * @returns {Array<{ extra?: true, bonds?: string[]|null, cap?: number, handed?: boolean }>} `bonds` null = the
+ * player's lineup; `handed` entries are counted once per operator of the player (ADD_BOND 所有【X】)
+ */
+function chessAllowanceEntries(gd, rec) {
+  if (!rec || typeof rec !== 'object') return computeChessAllowance(gd, rec);
+  const src = dataSourceOf(gd);
+  const hit = chessAllowCache.get(rec);
+  if (hit && hit.src === src) return hit.entries;
+  const entries = computeChessAllowance(gd, rec);
+  chessAllowCache.set(rec, { src, entries });
+  return entries;
+}
+
+function computeChessAllowance(gd, rec) {
+  const entries = [];
+  if (typeof gd.garrison !== 'function' || typeof gd.bond !== 'function') return entries;
+  const credit = (g, handed) => {
+    const bb = g.bb || {};
+    if (Number.isFinite(bb.extra_cnt)) { entries.push({ extra: true }); return; }
+    if (!Number.isFinite(bb.bond_add_count) && !Number.isFinite(bb.bond_add_count_multi)) return;
+    const s = g.bbStr || {};
+    const bonds = s.bond_type === 'bond_by_id' ? String(s.bond_id ?? '').split(',').map((x) => x.trim()).filter((x) => gd.bond(x)) : null;
+    const cap = Number(bb.max_add_count_per_battle) > 0 ? Number(bb.max_add_count_per_battle) : Infinity;
+    entries.push({ bonds, cap, handed });
+  };
+  for (const gid of (rec && rec.garrisonIds) || []) {
+    const g = gd.garrison(gid);
+    if (!g || g.eventType !== 'IN_BATTLE') continue;
+    if (g.effectKey !== 'ADD_BOND') { credit(g, false); continue; }
+    const given = gd.garrison(g.bbStr?.give_garrison_id);
+    if (given && given.eventType === 'IN_BATTLE') credit(given, true);
+  }
+  return entries;
+}
+
+/** Memo of `specBounds` per spec object (one entry per field, collected with the spec). @type {WeakMap<object, { gd: any, bounds: object }>} */
+const boundsCache = new WeakMap();
+
+/**
  * Bounds of a battle derived from its spec: spawn counts per enemy key, keys content may add, bounty coins, the
  * player ids and each player's unit uids.
+ *
+ * Memoized per spec object (`boundsCache`): the bounds are a pure function of `(spec, gd)`, and a field's spec is
+ * built once (Match._ccField) and never mutated. `validateClientResult` is the hot caller, and it validates the same
+ * field's spec twice whenever an accepted result is re-checked — the SP_VERIFY re-simulation of `_verifyResult` — while
+ * these maps are the bulk of what it costs (106 µs measured for one round-1 HARD field; 290 µs of 373 µs on the
+ * auditing box): one computation per field's own result either way, but a re-check is now ~200× cheaper (measured
+ * 0.5 µs). The cached value is READ-ONLY — `validateClientResult` copies the two maps it decrements, and the other
+ * caller (`uniteBillBounds`) only iterates; a caller that mutated one would poison every later validation of the field.
  */
 export function specBounds(spec, gd = null) {
+  if (!spec || typeof spec !== 'object') return computeSpecBounds(spec, gd); // nothing to key a WeakMap on
+  const hit = boundsCache.get(spec);
+  // `gd` travels beside the bounds: a spec examined under another data source must not be served the first one's
+  if (hit && hit.gd === gd) return hit.bounds;
+  const bounds = computeSpecBounds(spec, gd);
+  boundsCache.set(spec, { gd, bounds });
+  return bounds;
+}
+
+function computeSpecBounds(spec, gd) {
   const keyCounts = new Map();
   /** `${enemyKey}|${sourcePlayerId}` → scheduled count (联防: whose leak re-enters) */
   const keySourceCounts = new Map();
   /** spawn keys whose schedule entries may leak without costing LP (countInTotal false, boss / part tags) */
   const uncountedKeys = new Set();
+  /** the scheduled COUNT of those exempt units per key: a `counted: false` leak consumes one slot */
+  const uncountedCounts = new Map();
   let spawnCount = 0;
   let bountyCoins = 0;
   const sources = new Set();
@@ -653,7 +837,13 @@ export function specBounds(spec, gd = null) {
     keyCounts.set(s.enemyKey, (keyCounts.get(s.enemyKey) || 0) + n);
     const ks = `${s.enemyKey}|${typeof s.sourcePlayerId === 'string' ? s.sourcePlayerId : ''}`;
     keySourceCounts.set(ks, (keySourceCounts.get(ks) || 0) + n);
-    if (s.countInTotal === false || s.tag === 'boss' || s.tag === 'part') uncountedKeys.add(s.enemyKey);
+    if (s.countInTotal === false || s.tag === 'boss' || s.tag === 'part') {
+      uncountedKeys.add(s.enemyKey);
+      // Same, but with the scheduled COUNT per key: a `counted: false` leak consumes one of these slots. A key that
+      // appears both in the normal wave and as a 同盟狩猎 prey can therefore not hide the wave's leaks behind the
+      // prey's exemption.
+      uncountedCounts.set(s.enemyKey, (uncountedCounts.get(s.enemyKey) || 0) + n);
+    }
     const coins = Math.max(Number(s.bounty && s.bounty.coins) || 0, Number(s.mods && s.mods.bountyCoins) || 0);
     if (coins > 0) bountyCoins += coins * n;
     if (typeof s.sourcePlayerId === 'string') sources.add(s.sourcePlayerId);
@@ -676,7 +866,11 @@ export function specBounds(spec, gd = null) {
   }
   for (const k of keyCounts.keys()) {
     const rec = gd && typeof gd.enemy === 'function' ? gd.enemy(k) : null;
-    if (rec && rec.notCountInTotal) uncountedKeys.add(k);
+    if (rec && rec.notCountInTotal) {
+      uncountedKeys.add(k);
+      // the whole scheduled count of a key whose data record never counts may leak uncounted
+      uncountedCounts.set(k, Math.max(uncountedCounts.get(k) || 0, keyCounts.get(k) || 0));
+    }
   }
   const players = new Map();
   for (const p of Array.isArray(spec && spec.players) ? spec.players : []) {
@@ -714,7 +908,7 @@ export function specBounds(spec, gd = null) {
   }
   const round = Number(spec && spec.round) || 0;
   return {
-    keyCounts, keySourceCounts, derivedSourceCounts, uncountedKeys, derived, spawnCount, bountyCoins, sources, players,
+    keyCounts, keySourceCounts, derivedSourceCounts, uncountedKeys, uncountedCounts, derived, spawnCount, bountyCoins, sources, players,
     // content spawns (splits, summons, boss minions) can add enemies beyond the schedule
     maxTotal,
     layerCap: 60 + 4 * round,
@@ -789,6 +983,8 @@ export function validateClientResult(spec, raw, { gd = null } = {}) {
       spawnMods.get(s.enemyKey).push(s);
     }
     const leakCount = new Map();
+    // per-key allowance of `counted: false` leaks (the schedule's exempt units); spent as leaks report themselves
+    const uncountedLeft = new Map(B.uncountedCounts);
     // 联防: (enemyKey, leaker) budget shared by the helpers' leaks and the never-spawned re-entries
     const sourceLeft = new Map(B.keySourceCounts);
     const derivedLeft = new Map(B.derivedSourceCounts);
@@ -826,8 +1022,14 @@ export function validateClientResult(spec, raw, { gd = null } = {}) {
           const bound = (B.keyCounts.get(key) || 0) + (B.derived.has(key) ? B.maxTotal : 0);
           if (n > bound) return bad('leak multiset');
           // a leak costs LP unless the enemy never counts (data notCountInTotal, countInTotal false, boss / part
-          // entries); content-spawned keys (summons, splits) may carry their own flag
-          if (!counted && !B.uncountedKeys.has(key) && !B.derived.has(key)) return bad('uncounted leak');
+          // entries). The exemption is per scheduled unit, not per key: a key that is both a normal wave unit and a
+          // 同盟狩猎 prey cannot report the normal unit as uncounted once the prey's allowance is spent. Content-spawned
+          // keys (summons, splits) may still carry their own flag when they are not also scheduled.
+          if (!counted) {
+            const left = uncountedLeft.get(key) || 0;
+            if (left > 0) uncountedLeft.set(key, left - 1);
+            else if (!B.derived.has(key) || B.keyCounts.has(key)) return bad('uncounted leak');
+          }
         }
         // mods / tag / source come from the spawn schedule (a leak re-enters 联防 with them). An enemy content spawned
         // (a split, a summon) carries its parent's mods — the round multipliers, a bounty id — so the leak's mods may

@@ -2,7 +2,7 @@
 // the UI-kit demo (/dev/uikit.html §13) and the in-match mock harness (/dev/game-mock.html). Opt-in like the other
 // browser suites: SP_E2E=1 node --test test/ui/emotes.e2e.test.js   → screenshots in test/e2e/out/emotes-*.png
 //
-// Asserted: picture-only wheel pages (3×2 per theme) and bubbles (no text anywhere), swipe / arrow keys / dots change
+// Asserted: picture-only wheel pages (3×2 per theme) and bubbles (no text but the numeric `1/N` pager), swipe / arrow keys / pager arrows change
 // the theme, sending closes the panel and greys 交流 for the 1 s cooldown, the panel reopens on the last-used theme,
 // a bubble fades out after 3 s and a newer one replaces it, the neutral glyph fallback when the art is missing, the
 // bubble sits beside the sender's avatar in the team panel, and zero console errors.
@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EMOTE_THEMES } from '../../shared/constants.js';
+import { EMOTE_THEMES, EMOTE_CATALOG } from '../../shared/constants.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -28,7 +28,10 @@ const HAS_ART = existsSync(path.join(ROOT, 'public/assets/local/emoticon/fooldoc
 // ui/battle atlas (ui/emotes.js emoteUiSprite → localAsset), which tools/fetch-assets.mjs does NOT carry — no dump,
 // no official cell, and the wheel draws its own. One assertion below is about that official chrome, so it asks for it
 // separately instead of quietly failing on a fetch-assets-only deployment.
-const HAS_UI = existsSync(path.join(ROOT, 'public/assets/local/ui/battle/emoji_cell_bkg.png'));
+// `localAsset` reads the manifest, not the file on disk: without data/local-assets.json (no client dump) the wheel
+// draws its own cell even when the extracted PNG is sitting in public/assets/local. Ask for both.
+const HAS_UI = existsSync(path.join(ROOT, 'data/local-assets.json'))
+  && existsSync(path.join(ROOT, 'public/assets/local/ui/battle/emoji_cell_bkg.png'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (and have Chrome) to run' }, () => {
@@ -68,29 +71,32 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
         return req.continue();
       });
     }
-    await page.goto(`${base}${url}`, { waitUntil: 'networkidle0' });
+    await page.goto(`${base}${url}`, { waitUntil: 'load' });
     return { page, problems };
   }
 
   const wheelState = (page, root = '') => page.evaluate((root) => {
     const q = (s) => document.querySelector(`${root} ${s}`.trim());
     const panel = q('.ewheel__panel');
+    const pager = q('.ewheel__pager');
     return {
       open: !!panel,
       theme: q('.ewheel__page')?.dataset.theme || null,
       items: document.querySelectorAll(`${root} .ewheel__item`.trim()).length,
       imgs: [...document.querySelectorAll(`${root} .ewheel__item img`.trim())].filter((i) => i.complete && i.naturalWidth > 0).length,
       glyphs: document.querySelectorAll(`${root} .ewheel__item .eart--glyph`.trim()).length,
-      panelText: panel ? panel.textContent.trim() : '',
+      // Emotes are pictures only: the numeric `1/N` pager (kept from the fork) is the panel's one allowed text, so
+      // measure the panel without it.
+      panelText: panel ? panel.textContent.replace(pager ? pager.textContent : '', '').trim() : '',
       btnDisabled: q('.ewheel__btn')?.disabled ?? null,
-      dotOn: [...document.querySelectorAll(`${root} .ewheel__dot`.trim())].findIndex((d) => d.classList.contains('is-on')),
+      count: q('.ewheel__count')?.textContent.trim() || null,
     };
   }, root);
 
-  test('UI kit: pager per theme, picture-only, swipe / keys / dots, cooldown, remembered theme, 3 s bubble', { skip: !HAS_ART && 'no official emote art (neither the local extraction nor the fetched copies)' }, async () => {
+  test('UI kit: pager per theme, picture-only, swipe / keys / pager arrows, cooldown, remembered theme, 3 s bubble', { skip: !HAS_ART && 'no official emote art (neither the local extraction nor the fetched copies)' }, async () => {
     const { page, problems } = await open('/dev/uikit.html');
     await page.evaluate(() => localStorage.removeItem('sp.pref.emoteTheme'));
-    await page.reload({ waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'load' });
     await page.waitForSelector('#emo-stage .ewheel__panel');
     await page.$eval('#emo-stage', (el) => el.closest('section').scrollIntoView());
     await sleep(500);
@@ -100,8 +106,8 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
     assert.equal(s.items, 6, '3×2 cells');
     assert.equal(s.imgs, 6, 'official pictures loaded');
     assert.equal(s.panelText, '', 'no text in the panel');
-    assert.equal(s.dotOn, 0);
-    assert.equal(await page.$$eval('.emo-cat img', (els) => els.filter((i) => i.complete && i.naturalWidth > 0).length), 36, 'all 36 pictures load');
+    assert.equal(s.count, `1/${EMOTE_THEMES.length}`, 'numeric pager (kept from the fork), no plugin page installed');
+    assert.equal(await page.$$eval('.emo-cat img', (els) => els.filter((i) => i.complete && i.naturalWidth > 0).length), EMOTE_CATALOG.length, 'all registered pictures load');
     await section.screenshot({ path: path.join(OUT, 'emotes-uikit.png') });
 
     // swipe left → next theme (mouse drag across the pager)
@@ -132,11 +138,11 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
     await page.keyboard.press('ArrowRight');
     await sleep(200);
     assert.equal((await wheelState(page, '#emo-stage')).theme, EMOTE_THEMES[3].themeId);
-    await page.click('#emo-stage .ewheel__dot:nth-child(5)');
+    await page.click('#emo-stage .ewheel__nav.is-next');
     await sleep(250);
     s = await wheelState(page, '#emo-stage');
-    assert.equal(s.theme, EMOTE_THEMES[4].themeId, 'dot → page');
-    assert.equal(s.dotOn, 4);
+    assert.equal(s.theme, EMOTE_THEMES[4].themeId, 'pager arrow → page');
+    assert.equal(s.count, `5/${EMOTE_THEMES.length}`);
     assert.equal(s.imgs, 6);
     await section.screenshot({ path: path.join(OUT, 'emotes-uikit-page5.png') });
 
@@ -155,7 +161,7 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
     await page.click('#emo-stage .ewheel__btn');
     await sleep(200);
     assert.equal((await wheelState(page, '#emo-stage')).theme, EMOTE_THEMES[4].themeId, 'reopens on the last used theme');
-    await page.reload({ waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'load' });
     await page.waitForSelector('#emo-stage .ewheel__panel');
     assert.equal((await wheelState(page, '#emo-stage')).theme, EMOTE_THEMES[4].themeId, 'remembered across reloads');
 
@@ -173,7 +179,7 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
   test('wheel: one trackpad swipe (momentum included) turns one page, a mouse-wheel notch turns one page', { skip: !HAS_ART && 'no official emote art (neither the local extraction nor the fetched copies)' }, async () => {
     const { page, problems } = await open('/dev/uikit.html');
     await page.evaluate(() => localStorage.removeItem('sp.pref.emoteTheme'));
-    await page.reload({ waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'load' });
     await page.waitForSelector('#emo-stage .ewheel__panel');
     await page.$eval('#emo-stage', (el) => el.scrollIntoView({ block: 'center' }));
     await sleep(300);
@@ -272,7 +278,7 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
     const { page, problems } = await open('/dev/uikit.html');
     await page.setViewport({ width: 1280, height: 720, hasTouch: true, isMobile: false });
     await page.evaluate(() => localStorage.removeItem('sp.pref.emoteTheme'));
-    await page.reload({ waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'load' });
     await page.waitForSelector('#emo-stage .ewheel__panel');
     await page.$eval('#emo-stage', (el) => el.scrollIntoView({ block: 'center' }));
     await sleep(300);
@@ -304,7 +310,7 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
       ignore: [/nope_404\.png/, /\/assets\/(?:~[0-9a-f]{16}\/)?ui\/emoticon\//, /Failed to load resource/],
     });
     await page.evaluate(() => localStorage.removeItem('sp.pref.emoteTheme'));
-    await page.reload({ waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'load' });
     await page.waitForSelector('#emo-stage .ewheel__panel');
     await sleep(400);
     const s = await wheelState(page, '#emo-stage');
@@ -330,6 +336,12 @@ describe('official emotes in the browser', { skip: !ENABLED && 'set SP_E2E=1 (an
     assert.equal(s.items, 6);
     assert.equal(s.imgs, 6);
     assert.equal(s.panelText, '');
+    const place = await page.evaluate(() => {
+      const btn = document.querySelector('.ewheel__btn').getBoundingClientRect();
+      const panel = document.querySelector('.ewheel__panel').getBoundingClientRect();
+      return { above: panel.bottom <= btn.top, onscreen: panel.top >= 0 && panel.bottom <= window.innerHeight };
+    });
+    assert.deepEqual(place, { above: true, onscreen: true }, 'the dialog opens above the button (upstream placement), not under it');
     const geo = await page.$$eval('.team__row', (rows) => rows.filter((r) => r.querySelector('.team__bubble')).map((r) => {
       const row = r.getBoundingClientRect();
       const a = r.querySelector('.pavatar, .team__btn').getBoundingClientRect();

@@ -89,14 +89,17 @@ export function rangeTiles(grid, row, col, dir, { extend = 0, rows = GEO.ROWS, c
 
 /**
  * Direction of a swipe from the wheel centre. `dx`, `dy` in screen px (+y down); `dead` = dead-zone radius in px.
- * The dominant axis decides (ties go to the horizontal axis, where the lanes are).
+ * Quadrants are 45° sectors around the circle (RIGHT: -45°..45°, DOWN: 45°..135°, LEFT: 135°..225°, UP: -135°..-45°).
  * @returns {'UP'|'RIGHT'|'DOWN'|'LEFT'|null}
  */
 export function dirFromDelta(dx, dy, dead = 0) {
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
   if (Math.hypot(dx, dy) <= Math.max(0, dead)) return null;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'RIGHT' : 'LEFT';
-  return dy < 0 ? 'UP' : 'DOWN';
+  const deg = Math.atan2(dy, dx) * (180 / Math.PI);
+  if (deg >= -45 && deg < 45) return 'RIGHT';
+  if (deg >= 45 && deg < 135) return 'DOWN';
+  if (deg >= -135 && deg < -45) return 'UP';
+  return 'LEFT';
 }
 
 const MIRROR = Object.freeze({ UP: 'UP', RIGHT: 'LEFT', DOWN: 'DOWN', LEFT: 'RIGHT' });

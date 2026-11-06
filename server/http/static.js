@@ -66,7 +66,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { MEDIA_PREFIX } from '../../shared/media.js';
 import { splitHashedPath } from '../../shared/assetPaths.js';
-import { ROOT, noopLog } from './config.js';
+import { ROOT, noopLog, assetOriginFrom } from './config.js';
 import { sendError, sendJson } from './common.js';
 import { MIME, CompressCache, IMMUTABLE_CACHE, isNotModified, serveFile, serveBuffer } from './files.js';
 import { ASSET_INDEX_ROOTS, hashedFileOpts } from './assetIndex.js';
@@ -76,6 +76,7 @@ import { computeVanillaContent } from '../plugins/identity.js';
 import { createVisualSets } from '../plugins/visualSet.js';
 import { isStudioPath } from '../studio/paths.js';
 import { PACKS_URL, PACK_INDEX_FILE } from '../../shared/packs.js';
+import { NO_PHASES } from '../phaseMetrics.js';
 import { PLUGINS_URL, PLUGIN_INDEX_VERSION, buildPluginIndex, extOf, isPackPath, isPluginId } from '../../shared/plugins/manifest.js';
 import { csUrlPart } from '../../shared/plugins/identity.js';
 import { FILE_URL_DIGITS, PLUGIN_AUDIO_EXTS, PLUGIN_FILES_URL, VISUAL_DOC_FILE, VISUAL_SETS_URL, VS_URL_DIGITS } from '../../shared/plugins/visual.js';
@@ -90,6 +91,32 @@ import { getSimData } from './sim/simdata.js';
 export function getData() { return getSimData() || {}; }
 export function resetData() {}
 `;
+/**
+ * GET /code-source.json (public/js/codeSource.js): the release's public Studio copy of /sim, /shared and /data. The edge
+ * answers it per release (deploy/stardust/STUDIO-CODE-SOURCE.md); this server answers SP_CODE_SOURCE (that JSON — a test,
+ * a host without the edge) or null, and the page then reads everything from here.
+ */
+export function codeSourceFromEnv(env = process.env) {
+  const raw = String(env.SP_CODE_SOURCE ?? '').trim();
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch { return null; }
+}
+
+/**
+ * SP_CLIENT: 'build' serves the Vite bundle of the UI layer (`npm run build` → public/build/, vite.config.js) — `/` and
+ * `/index.html` answer public/build/index.html (no-cache) and /build/assets/<name>-<hash>.* are immutable; anything
+ * else (the default 'source') serves public/index.html with its native modules. /js/, /css/, /shared/, /sim/ and /data/
+ * are served either way (the bundle leaves /shared, /sim, the boot scripts and the Workers at their own URLs).
+ * @returns {'source' | 'build'}
+ */
+export function clientModeFromEnv(env = process.env) {
+  return String(env.SP_CLIENT ?? '').trim().toLowerCase() === 'build' ? 'build' : 'source';
+}
+const BUILD_ASSET = /^\/build\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8}\.(?:js|css)$/;
+
 /** Files under server/sim that are never served (Node-only). */
 const SIM_PRIVATE = new Set(['nodedata.js']); // lower-case (compared case-insensitively)
 
@@ -115,7 +142,7 @@ const CS_FILE = /^\/cs\/([0-9a-f]{16})\/([A-Za-z0-9._\/-]{1,200})$/;
  * Create the static request handler.
  * @param {{ publicDir: string, dataDir: string, sharedDir: string, simDir?: string, packsDir?: string, pluginsDir?: string,
  *   packs?: ReturnType<typeof createPluginRegistry>, content?: import('../plugins/identity.js').VanillaContent | null,
- *   log?: object,
+ *   log?: object, metrics?: typeof NO_PHASES,
  *   assetIndex?: ReturnType<typeof import('./assetIndex.js').createAssetIndex> | null,
  *   views?: ReturnType<typeof import('./assetViews.js').createManifestViews> | null,
  *   visual?: ReturnType<typeof createVisualSets> | null,
@@ -123,16 +150,23 @@ const CS_FILE = /^\/cs\/([0-9a-f]{16})\/([A-Za-z0-9._\/-]{1,200})$/;
  *   versions?: { file: (cs16: string, rel: string) => ({ body: Buffer, sha256: string, type: string } | null), servedDirs: () => string[] } | null }} dirs
  *   packs: the server's plugin registry (default: one over publicDir, dataDir, packsDir and pluginsDir — ROOT/packs, and
  *   the plugins/ folder beside packsDir); content: the vanilla content (default: computed from simDir, sharedDir and
- *   dataDir on first use); assetIndex / views: the content hashes and the served manifests (none: plain URLs,
+ *   dataDir on first use); metrics: optional phase recorder (coordinator /healthz): request count and wall time per
+ *   mount, `static.<mount>`; assetIndex / views: the content hashes and the served manifests (none: plain URLs,
  *   size-mtime ETags); visual: the visual sets (default: one over the registry — a registry of 0.2.0's shape has none:
  *   /vs/ and /p/ answer 404); contents: the content sets with gameplay plugins (DESIGN §32.6; none: only the vanilla
  *   set's /cs/ manifest); versions: the official versions this server enables (server/versions.js; none: /data/versions/ is
  *   never served)
+ *   codeSource: the /code-source.json answer (default: codeSourceFromEnv()); client: 'build' or 'source' (default:
+ *   clientModeFromEnv()) — 'build' without a public/build/index.html logs once and serves the source page
+ *   assetOrigin: the material source base answered at /data/asset-source.json (default: assetOriginFrom(), SP_ASSET_ORIGIN)
+ *   assetDisabled: true answers `disabled: true` there too — the operator opted out of a download channel and the
+ *   client hides the entry (default: false; set from http/config.js assetSourceFrom())
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, rawPath: string, query: string) => Promise<void>}
  */
 export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = path.join(ROOT, 'server', 'sim'), packsDir = path.join(ROOT, 'packs'),
   pluginsDir = path.join(path.dirname(path.resolve(packsDir)), 'plugins'), packs = null, content = null, log = noopLog,
-  assetIndex = null, views = null, visual = null, contents = null, versions = null }) {
+  metrics = NO_PHASES, assetIndex = null, views = null, visual = null, contents = null, codeSource = codeSourceFromEnv(),
+  client = clientModeFromEnv(), assetOrigin = assetOriginFrom(), assetDisabled = false, versions = null }) {
   const registry = packs || createPluginRegistry({ publicDir, dataDir, packsDir, pluginsDir }, { log: /** @type {any} */ (log) });
   const sets = visual || (typeof registry.pluginFile === 'function' ? createVisualSets({ registry, log }) : null);
   let vanilla = content;
@@ -169,8 +203,22 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
   const shimBody = Buffer.from(DATA_SHIM_JS);
   const shimTag = `"shim-${shimBody.length.toString(16)}"`;
   const gzipCache = new CompressCache(); // brotli and gzip bodies (files.js)
+  const buildPage = path.join(path.resolve(publicDir), 'build', 'index.html');
+  let buildMissing = false;
 
-  return async function serveStatic(req, res, rawPath, query) {
+  if (metrics.enabled) {
+    // Wall time per request (stat/gzip/await included): a count of what the coordinator still serves itself.
+    const phaseOf = (rawPath) => rawPath === '/data.js' ? 'static.shim' : rawPath.startsWith(PACKS_URL) ? 'static.packs'
+      : rawPath.startsWith(MEDIA_PREFIX) ? 'static.media'
+        : `static.${(mounts.find((m) => rawPath.startsWith(m.prefix)) || mounts[mounts.length - 1]).name}`;
+    return async function measuredStatic(req, res, rawPath, query) {
+      const t0 = metrics.start();
+      try { await serveStatic(req, res, rawPath, query); } finally { metrics.end(phaseOf(rawPath), t0); }
+    };
+  }
+  return serveStatic;
+
+  async function serveStatic(req, res, rawPath, query) {
     let decoded;
     try { decoded = decodeURIComponent(rawPath); } catch { sendError(req, res, 400, '请求地址无效 · Bad request'); return; }
     if (!decoded.startsWith('/') || decoded.includes('\0') || decoded.includes('\\')) {
@@ -183,6 +231,20 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
     const hashed = splitHashedPath(decoded);
     const urlHash = hashed.hash;
     decoded = hashed.path;
+    if (decoded === '/code-source.json') { sendJson(req, res, 200, codeSource); return; }
+    // The material source the asset download fetches from (设置 → 素材下载, SP_ASSET_ORIGIN): '' = this page's own
+    // origin; disabled: true means the operator opted out of a download channel (the client hides the entry).
+    if (decoded === '/data/asset-source.json') { sendJson(req, res, 200, { version: 1, origin: assetOrigin, ...(assetDisabled ? { disabled: true } : {}) }); return; }
+    if (client === 'build' && !buildMissing && (decoded === '/' || decoded === '/index.html')) {
+      let stat = null;
+      try { stat = await fsp.stat(buildPage); } catch { /* not built */ }
+      if (stat?.isFile()) {
+        await serveFile(req, res, buildPage, stat, 'public', ['build', 'index.html'], query, gzipCache, log, { cacheControl: 'no-cache' });
+        return;
+      }
+      buildMissing = true;
+      log.warn?.('[http] SP_CLIENT=build but public/build/index.html is missing (npm run build): serving the source page');
+    }
     if (decoded === '/data.js') {
       const headers = { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache', ETag: shimTag, 'Content-Length': shimBody.length };
       if (isNotModified(req, shimTag, new Date(0))) { delete headers['Content-Length']; res.writeHead(304, headers); res.end(); return; }
@@ -356,7 +418,10 @@ export function createStaticHandler({ publicDir, dataDir, sharedDir, simDir = pa
       if (real === worker) res.setHeader('Content-Security-Policy', SIM_WORKER_CSP);
     }
     const indexed = mount.name === 'public' && segments.length > 1 && ASSET_INDEX_ROOTS.includes(segments[0]);
-    const opts = indexed ? hashedFileOpts(assetIndex, segments.join('/'), stat, urlHash) : (urlHash ? { cacheControl: 'no-cache' } : {});
+    const opts = indexed ? hashedFileOpts(assetIndex, segments.join('/'), stat, urlHash)
+      // the bundle's chunks are named by their content hash (vite.config.js)
+      : mount.name === 'public' && BUILD_ASSET.test(decoded) ? { cacheControl: IMMUTABLE_JSON }
+        : (urlHash ? { cacheControl: 'no-cache' } : {});
     await serveFile(req, res, absPath, stat, mount.name, segments, query, gzipCache, log, opts);
-  };
+  }
 }

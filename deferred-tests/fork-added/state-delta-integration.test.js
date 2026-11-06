@@ -1,0 +1,226 @@
+// Adapted from xinhai-ai/Stronghold-Protocol commit 2abc60f0 (GPL-3.0-or-later).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { startServer } from '../server/index.js';
+import { TestClient } from './helpers/wsClient.js';
+import { StateReceiver } from '../shared/stateDelta.js';
+import { PROTOCOL_VERSION } from '../shared/constants.js';
+import { StubMatch } from '../server/match/StubMatch.js';
+import { STATE_COALESCE, NET_DEFAULTS } from '../server/net.js';
+
+async function fixture(t, opts = {}) {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, workers: 0, store: null,
+    announcementsFile: null, resyncMinGapMs: 100, ...opts });
+  const clients = [];
+  t.after(async () => { await Promise.all(clients.map((c) => c.terminate())); await srv.close(); });
+  const connect = async (delta, token = undefined) => {
+    const c = await TestClient.connect(`ws://127.0.0.1:${srv.port}/ws`);
+    clients.push(c);
+    c.welcome = await c.request({ t: 'hello', name: 'Player' + clients.length, token,
+      version: PROTOCOL_VERSION, ...(delta ? { stateDelta: 1 } : {}) });
+    c.id = c.welcome.playerId;
+    return c;
+  };
+  return { srv, connect };
+}
+
+test('real WebSockets recover coalesced slow states across delta/legacy clients and critical barriers', async t => {
+  const { srv, connect } = await fixture(t);
+  const modern = await connect(true), legacy = await connect(false), spectator = await connect(true);
+  await modern.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+  const roomState = await modern.waitFor('room.state');
+  await legacy.request({ t: 'room.join', code: roomState.code });
+  await spectator.request({ t: 'room.spectate', code: roomState.code });
+  const room = srv.lobby.rooms.get(roomState.code), scope = {};
+  const view = n => ({ t: 'm.public', phase: 'PREP', round: 1, n, stable: 'x'.repeat(600), [STATE_COALESCE]: scope });
+  srv.lobby.broadcastRoom(room, view(-1));
+  for (const c of [modern, spectator]) await c.waitFor('m.state', m => m.kind === 'm.public' && m.full?.n === -1);
+  await legacy.waitFor('m.public', m => m.n === -1);
+  const sockets = [modern, legacy, spectator].map(c => srv.registry.byId(c.id).ws);
+  // Force the pressure signal, not TCP delivery: all recovered frames still traverse actual sockets.
+  for (const ws of sockets) Object.defineProperty(ws, 'bufferedAmount', { configurable: true, value: NET_DEFAULTS.snapDropBytes + 1 });
+  try {
+    for (let n = 0; n < 200; n++) {
+      srv.lobby.broadcastRoom(room, view(n));
+      srv.lobby.sendToPlayer(room, modern.id, { t: 'm.private', playerId: modern.id, n, [STATE_COALESCE]: scope });
+    }
+    assert.deepEqual(sockets.map(ws => srv.network.outbound._blockedOutbound.get(ws).size), [2, 1, 1]);
+    srv.lobby.broadcastRoom(room, { t: 'b.start', battleId: 'barrier' });
+    srv.lobby.broadcastRoom(room, view(200));
+    srv.lobby.broadcastRoom(room, { t: 'm.result' });
+    srv.lobby.broadcastRoom(room, view(201));
+  } finally { for (const ws of sockets) delete ws.bufferedAmount; }
+  for (const c of [modern, spectator]) {
+    const rx = new StateReceiver();
+    const baseline = c.log.find(m => m.t === 'm.state' && m.full?.n === -1);
+    rx.receive(baseline);
+    const latest = await c.waitFor('m.state', m => m.kind === 'm.public' && !!m.patch);
+    assert.equal(rx.receive(latest).message.n, 199);
+    if (c === modern) {
+      const privateState = await c.waitFor('m.state', m => m.kind === 'm.private');
+      assert.deepEqual(rx.receive(privateState).message, { t: 'm.private', playerId: modern.id, n: 199 });
+    }
+    await c.waitFor('b.start', m => m.battleId === 'barrier');
+    assert.equal(rx.receive(await c.waitFor('m.state', m => m.kind === 'm.public')).message.n, 200);
+    await c.waitFor('m.result');
+    const recovered = await c.waitFor('m.state', m => m.kind === 'm.public');
+    assert.equal(recovered.full.n, 201);
+  }
+  for (const n of [199, 200, 201]) assert.equal((await legacy.waitFor('m.public')).n, n);
+  assert.ok(!spectator.log.some(m => m.kind === 'm.private'));
+  assert.ok(!legacy.log.some(m => m.t === 'm.state' || m.t === 'm.private'));
+});
+
+test('real room broadcast burst: sliced mixed-client sends preserve state/private/result order', async (t) => {
+  const { srv, connect } = await fixture(t);
+  const modern = await connect(true), legacy = await connect(false), spectator = await connect(true);
+  await modern.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
+  const state = await modern.waitFor('room.state');
+  await legacy.request({ t: 'room.join', code: state.code });
+  await spectator.request({ t: 'room.spectate', code: state.code });
+  const room = srv.lobby.rooms.get(state.code);
+  for (let n = 0; n < 160; n++) {
+    srv.lobby.broadcastRoom(room, { t: 'm.public', n, stable: 'x'.repeat(600) });
+    srv.lobby.sendToPlayer(room, modern.id, { t: 'm.private', playerId: modern.id, n });
+  }
+  srv.lobby.broadcastRoom(room, { t: 'm.result' });
+  srv.lobby.broadcastRoom(room, { t: 'm.public', n: 160 });
+  assert.ok(srv.network.outbound._outbound.size > 0, 'the production room path actually defers writes');
+  for (const c of [modern, spectator]) {
+    const receiver = new StateReceiver();
+    for (let n = 0; n < 160; n++) {
+      const wire = await c.waitFor('m.state', (m) => m.kind === 'm.public');
+      assert.equal(receiver.receive(wire).message.n, n);
+      if (n === 1) assert.ok(wire.patch);
+      if (c === modern) {
+        const privateWire = await c.waitFor('m.state', (m) => m.kind === 'm.private');
+        assert.deepEqual(receiver.receive(privateWire).message, { t: 'm.private', playerId: modern.id, n });
+      }
+    }
+    await c.waitFor('m.result');
+    assert.equal((await c.waitFor('m.state', (m) => m.kind === 'm.public')).full.n, 160);
+  }
+  for (let n = 0; n <= 160; n++) assert.equal((await legacy.waitFor('m.public')).n, n);
+  assert.ok(!spectator.log.some((m) => m.kind === 'm.private' || m.t === 'm.private'));
+  assert.ok(!legacy.log.some((m) => m.t === 'm.state' || m.t === 'm.private'));
+  for (const c of [modern, legacy, spectator]) {
+    const gameplay = c.log.filter((m) => m.t === 'm.public' || m.kind === 'm.public' || m.t === 'm.result');
+    assert.equal(gameplay.at(-2).t, 'm.result');
+    assert.equal(gameplay.length, 162);
+  }
+});
+
+test('real four-player room: mixed clients, exact public delta, private isolation, spectator, full resync/reconnect', async (t) => {
+  const { srv, connect } = await fixture(t);
+  const modern = await connect(true), legacy = await connect(false), p3 = await connect(true), p4 = await connect(true);
+  assert.equal((await modern.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL' })).t, 'ok');
+  const room = await modern.waitFor('room.state');
+  for (const c of [legacy, p3, p4]) {
+    assert.equal((await c.request({ t: 'room.join', code: room.code })).t, 'ok');
+    await c.request({ t: 'room.ready', ready: true });
+  }
+  assert.equal((await modern.request({ t: 'room.start' })).t, 'ok');
+  const rx = new StateReceiver();
+  const fullPub = await modern.waitFor('m.state', (m) => m.kind === 'm.public');
+  const fullPriv = await modern.waitFor('m.state', (m) => m.kind === 'm.private');
+  assert.ok(fullPub.full);
+  assert.equal(fullPriv.full.playerId, modern.id);
+  rx.receive(fullPub); rx.receive(fullPriv);
+  const oldPub = await legacy.waitFor('m.public'), oldPriv = await legacy.waitFor('m.private');
+  assert.deepEqual(fullPub.full, oldPub);
+  assert.equal(oldPriv.playerId, legacy.id);
+  assert.ok(!legacy.log.some((m) => m.t === 'm.state'));
+  const match = srv.lobby.rooms.get(room.code).match;
+  await modern.request({ t: 'g.infoReady' });
+  const delta = await modern.waitFor('m.state', (m) => m.kind === 'm.public' && m.patch);
+  const updated = rx.receive(delta).message;
+  const { serverNow: _now, ...actual } = updated;
+  const { serverNow: _expectedNow, ...expected } = match.publicView();
+  assert.deepEqual(actual, expected);
+  assert.equal(updated.players.find((p) => p.playerId === modern.id).ready, true);
+  const spectator = await connect(true);
+  await spectator.request({ t: 'room.spectate', code: room.code });
+  assert.ok((await spectator.waitFor('m.state', (m) => m.kind === 'm.public')).full);
+  assert.ok(!spectator.log.some((m) => m.kind === 'm.private' || m.t === 'm.private'));
+  // A dropped application frame asks for full recovery; no untrusted state is uploaded.
+  await modern.request({ t: 'state.resync' });
+  const recoveredPub = await modern.waitFor('m.state', (m) => m.kind === 'm.public' && m.full);
+  const recoveredPriv = await modern.waitFor('m.state', (m) => m.kind === 'm.private' && m.full);
+  assert.equal(recoveredPriv.full.playerId, modern.id);
+  assert.equal(recoveredPub.full.players.find((p) => p.playerId === modern.id).ready, true);
+  await modern.terminate();
+  const back = await connect(true, modern.welcome.token);
+  assert.equal(back.welcome.resumed, true);
+  assert.equal(back.id, modern.id);
+  assert.ok((await back.waitFor('m.state', (m) => m.kind === 'm.public')).full);
+  assert.ok((await back.waitFor('m.state', (m) => m.kind === 'm.private')).full);
+});
+
+test('standalone FIFO matchmaking also uses delta transport, without sending a private view to another owner', async (t) => {
+  const { connect } = await fixture(t);
+  const clients = [];
+  for (let i = 0; i < 4; i++) {
+    const c = await connect(i !== 1);
+    clients.push(c);
+    assert.equal((await c.request({ t: 'matchmaking.join', difficulty: 'NORMAL' })).t, 'ok');
+  }
+  for (let i = 0; i < 4; i++) {
+    const c = clients[i];
+    if (i === 1) assert.equal((await c.waitFor('m.private')).playerId, c.id);
+    else {
+      assert.ok((await c.waitFor('m.state', (m) => m.kind === 'm.public')).full);
+      assert.equal((await c.waitFor('m.state', (m) => m.kind === 'm.private')).full.playerId, c.id);
+    }
+  }
+  await clients[0].request({ t: 'g.infoReady' });
+  assert.ok((await clients[0].waitFor('m.state', (m) => m.kind === 'm.public' && m.patch)).patch);
+  await clients[0].request({ t: 'hello', name: 'Repeat', version: PROTOCOL_VERSION, stateDelta: 1 });
+  assert.ok((await clients[0].waitFor('m.state', (m) => m.kind === 'm.public' && m.full)).full);
+  assert.equal((await clients[0].waitFor('m.state', (m) => m.kind === 'm.private' && m.full)).full.playerId, clients[0].id);
+});
+
+test('modern result replay is full after reconnect; a second match starts with independent baselines', async (t) => {
+  const { srv, connect } = await fixture(t, { MatchClass: StubMatch });
+  const c = await connect(true);
+  await c.request({ t: 'room.create', mode: 'solo', difficulty: 'NORMAL' });
+  const room = await c.waitFor('room.state');
+  await c.request({ t: 'room.start' });
+  await c.waitFor('m.state', (m) => m.kind === 'm.public');
+  await c.waitFor('m.state', (m) => m.kind === 'm.private');
+  await c.request({ t: 'g.infoReady' });
+  await c.waitFor('m.result');
+  const recorded = srv.lobby.rooms.get(room.code).replay;
+  assert.equal(JSON.parse(recorded.publicFrame).t, 'm.public', 'stored replay is independent of negotiated transport');
+  await c.terminate();
+  const back = await connect(true, c.welcome.token);
+  const replay = await back.waitFor('m.state', (m) => m.kind === 'm.public');
+  assert.equal(replay.full.phase, 'RESULT');
+  await back.waitFor('m.result');
+  await back.request({ t: 'room.start' });
+  const start = await back.waitFor('m.state', (m) => m.kind === 'm.public' && m.full?.phase === 'INFO_CHECK');
+  assert.ok(start.full);
+  assert.equal((await back.waitFor('m.state', (m) => m.kind === 'm.private')).full.playerId, back.id);
+});
+
+
+test('state.resync uses the heavy bucket and coalesces accepted requests into one deferred full recovery', async (t) => {
+  const { srv, connect } = await fixture(t, { MatchClass: StubMatch, resyncMinGapMs: 250 });
+  const c = await connect(true);
+  await c.request({ t: 'room.create', mode: 'solo', difficulty: 'NORMAL' });
+  const room = await c.waitFor('room.state');
+  await c.request({ t: 'room.start' });
+  await c.waitFor('m.state', (m) => m.kind === 'm.public');
+  await c.waitFor('m.state', (m) => m.kind === 'm.private');
+  const match = srv.lobby.rooms.get(room.code).match;
+  const reconnect = match.onReconnect.bind(match);
+  let recoveries = 0;
+  match.onReconnect = (...args) => { recoveries++; return reconnect(...args); };
+  const replies = await Promise.all(Array.from({ length: 10 }, () => c.request({ t: 'state.resync' })));
+  assert.ok(replies.some((r) => r.t === 'ok'));
+  assert.ok(replies.some((r) => r.t === 'error' && r.code === 'RATE'));
+  assert.equal(c.isOpen, true);
+  await c.waitFor('m.state', (m) => m.kind === 'm.public' && m.full);
+  await c.waitFor('m.state', (m) => m.kind === 'm.public' && m.full);
+  assert.equal(recoveries, 2, 'one immediate recovery and one coalesced recovery');
+  assert.equal(srv.lobby.resyncTimers.size, 0);
+});

@@ -1,8 +1,10 @@
 // P3b: defence in depth around SES. Node 22 permissions are NOT a malicious-code security boundary and do not
 // restrict network. Deploy with OS/container isolation (DESIGN §32.11, DEPLOY.md).
 import { fork } from 'node:child_process';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// A pattern with a trailing separator matches only the directory itself, so the read pattern is resolved.
 export const INSTALL_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export function scriptMode(env = process.env) { return env.SP_PLUGIN_SCRIPTS === 'sandbox' ? 'sandbox' : 'off'; }
 
@@ -17,7 +19,7 @@ export function sandboxProcessOptions(memoryMb = 768) {
   for (const key of ['SP_VERIFY', 'SP_COMBAT', 'SP_BOT_EMOTES']) if (process.env[key] !== undefined) matchEnv[key] = process.env[key];
   return {
     cwd: INSTALL_ROOT,
-    execArgv: ['--permission', `--allow-fs-read=${INSTALL_ROOT}`, `--max-old-space-size=${Math.max(64, Math.floor(memoryMb))}`],
+    execArgv: ['--permission', `--allow-fs-read=${path.resolve(INSTALL_ROOT)}`, `--max-old-space-size=${Math.max(64, Math.floor(memoryMb))}`],
     env: { NODE_ENV: 'production', SP_PLUGIN_SCRIPTS: 'sandbox', ...matchEnv },
   };
 }

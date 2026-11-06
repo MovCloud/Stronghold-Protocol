@@ -1,4 +1,4 @@
-// Language switch of the client (docs/I18N.md): lists the language packs — the "lang" entries of the pack index
+// Language switch of the client (docs/development/I18N.md): lists the language packs — the "lang" entries of the pack index
 // /packs/index.json (shared/packs.js; the server's registry, server/packs.js, scans the language folders and the pack
 // folders; a static host serves the file `node tools/packs.mjs index` writes) — picks the language at boot, loads the UI
 // strings of the chosen pack and of its fallback chain (shared/i18n.js; the URLs the index gives: /i18n/<code>.json or
@@ -21,10 +21,13 @@ import {
 import { canonicalLang, computeChain, scriptOf } from '../../../shared/i18nPacks.js';
 import { PACKS_URL, PACK_INDEX_FILE, readPackIndex, langMetaOf } from '../../../shared/packs.js';
 import { DEV_BUILD } from '../../../shared/constants.js';
+import { i18nUrl } from '../../../shared/cdn.js';
+import { ASSETS_CDN } from '../asset-cdn.js';
 import { loadPref, savePref } from '../store.js';
 import { data } from '../data.js';
 import { updateRotateHintPwaI18n } from './device.js';
 import { html } from './components.js';
+import { LanguageMenu } from './languageMenu.js';
 
 /** The switch's own label, in both languages (whoever opens it may not read the current one). */
 const SWITCH_LABEL = 'Language / 语言'; // i18n-ignore
@@ -74,12 +77,13 @@ export function loadLangIndex(doFetch = defaultFetch) {
  * /i18n/<code>.json (whose `_meta` then registers it).
  * @param {string} lang
  * @param {typeof fetch} [doFetch]
+ * @param {string} [assetsCdn] runtime assets CDN, injectable for tests
  * @returns {Promise<boolean>} false when unavailable (the interface stays as it is)
  */
-export function loadUiMessages(lang, doFetch = defaultFetch) {
+export function loadUiMessages(lang, doFetch = defaultFetch, assetsCdn = ASSETS_CDN) {
   if (lang === DEFAULT_LANG) return Promise.resolve(true);
   if (uiLoads.has(lang)) return uiLoads.get(lang);
-  const url = langInfo(lang)?.ui || `/i18n/${lang}.json`;
+  const url = i18nUrl(langInfo(lang)?.ui || `/i18n/${lang}.json`, assetsCdn);
   const p = (async () => {
     try {
       const res = await doFetch(url, { cache: 'no-cache' });
@@ -162,7 +166,7 @@ function stripLangParam() {
 export const htmlLang = (code) => (code === DEFAULT_LANG ? 'zh-CN' : code);
 
 /**
- * <html lang>, data-lang, data-script (the title screen's layout: CJK or alphabetic, from the pack's title) and the tab
+ * <html lang>, data-lang, data-script (CJK or alphabetic, from the pack's title: a hook for script-specific CSS) and the tab
  * title follow the language.
  */
 function applyDocument(lang) {
@@ -295,7 +299,7 @@ const MACHINE_TRANSLATION_NOTE = N_('当前语言的界面文字为机器翻译�
 
 /**
  * The note under the language switch in 设置 (ui/settings.js): while the current language's pack is marked as a machine
- * translation (`_meta.machineTranslated`, docs/PACKS.md) it says so, in that language; null otherwise (Chinese, English,
+ * translation (`_meta.machineTranslated`, docs/guides/PACKS.md) it says so, in that language; null otherwise (Chinese, English,
  * a pack translated by hand). Only the current pack counts, not its base or fallbacks.
  * @returns {string | null}
  */
@@ -305,9 +309,9 @@ export function machineTranslationNote() {
 
 /**
  * The language menu: 中文 | English | … as buttons, or a list when there are many packs.
- * @param {{ class?: string }} props
+ * @param {{ class?: string, compact?: boolean }} props
  */
-export function LangToggle({ class: cls }) {
+export function LangToggle({ class: cls, compact = false }) {
   const lang = useLang();
   const menu = langMenuModel(useLangs(), lang);
   const pick = async (code, select = null) => {
@@ -319,6 +323,7 @@ export function LangToggle({ class: cls }) {
     if (select && request === langRequest) select.value = getLang();
   };
   if (menu.kind === 'select') {
+    if (compact) return html`<${LanguageMenu} class=${cls} label=${SWITCH_LABEL} items=${menu.items} onSelect=${pick} />`;
     return html`<label class=${`set-seg lang-toggle lang-select${cls ? ` ${cls}` : ''}`} data-testid="lang-toggle">
       <select aria-label=${SWITCH_LABEL} value=${lang} onChange=${(e) => pick(e.currentTarget.value, e.currentTarget)}>
         ${menu.items.map((it) => html`<option key=${it.code} value=${it.code} lang=${it.htmlLang} title=${it.title || undefined} selected=${it.on}>${it.label}</option>`)}

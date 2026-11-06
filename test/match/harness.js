@@ -8,10 +8,11 @@
 // fake (true → test/match/fakeBattle.js as BattleClass), script (FakeBattle.script), registry, instant (virtual
 // scheduler runs battles synchronously; default true), timerScale, battleContent, botRehearsal (default 0),
 // botSliceMs (bot rehearsal slice budget; default: unbounded in virtual time), aiPicksLast (the room option
-// AI 队友最后选择: the drafts order every human seat before every AI seat), test (DESIGN §34.8; hostId then
-// defaults to the first human), hostId / botRehearsalDelegate /
-// botRehearsalDelegateMs (the delegated bot rehearsal, DESIGN §14: test/match/rehearsal-delegate.test.js),
-// cs / vs / requireCs (a gameplay-plugin room: host rehearsal stays off), rules (DESIGN §34.15; omitted unless set).
+// AI 队友最后选择: the drafts order every human seat before every AI seat), afkRemoveRounds (the AFK rule; default 0
+// here — the suites script humans that only confirm and ready — production default 2: test/match/afk.test.js),
+// test (DESIGN §34.8; hostId then defaults to the first human), hostId / botRehearsalDelegate / botRehearsalDelegateMs
+// (the delegated bot rehearsal, DESIGN §14: test/match/rehearsal-delegate.test.js), cs / vs / requireCs (a
+// gameplay-plugin room: host rehearsal stays off), rules (DESIGN §34.15; omitted unless set).
 // Combat mode: clientCombat (default false here: the legacy server-run mode most suites were written for; production
 // defaults to client-side combat, DESIGN §14). With clientCombat: true every human gets a scripted browser
 // (test/match/simClient.js SimClient: h.clients) unless clients: false; pace 'instant' | 'paced', perPlayer
@@ -26,10 +27,11 @@ import { VirtualScheduler } from '../../server/match/scheduler.js';
 import { getData } from '../../server/data.js';
 import { FIELD, canPlace, placeClass, positionClass, tileKey } from '../../server/match/board.js';
 import { FakeBattle } from './fakeBattle.js';
-import { GEO } from '../../shared/constants.js';
+import { GEO, MAX_SEATS } from '../../shared/constants.js';
 import { collectViolations } from '../../server/match/invariants.js';
 import { attachSimClients } from './simClient.js';
 import { morphSlotPolicy, ruleOption } from '../../shared/plugins/rules.js';
+import { PLAYER_CAPACITIES } from '../../shared/playerCapacity.js';
 
 export const DATA = getData({ log: { warn() {}, error() {}, info() {} } });
 
@@ -44,6 +46,13 @@ export function makeMatch(o = {}) {
     for (let i = 0; i < humans; i++) seats.push({ seat: seats.length, playerId: `p_${i}`, name: `P${i}`, isBot: false, connected: true });
     for (let i = 0; i < bots; i++) seats.push({ seat: seats.length, playerId: `ai_${i}`, name: `AI${i}`, isBot: true, connected: true });
   }
+  // More seats than the ordinary room means a fixed-table co-op room (SiderLock 分组卡池): the harness hands the room
+  // its seat cap as a plain playerCapacity option — the smallest offered capacity that fits, exactly as the lobby does.
+  // Match itself still refuses a >MAX_SEATS room that carries no capacity option. The concurrent capacity experiment is
+  // the explicit 「扩展同盟人数」 option only (o.experimental).
+  const playerCapacity = o.experimental !== undefined ? undefined
+    : seats.length > MAX_SEATS ? PLAYER_CAPACITIES.find((c) => c >= seats.length) : undefined;
+  const experimental = o.experimental !== undefined ? o.experimental : undefined;
   const sched = new VirtualScheduler({ instantCombat: o.instant !== false });
   const logs = { error: [], warn: [] };
   const log = { info: (...a) => o.log?.info?.(...a), debug() {}, warn: (...a) => logs.warn.push(a.map(String).join(' ')), error: (...a) => logs.error.push(a.map(String).join(' ')) };
@@ -60,7 +69,7 @@ export function makeMatch(o = {}) {
     if (o.script) FakeBattle.script = o.script;
   }
   h.m = new Match({
-    roomCode: 'TEST', mode, difficulty, seats, spectators: o.spectators, seed: o.seed ?? 1, matchNo: o.matchNo, data: o.data ?? DATA, log,
+    roomCode: 'TEST', mode, modeId: o.modeId, difficulty, seats, spectators: o.spectators, seed: o.seed ?? 1, matchNo: o.matchNo, data: o.data ?? DATA, log,
     send: (id, msg) => {
       for (const fn of h.onSend) fn(id, msg);
       if (msg.t === 'b.snap' || msg.t === 'b.ev') { h.frames++; if (!captureFrames) return true; }
@@ -75,6 +84,7 @@ export function makeMatch(o = {}) {
     offers: o.offers,
     BattleClass: o.fake ? FakeBattle : undefined,
     battleContent: o.battleContent,
+    consoleEnabled: o.consoleEnabled === true,
     timerScale: o.timerScale,
     // bot layout rehearsal (extra simulated battles per bot prep) is off unless a test asks for it: it multiplies the
     // simulation work of full-match suites; test/match/bot.test.js covers it
@@ -83,10 +93,20 @@ export function makeMatch(o = {}) {
     externalAI: o.externalAI,
     externalReplay: o.externalReplay,
     botSliceMs: o.botSliceMs,
+    botIoletaPolicy: o.botIoletaPolicy,
+    botFormationMode: o.botFormationMode,
+    botFormationEnabled: o.botFormationEnabled,
     clientCombat: o.clientCombat ?? false,
     verify: o.verify ?? 'off',
+    experimental,
+    playerCapacity,
     headlessSliceMs: o.headlessSliceMs,
     aiPicksLast: o.aiPicksLast,
+    // the room rule 「全局默认速度」 (Match opts.combatSpeed, 1× or 2×): every match and every round starts at it
+    combatSpeed: o.combatSpeed,
+    // the AFK rule (Match opts.afkRemoveRounds) is off unless a test asks for it: the suites' scripted humans only
+    // confirm and ready, which the rule would count as idle (test/match/afk.test.js covers it)
+    afkRemoveRounds: o.afkRemoveRounds ?? 0,
     // a bot prep's layout rehearsal delegated to the room's host (DESIGN §14; test/match/rehearsal-delegate.test.js):
     // `hostId` is the executor a task is sent to, `botRehearsalDelegateMs` its answer window
     hostId: o.hostId !== undefined ? o.hostId : (o.test === true ? (seats.find((s) => s && !s.isBot)?.playerId ?? null) : undefined),
@@ -143,10 +163,23 @@ export function makeMatch(o = {}) {
       for (const ps of m.players.values()) {
         if (ps.isBot || ps.left) continue;
         if (m.phase === 'INFO_CHECK' && !ps.infoReady) m.handle(ps.playerId, { t: 'g.infoReady' });
-        if (m.phase === 'BAND_DRAFT' && m.draftTurn() === ps.playerId) m.handle(ps.playerId, { t: 'g.band', bandId: band });
-        if (m.phase === 'SP_DRAFT' && m.spTurn() === ps.playerId) {
-          const idx = m.sp.cards.map((c) => c.idx).find((k) => m.sp.taken[k] == null);
-          if (idx != null) m.handle(ps.playerId, { t: 'g.choice', idx });
+        // (an expanded room's drafts are concurrent: every seat still deciding picks — Match concurrentDraft; the
+        // fixed pool groups each run their own turns — draftTurn/spTurn with the seat, 队友已选 falls to the default)
+        const bandDue = m.draft?.concurrent
+          ? m.draft.order.includes(ps.playerId) && !m.draft.picks[ps.playerId]
+          : m.draftTurn(ps.playerId) === ps.playerId;
+        if (m.phase === 'BAND_DRAFT' && bandDue) {
+          const bandId = m.bandTaken(band, ps.playerId) ? m.defaultBand(ps.playerId) : band;
+          m.handle(ps.playerId, { t: 'g.band', bandId });
+        }
+        if (m.phase === 'SP_DRAFT') {
+          if (m.sp?.concurrent ? m.spPending(ps) : m.spTurn(ps.playerId) === ps.playerId) {
+            const group = m.spGroup(ps.playerId);
+            const idx = group
+              ? group.cards.map((c) => c.idx).find((k) => group.taken[k] == null)
+              : m.sp.cards.find((c) => m.spCardAvailable(c, ps))?.idx;
+            if (idx != null) m.handle(ps.playerId, { t: 'g.choice', idx });
+          }
         }
         if (ready && m.phase === 'PREP' && ps.alive && !ps.ready) {
           if (ps.personalChoice) m.handle(ps.playerId, { t: 'g.choice', idx: 0, choiceId: ps.personalChoice.id });
@@ -177,8 +210,7 @@ export function checkInvariants(m) {
 
 /** The original harness checks (kept alongside collectViolations; they must agree). */
 function legacyInvariants(m) {
-  const pool = m.pool;
-  const held = new Map();
+  const holdings = new Map();
   const uids = new Set();
   const note = (p) => {
     assert.ok(Number.isInteger(p.uid) && p.uid > 0, `bad uid ${p.uid}`);
@@ -186,6 +218,9 @@ function legacyInvariants(m) {
     uids.add(p.uid);
   };
   for (const ps of m.players.values()) {
+    const pool = m.poolFor(ps);
+    if (!holdings.has(pool)) holdings.set(pool, new Map());
+    const held = holdings.get(pool);
     assert.ok(Number.isInteger(ps.funds) && ps.funds >= 0, `${ps.playerId} funds ${ps.funds}`);
     assert.ok(Number.isInteger(ps.pendingFunds) && ps.pendingFunds >= 0, `${ps.playerId} pending ${ps.pendingFunds}`);
     assert.equal(ps.hand.length, GEO.HAND_SIZE);
@@ -247,12 +282,14 @@ function legacyInvariants(m) {
       assert.equal(e.left + (diyHeld.get(base) || 0), e.cap, `${ps.playerId} 自选 stock ${base}: left ${e.left} + held ${diyHeld.get(base) || 0} != cap ${e.cap}`);
     }
   }
-  for (const [base, e] of pool.entries) {
-    assert.ok(Number.isInteger(e.left) && e.left <= e.cap, `pool ${base} balance ${e.left} cap ${e.cap}`);
-    assert.equal(pool.left(base), Math.max(0, e.left), 'overdrawn ownership never becomes a negative shop supply');
-    assert.equal(e.left + (held.get(base) || 0), e.cap, `pool accounting ${base}: left ${e.left} + held ${held.get(base) || 0} != cap ${e.cap}`);
+  for (const [pool, held] of holdings) {
+    for (const [base, e] of pool.entries) {
+      assert.ok(Number.isInteger(e.left) && e.left <= e.cap, `pool ${base} balance ${e.left} cap ${e.cap}`);
+      assert.equal(pool.left(base), Math.max(0, e.left), 'overdrawn ownership never becomes a negative shop supply');
+      assert.equal(e.left + (held.get(base) || 0), e.cap, `pool accounting ${base}: left ${e.left} + held ${held.get(base) || 0} != cap ${e.cap}`);
+    }
+    for (const [base, n] of held) if (!pool.has(base)) assert.equal(n, 0, `non-pool chess ${base} holds copies`);
   }
-  for (const [base, n] of held) if (!pool.has(base)) assert.equal(n, 0, `non-pool chess ${base} holds copies`);
   return true;
 }
 
@@ -261,7 +298,7 @@ export function give(m, ps, chessId, where = 'hand', at = null) {
   const rec = m.gd.chess(chessId);
   assert.ok(rec, `unknown chess ${chessId}`);
   const base = m.gd.baseIdOf(chessId);
-  const taken = m.pool.take(base, rec.isGolden ? m.gd.goldenCopies : 1);
+  const taken = m.poolFor(ps).take(base, rec.isGolden ? m.gd.goldenCopies : 1);
   const piece = ps.newPiece('chess', chessId, { poolCopies: taken });
   if (where === 'board') {
     ps.board.set(tileKey(at[0], at[1]), piece);

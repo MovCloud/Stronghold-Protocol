@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fxFixture } from './helpers/fxFixtures.js';
+import { tryFileLink } from './helpers/links.js';
 import { installedArtReferences } from '../server/plugins/artReferences.js';
 import { installedFxReferences } from '../server/plugins/fxReferences.js';
 import { checkPluginArt, pluginFxExtractionAllowed } from '../tools/setup.mjs';
@@ -30,7 +31,9 @@ test('operator discovery reuses W5 references, excludes the shipped roster, and 
   f.put('plugins/phases/plugin.json', { assets: { chars: { char_x_phases_one: { portrait: { ref: 'char_9006_test_2' } } } }, fx: { unit: 'char_9007_test_2' } });
   f.put('plugins/linked/plugin.json', { operators: ['link.json'] });
   f.put('outside.json', [{ charId: 'char_9999_forbidden' }]);
-  fs.symlinkSync(path.join(f.root, 'outside.json'), path.join(f.root, 'plugins/linked/link.json'));
+  if (!tryFileLink(path.join(f.root, 'outside.json'), path.join(f.root, 'plugins/linked/link.json'))) {
+    t.skip('this OS refuses file links without a privilege'); return;
+  }
   f.put('plugins/traversal/plugin.json', { operators: ['../../outside.json'] });
   assert.deepEqual(installedArtReferences(f.root), ids);
   assert.ok(!installedFxReferences(f.root).includes('char_9006_test'), 'effect discovery keeps exact ids');

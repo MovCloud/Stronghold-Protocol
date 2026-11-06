@@ -5,16 +5,18 @@
 //     and m.public.overtimeAt is when the overtime drain starts (bossTurnHpReduceTime, 150 real s): from then on the
 //     merged team LP loses config.bossOvertimeDrainPerSec (1) per whole real second (server gamedata.js
 //     bossOvertimeDue: the first point at overtimeAt + 1 s). `overtimeState` says what the red DOT warning shows.
-//   * Solo pause (official 独立模拟 battles): C2S g.pause {on}; the server says so in m.public.paused (optionally
-//     m.public.pausedAt, ms epoch). Only solo battles offer it (`pauseAvailable`); while paused every HUD clock is
-//     frozen at the pause moment (`frozenNow`).
+//   * Match control (server/match/match/matchControl.js): 暂停 / 快进 / 跳过 are C2S g.matchControl requests the connected
+//     humans must all agree to (`pauseAvailable` is the gate for all three), and the answer is g.matchControlBallot. When
+//     the match has no other connected human the server applies the request at once, so a solo run feels immediate.
+//     m.public.paused (optionally m.public.pausedAt, ms epoch) and m.public.speed carry the outcome; while paused every
+//     HUD clock is frozen at the pause moment (`frozenNow`).
 
-import { PHASE } from '../../../shared/constants.js';
+import { PHASE, PLAYBACK } from '../../../shared/constants.js';
 
 const isObj = (v) => !!v && typeof v === 'object';
 const BOSS_PHASES = new Set([PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
-/** Battle phases a solo player may pause (a solo run has no 联防). */
-const PAUSE_PHASES = new Set([PHASE.COMBAT, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
+/** Battle phases a match control request is accepted in (server matchControl.js CONTROL_PHASES). */
+const CONTROL_PHASES = new Set([PHASE.COMBAT, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
 
 /** Level time of a boss round when the config does not say (research 01 §3: maxPlayTime 120 s). */
 export const BOSS_LEVEL_SECONDS = 120;
@@ -66,22 +68,35 @@ export function overtimeState(pub, now, { perSec = 1, warnBefore = OVERTIME_WARN
 }
 
 /**
- * Whether the solo pause control is offered: solo runs only (hidden in co-op), while the player's own battle runs
- * (server Match.setPause: WRONG_PHASE once no battle is live). While paused the control stays (to resume).
+ * Whether the match controls (暂停 / 快进 / 跳过) are offered: both battle modes, while the player's own battle runs
+ * (server matchControl.js: WRONG_PHASE once no battle is live). Every control is a request the connected humans must
+ * all agree to, so a co-op room is no longer excluded the way the old solo-only pause was. While paused the control
+ * stays (to resume).
  * @param {any} pub m.public
- * @param {{ solo?: boolean, alive?: boolean, done?: boolean }} [o] done: the own battle is over
+ * @param {{ alive?: boolean, done?: boolean }} [o] done: the own battle is over
  */
-export function pauseAvailable(pub, { solo = false, alive = true, done = false } = {}) {
-  if (!solo || !isObj(pub) || alive === false) return false;
+export function pauseAvailable(pub, { alive = true, done = false } = {}) {
+  if (!isObj(pub) || alive === false) return false;
   if (done && !pub.paused) return false;
-  return PAUSE_PHASES.has(pub.phase);
+  return CONTROL_PHASES.has(pub.phase);
 }
 
-/** Whether m.public says the (solo) match is paused. */
+/** Whether the 快进 toggle is on: the battle runs faster than the 1× base (m.public.speed). */
+export const fastActive = (pub) => isObj(pub) && Number(pub.speed) > PLAYBACK.NORMAL;
+
+/** The one-shot 跳过 can be requested while the controls are offered and the battle is not already at 60×. */
+export function skipAvailable(pub, o = {}) {
+  return pauseAvailable(pub, o) && Number(pub.speed) !== PLAYBACK.SKIP;
+}
+
+/** Whether m.public says the match is paused. */
 export const isPaused = (pub) => isObj(pub) && !!pub.paused;
 
 /** The pause intent (C2S g.pause {on}). */
 export const pauseIntent = (on) => ({ t: 'g.pause', fields: { on: !!on } });
+
+/** A match control request (C2S g.matchControl {action}): 'pause' | 'resume' | 'fast' | 'skip'. */
+export const matchControlIntent = (action) => ({ t: 'g.matchControl', fields: { action } });
 
 /**
  * The clock every HUD countdown reads: the live server time, or — while paused — the moment the pause began

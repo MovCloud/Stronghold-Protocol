@@ -8,6 +8,7 @@ import { ERR, PHASE } from '../../../shared/constants.js';
 import { freeSlot } from '../board.js';
 import { OK, fail } from './common.js';
 import { isMutationCell } from '../../sim/content/support/index.js';
+import { t } from '../../../shared/i18n.js';
 
 export class PlayerPrep {
   _gate({ allowWhenReady = false } = {}) {
@@ -33,6 +34,7 @@ export class PlayerPrep {
     if (slot.kind === 'item') {
       if (!this.gd.item(slot.id)) return fail(ERR.BAD_TARGET);
       // Already displayed equipment rewards survive stock exhaustion (#624, maintainer 2026-10-14).
+      // acquireItem records the debt on the receiver's group stock.
       if (handFull) return fail(ERR.HAND_FULL);
     } else if (slot.kind === 'chess') {
       const rec = this.gd.chess(slot.id);
@@ -67,7 +69,7 @@ export class PlayerPrep {
   setReady(on) {
     if (!this.alive) return fail(ERR.ELIMINATED);
     if (this.m.phase !== PHASE.PREP) return fail(ERR.WRONG_PHASE);
-    if (on && this.personalChoice) return fail(ERR.BAD_TARGET, '请先完成教鞭选择'); // i18n-ignore: developer error detail
+    if (on && this.personalChoice) return fail(ERR.BAD_TARGET, t('请先完成教鞭选择')); // developer error detail
     if (on && !this.tempEmpty) return fail(ERR.TEMP_NOT_EMPTY);
     if (this.ready === !!on) return OK;
     this.ready = !!on;

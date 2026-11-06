@@ -27,8 +27,18 @@ docs/research/*.md
 public/assets
 # generated from node_modules inside the image
 public/vendor
+# built inside the image (npm run build)
+public/build
 scripts/service.env.cmd
 .DS_Store
 Thumbs.db
 .env
 .env.*
+# Site-specific runtime secrets and generated deployment bundles never enter the game build context.
+**/auth-secrets
+**/secrets
+**/tls
+**/gate.json
+**/*.pem
+**/*.key
+deploy/stardust/build

@@ -1,7 +1,8 @@
+import { nativeOperator } from './nativeIdentity.js';
 // server/sim/content/kits/shared/tier6.js — helpers and notes of the hand-authored kits (formerly tier6.js; the kits
 // live one per file in ../ops/) for every tier-6 chess (阶 VI, DIY slots excluded) plus the
 // hidden chess granted by effects (盟约·辅助干员 chess_char_1_15, band Pith "优等生"; 妮芙 chess_char_6_10 is the hidden
-// tier-6 entry). `export default { [baseChessId]: (bb, chess, def) => Kit }` (docs/SIM.md §7.2).
+// tier-6 entry). `export default { [baseChessId]: (bb, chess, def) => Kit }` (docs/development/SIM.md §7.2).
 //
 // Every number comes from the blackboards (skill bb at the chess level: normal Lv4 / elite Lv7; talents from
 // `def.talents[i].bb`, elite module upgrades included; module-only talent parts from `chess.talents[index −1]`; trait
@@ -151,7 +152,7 @@ const live = (u) => !!u && u.alive && u.deployed && !u.removed && !u.hidden;
 const isElite = (e) => !!e && (e.isBoss || e.def?.rank === 'ELITE' || e.def?.rank === 'BOSS');
 const hasBond = (u, id) => !!(u && u.def && Array.isArray(u.def.bonds) && u.def.bonds.includes(id));
 const keyOf = (u) => Math.round(u.y) * COLS + Math.round(u.x);
-const opsOf = (battle, ownerId) => battle.allies(ownerId).filter((a) => a.kind === 'op');
+const opsOf = (battle, ownerId) => battle.allies(ownerId).filter((a) => nativeOperator(a));
 const ANY = Object.freeze({ canHitFly: true });
 const enemiesIn = (battle, unit, keys) => battle.enemiesInKeys(keys || unit.rangeKeys || [], unit, ANY);
 const isTok = (t, id, owner) => !!t && t.kind === 'token' && t.defId === id && t.ownerUnit === owner;

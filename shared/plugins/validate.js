@@ -1,5 +1,32 @@
 // Shared DATA.md reference checks, extracted verbatim from build-data (DESIGN §32.5).
 import { statusKey, standInRecord, unitForm } from '../standIn.js';
+
+// These built-in fixed cards reuse native DIY summons. DataSource.rawToken merges their disjoint owner variants;
+// the token's common record stays identical in the two tables. Keep this exception closed to plugin-added tokens.
+const PRESET_SHARED_TOKENS = Object.freeze({
+  token_10034_ray_sndbst: ['char_4117_ray', 'chess_rem_ray', 'rem-reinforcements'],
+});
+
+function presetSharedToken(data, id) {
+  const spec = PRESET_SHARED_TOKENS[id];
+  if (!spec) return false;
+  const [charId, prefix, extensionId] = spec;
+  const primary = data.tokens[id], backup = data.backups.tokens[id];
+  const fixedOwners = ['a', 'b'].map(grade => `${prefix}_${grade}`);
+  const nativeOwners = Object.keys(data.backups.units[charId]?.forms ?? {}).map(key => `${charId}@${key}`);
+  if (!nativeOwners.length || primary?.pluginId || backup?.pluginId) return false;
+  const sameKeys = (actual, expected) => Array.isArray(actual)
+    && canonicalJson([...actual].sort()) === canonicalJson([...expected].sort());
+  if (!sameKeys(primary.owners, fixedOwners) || !sameKeys(Object.keys(primary.variants ?? {}), fixedOwners)
+    || !sameKeys(backup.owners, nativeOwners) || !sameKeys(Object.keys(backup.variants ?? {}), nativeOwners)) return false;
+  for (const owner of fixedOwners) {
+    const c = data.chess[owner];
+    if (c?.charId !== charId || c.chessType !== 'PRESET' || c.extension?.id !== extensionId
+      || c.pluginId || !c.tokens?.includes(id) || Object.hasOwn(backup.variants, owner)) return false;
+  }
+  const common = token => Object.fromEntries(Object.entries(token).filter(([key]) => !['owners', 'variants'].includes(key)));
+  return canonicalJson(common(primary)) === canonicalJson(common(backup));
+}
 /** Recursively find non-finite numbers (NaN/Infinity would silently become null in JSON). */
 function findNonFinite(obj, path, out) {
   if (typeof obj === 'number') { if (!Number.isFinite(obj)) out.push(path); return; }
@@ -82,7 +109,7 @@ export function validateReferences(f, { officialOwnedSkills = true } = {}) {
       }
     }
     for (const [id, o] of Object.entries(backups.diy.operators)) for (const b of o.bonds) if (!bonds[b]) err(`DIY pick ${id}: bond ${b} missing`);
-    for (const id of Object.keys(backups.tokens || {})) if (tokens[id]) err(`backups.json token ${id} is also a tokens.json record`);
+    for (const id of Object.keys(backups.tokens || {})) if (tokens[id] && !presetSharedToken(f, id)) err(`backups.json token ${id} is also a tokens.json record`);
   }
   for (const b of Object.values(bonds)) {
     for (const m of b.members) if (!chess[m]) err(`bond ${b.bondId}: member ${m} missing`);

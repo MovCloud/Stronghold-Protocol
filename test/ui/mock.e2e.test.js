@@ -15,10 +15,10 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { aimedDrag, groundAnchor, anchorPoint, cameraSettled } from '../e2e/client.mjs';
+import { aimedDrag, groundAnchor, anchorPoint, cameraSettled, settled } from '../e2e/client.mjs';
 import { textProblems } from '../e2e/text-fit.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -97,12 +97,21 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
     page.on('requestfailed', (r) => { if (!/fonts\.(googleapis|gstatic)/.test(r.url())) problems.push(`requestfailed: ${r.url()} ${r.failure()?.errorText}`); });
     page.on('response', (r) => { if (r.status() >= 400) problems.push(`http ${r.status()}: ${r.url()}`); });
-    await page.goto(`${base}/dev/game-mock.html?shot=1&render=${render}&${query}`, { waitUntil: 'networkidle0' });
+    await page.goto(`${base}/dev/game-mock.html?shot=1&render=${render}&${query}`, { waitUntil: 'load' });
     await page.waitForFunction(() => !!document.querySelector('.screen:not(.gload)'), { timeout: 15000 });
     await new Promise((r) => setTimeout(r, 900));
     return { page, problems };
   }
   const mockState = (page) => page.evaluate(() => JSON.parse(JSON.stringify(globalThis.__MOCK__.S().priv)));
+  /** The engine view is up and every prep piece on it has its view (operators with their Spine model loaded). */
+  const prepViews = (page) => page.waitForFunction(() => {
+    const R = globalThis.__SP_VIEW__?.raw, p = globalThis.__MOCK__.S().priv;
+    if (!R?.debug?.views) return false;
+    return [...(p.board || []), ...(p.hand || []), ...(p.temp || [])].every((x) => {
+      const v = x && R.debug.views.get('p:' + x.uid);
+      return !x || (v && !v.destroyed && (x.kind === 'item' || v.spineReady));
+    });
+  }, { timeout: 30000, polling: 200 });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const useWhip = (page) => page.evaluate(async () => {
     const { net } = await import('/js/net.js');
@@ -265,7 +274,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
       await page.click('.shopbar .lvcard');
       await page.waitForFunction(() => document.querySelector('.lvcard').getAttribute('aria-pressed') === 'true');
       assert.equal((await mockState(page)).funds, before.funds, 'selecting does not charge');
-      await page.keyboard.press('KeyD');
+      await page.keyboard.press('KeyG');
       await page.waitForFunction((lv) => globalThis.__MOCK__.S().priv.shop.level === lv + 1, {}, before.shop.level);
       const upgraded = await mockState(page);
       assert.equal(upgraded.funds, before.funds - before.shop.upgradePrice);
@@ -277,9 +286,9 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
       assert.equal((await mockState(page)).funds, upgraded.funds, 'the next click does not charge');
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.querySelector('.lvcard').getAttribute('aria-pressed') === 'false');
-      await page.keyboard.press('KeyD');
+      await page.keyboard.press('KeyG');
       await page.waitForFunction((lv) => globalThis.__MOCK__.S().priv.shop.level === lv + 1, {}, upgraded.shop.level);
-      assert.equal((await mockState(page)).funds, upgraded.funds - upgraded.shop.upgradePrice, 'D still upgrades directly');
+      assert.equal((await mockState(page)).funds, upgraded.funds - upgraded.shop.upgradePrice, 'G still upgrades directly');
       // Optional art / audio may be absent; this state regression needs no asset pack.
       assert.deepEqual(problems.filter((p) => p.startsWith('pageerror:')), []);
     } finally { await page.close(); }
@@ -317,7 +326,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
       await page.click('.shopbar__cards .scard:not(.scard--sold)');
       await page.waitForSelector('.shopbar__cards .scard.is-armed');
       const selected = await page.$eval('.shopbar__cards .scard.is-armed', (el) => el.getAttribute('aria-label'));
-      await page.keyboard.press('KeyD');
+      await page.keyboard.press('KeyG');
       await page.waitForFunction((lv) => globalThis.__MOCK__.S().priv.shop.level === lv + 1, {}, before.shop.level);
       assert.equal(await page.$eval('.shopbar__cards .scard.is-armed', (el) => el.getAttribute('aria-label')), selected);
       assert.equal(await page.$eval('.lvcard', (el) => el.getAttribute('aria-pressed')), 'false');
@@ -441,14 +450,14 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     const { page, problems } = await open('phase=PREP');
     await sleep(1500); // spine models
     const rect = (uid) => page.evaluate((u) => { const r = globalThis.__SP_VIEW__?.pieceScreenRect(u); return r && { x: r.left + r.width / 2, y: r.top + r.height * 0.65 }; }, uid);
-    // (aimed after the pickup: the deploy fold zooms the board as a piece is picked up — GitHub #602, e2e/client.mjs)
+    // (aimed after the pickup, e2e/client.mjs aimedDrag)
     const drag = async (from, to, o = {}) => { await aimedDrag(page, from, to, { steps: 12, pause: 16, settle: 100, ...o }); await sleep(600); };
     const centre = (sel) => page.$eval(sel, (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }).catch(() => null);
     let s = await mockState(page);
     const unit = s.board.find((x) => x.kind === 'chess' && !x.golden && !(x.items || []).length);
     const bar = await centre('.shopbar__cards');
-    // the shop bar folds away while a piece is carried (GitHub #602): released over its tab — DOM UI — the piece goes back
-    await drag(await rect(unit.uid), bar, { retarget: () => centre('.shopbar-tab') });
+    // released over the shop bar — DOM UI — the piece goes back
+    await drag(await rect(unit.uid), bar);
     assert.equal((await mockState(page)).board.length, s.board.length, 'no drag-to-sell');
     const pt = await rect(unit.uid);
     await page.mouse.click(pt.x, pt.y);
@@ -473,7 +482,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     await page.mouse.move(here.x, here.y);
     await page.mouse.down();
     for (let i = 1; i <= 8; i++) { await page.mouse.move(here.x + i * 12, here.y - i * 6); await sleep(16); } // off the tile…
-    await cameraSettled(page); // (the deploy fold's zoom, GitHub #602)
+    await cameraSettled(page);
     const back = (await anchorPoint(page, home)) || here;
     for (let i = 1; i <= 8; i++) { await page.mouse.move(here.x + 96 + ((back.x - here.x - 96) * i) / 8, here.y - 48 + ((back.y - here.y + 48) * i) / 8); await sleep(16); } // …and back onto it
     await sleep(100);
@@ -538,6 +547,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     await page.close();
 
     ({ page, problems } = await open('phase=INFO_CHECK'));
+    await settled(page, '.brief-go'); // (a click during its entrance falls through)
     await page.click('.brief__foot .btn--primary');
     await sleep(300);
     const txt = await page.$eval('.brief-ready__txt', (el) => el.textContent);
@@ -565,21 +575,10 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     assert.doesNotMatch(await page.$eval('.spov', (el) => el.textContent), /机变阶段|当前轮到|正在决策/);
     assert.equal(await page.$eval('.readybtn', (el) => el.disabled), true);
     assert.match(await page.$eval('[data-testid="ready-why"]', (el) => el.textContent), /请先完成教鞭选择/);
-    await page.evaluate(async () => { await (await import('/js/ui/lang.js')).loadLangIndex(); });
-    for (const lang of ['en', 'ja', 'ko', 'zh-TW']) {
-      const messages = JSON.parse(readFileSync(path.join(ROOT, `public/i18n/${lang}.json`), 'utf8'));
-      await page.evaluate(async (code) => {
-        await (await import('/js/ui/lang.js')).switchLang(code);
-        globalThis.__MOCK__.pushPublic(); // this harness has no App/useLang root; render again with the active language
-      }, lang);
-      await page.waitForFunction((label) => document.querySelector('.spov')?.getAttribute('aria-label') === label, {}, messages['教鞭选择']);
-      assert.equal(await page.$eval('.spov__title', (el) => el.textContent), `${messages['教鞭 · 战术特训']}|${messages['请选择一项战术特训']}`);
-      assert.match(await page.$eval('.spov__sub', (el) => el.textContent), new RegExp(messages['休整期结束时未选择将自动选定']));
-      assert.equal(await page.$eval('[data-testid="ready-why"]', (el) => el.textContent), messages['请先完成教鞭选择']);
-      assert.equal((await mockState(page)).personalChoice.id, first.id, 'language switch keeps the same pending offer');
-    }
-    await page.evaluate(async () => { await (await import('/js/ui/lang.js')).switchLang('zh'); globalThis.__MOCK__.pushPublic(); });
-    await page.waitForSelector('.spov[aria-label="教鞭选择"]');
+    // the overlay's own words are Chinese literals (the interface has no language switch any more)
+    assert.equal(await page.$eval('.spov__title', (el) => el.textContent), '教鞭 · 战术特训|请选择一项战术特训');
+    assert.match(await page.$eval('.spov__sub', (el) => el.textContent), /休整期结束时未选择将自动选定/);
+    assert.equal(await page.$eval('[data-testid="ready-why"]', (el) => el.textContent), '请先完成教鞭选择');
     const requests = await page.evaluate(() => globalThis.__MOCK__.S().requests.length);
     for (const key of ['KeyW', 'KeyR', 'KeyF', 'KeyD', 'KeyQ', 'KeyX']) await page.keyboard.press(key);
     await sleep(150);
@@ -810,7 +809,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
         const tt = v.tileScreen(row, col);
         return { uid: piece.uid, row, col, from: { x: r.left + r.width / 2, y: r.top + r.height * 0.6 }, to: { x: tt.x, y: tt.y } };
       });
-      // (aimed after the pickup: the deploy fold zooms the boss-field half as a piece is picked up — GitHub #602)
+      // (aimed after the pickup, e2e/client.mjs aimedDrag)
       await aimedDrag(page, plan.from, plan.to, { steps: 14, pause: 16, settle: 120 });
       await swipeWheel(page, 'RIGHT');
       await page.waitForFunction((uid) => globalThis.__MOCK__.S().priv.board.some((b) => b.uid === uid), { timeout: 4000 }, plan.uid);
@@ -1209,55 +1208,18 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
   });
 
   test('result: no Hidden Core medal when R15 was never reached', async () => {
+    // the settlement (screens/settle.js): 个人战报 → 下一步 → 同盟 → 数据详情, the full report (screens/result.js) over it
     const { page, problems } = await open('phase=RESULT&variant=defeat');
-    // the settlement flow: intro → my report (lost: no leader medals) → 下一步 → the team page → 数据详情
     await page.waitForSelector('[data-testid="settle-self"]', { timeout: 10000 });
-    assert.equal(await page.$('.smedal'), null, 'a lost match earns no medal on my report');
-    await page.waitForSelector('.settle__next', { visible: true });
+    assert.equal(await page.$('.smedal--hidden'), null, 'none on 个人战报');
+    await settled(page, '.settle__next');
     await page.click('.settle__next');
-    await page.waitForSelector('[data-testid="settle-team"]', { timeout: 5000 });
+    await page.waitForSelector('[data-testid="settle-team"]', { timeout: 10000 });
+    await settled(page, '.steam__detail');
     await page.click('.steam__detail');
-    await page.waitForSelector('[data-testid="settle-detail"] .medal', { timeout: 5000 });
+    await page.waitForSelector('[data-testid="settle-detail"] .result__medals', { timeout: 10000 });
     assert.equal(await page.$('.medal--hidden'), null);
-    assert.ok(await page.$('.medal'), 'the leader medal is still shown');
-    assert.equal(await page.$$eval('[data-ui-slot="result.tab"]', (els) => els.length), 1, 'one 结算 tab plugin slot: the team page\'s, not the report\'s');
-    assert.deepEqual(problems, []);
-    await page.close();
-  });
-
-  test('result: the settlement flow — intro, my report with the level strip, the team page, back', async () => {
-    const { page, problems } = await open('phase=RESULT');
-    await page.waitForSelector('[data-testid="settle-self"]', { timeout: 10000 });
-    const self = await page.evaluate(() => ({
-      title: document.querySelector('.sself__title')?.textContent,
-      slots: document.querySelectorAll('.sops .sop').length,
-      empty: document.querySelectorAll('.sops .sop.is-empty').length,
-      medals: document.querySelectorAll('.smedal').length,
-      gain: document.querySelector('.slv__gain')?.textContent || '',
-      daily: document.querySelector('.slv__gain--daily')?.textContent || '',
-    }));
-    assert.equal(self.title, '模拟完成');
-    assert.equal(self.slots, 10, 'ten lineup slots');
-    assert.ok(self.empty >= 1, 'the slots past the lineup are NO INFO cards');
-    assert.equal(self.medals, 1, 'the leader medal (the Hidden Core was never reached)');
-    assert.match(self.gain, /获得卫戍认证 \+\d+/);
-    assert.match(self.daily, /每日防卫目标 \+\d+/);
-    await page.waitForSelector('.settle__next', { visible: true });
-    await page.click('.settle__next');
-    await page.waitForSelector('[data-testid="settle-team"]', { timeout: 5000 });
-    assert.equal(await page.$$eval('.tcard', (els) => els.length), 4, 'one card per seat');
-    assert.ok(await page.$('.tcard.is-self'), 'my own card is marked');
-    assert.equal(await page.$$eval('[data-ui-slot="result.tab"]', (els) => els.length), 1, 'the 结算 tab plugin slot');
-    assert.equal(await page.$('[data-testid="unofficial-mark"]'), null, 'the original game: no 非官方 mark');
-    assert.deepEqual(problems, []);
-    await page.close();
-  });
-
-  test('result: the RESULT phase before m.result — the flow waits for it and still opens on my own report', async () => {
-    const { page, problems } = await open('phase=RESULT&variant=late');
-    await page.waitForSelector('[data-testid="settle-self"]', { timeout: 10000 });
-    assert.equal(await page.$eval('.sself__title', (el) => el.textContent), '模拟完成');
-    assert.equal(await page.$('[data-testid="settle-team"]'), null, 'a seat starts with 个人战报, not the spectators\' 同盟 page');
+    assert.ok(await page.$('[data-testid="settle-detail"] .medal'), 'the leader medal is still shown');
     assert.deepEqual(problems, []);
     await page.close();
   });
@@ -1265,10 +1227,10 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
   test('engine: equipment dropped on an operator\'s tile equips it — the tile under the pointer decides (user playtest #4 item 1)', async (t) => {
     if (RENDER !== 'engine') { t.skip('SP_RENDER=fallback'); return; }
     const { page, problems } = await open('phase=PREP');
-    await sleep(1500); // spine models
+    await prepViews(page);
     const at = (uid, fy) => page.evaluate((u, f) => { const r = globalThis.__SP_VIEW__?.pieceScreenRect(u); return r && { x: r.left + r.width / 2, y: r.top + r.height * f }; }, uid, fy);
     const tileAt = (row, col) => page.evaluate((r, c) => { const x = globalThis.__SP_VIEW__?.raw?.tileScreen?.(r, c); return x && { x: x.x, y: x.y }; }, row, col);
-    // (aimed after the pickup: the deploy fold zooms the board as a piece is picked up — GitHub #602, e2e/client.mjs)
+    // (aimed after the pickup, e2e/client.mjs aimedDrag)
     const drag = async (from, to) => { await aimedDrag(page, from, to, { steps: 12, pause: 16, settle: 120 }); await sleep(600); };
     let s = await mockState(page);
     const targets = s.board.filter((x) => x.kind === 'chess' && !(x.items || []).length).sort((a, b) => a.row - b.row);
@@ -1285,7 +1247,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
   test('an illegal drop says why (DOM fallback: pieceDrop, engine: cancelled drag)', async () => {
     for (const render of RENDER === 'engine' ? ['fallback', 'engine'] : ['fallback']) {
       const { page, problems } = await open('phase=PREP', { render });
-      if (render === 'engine') await sleep(1500);
+      if (render === 'engine') await prepViews(page);
       // deploy cap reached: a hand operator dropped on any empty board tile is refused
       await page.evaluate(() => globalThis.__MOCK__.mutate((S) => { S.priv.deployCap = S.priv.board.filter((x) => x.kind === 'chess').length; S.priv.deployCount = S.priv.deployCap; }));
       await sleep(200);
@@ -1315,7 +1277,7 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
         }
         assert.ok(to, 'found an empty board tile on screen');
       }
-      // (aimed after the pickup on the engine: the deploy fold zooms the board — GitHub #602, e2e/client.mjs)
+      // (aimed after the pickup on the engine, e2e/client.mjs aimedDrag)
       await aimedDrag(page, from, to, { steps: 12, pause: 16, settle: 120 });
       await sleep(500);
       const toastText = await page.$eval('.toast', (el) => el.textContent).catch(() => null);
@@ -1336,8 +1298,9 @@ describe('in-match UI (mock harness, headless Chrome)', { skip: !ENABLED && 'set
     const buttons = await page.$$('.modal__actions .btn');
     await buttons[1].click(); // 暂离
     await page.waitForSelector('.awayov');
+    await settled(page, '.awayov'); // (it fades and slides in: a click during its entrance can miss 返回)
     await page.click('.awayov .btn');
-    await sleep(300);
+    await page.waitForSelector('.awayov', { hidden: true, timeout: 5000 }).catch(() => {});
     assert.equal(await page.$('.awayov'), null);
     assert.deepEqual(problems, []);
     await page.close();

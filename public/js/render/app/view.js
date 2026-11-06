@@ -113,12 +113,51 @@ export function flightView(prevVk, vk) {
   };
 }
 
-/** '2d' | '3d' | 'auto' board preference: `?board=` in the page URL (dev), else the view option. */
+/**
+ * '2d' | '3d' board preference (设置「棋盘样式」, boardView): '3d' = 官方贴图 (the three.js official board scene, the
+ * default), '2d' = 3D (the procedural map under the same camera, no art, diamond tokens). An explicit choice always wins;
+ * only a caller that passes no setting at all lets `?board=` in the page URL (dev) pick it, defaulting to '3d'. A
+ * leftover `?board=3d` bookmark must not silently undo the setting the player chose (owner report 2026-10-25: 2D
+ * picked, the URL kept the 3D board).
+ * The caller passes the view option (settings.boardView, or `opts.board` of a dev caller); a settings-derived 'flat'
+ * has no engine equivalent (it is the DOM simplified view — fieldHost.flatFieldPreferred) and reads as '3d' here.
+ */
 export function boardPreference(opt) {
+  if (opt === '2d' || opt === '3d') return opt;
   let q = null;
   try { q = new URLSearchParams(globalThis.location?.search || '').get('board'); } catch { /* no location */ }
-  const v = q || opt;
-  return v === '2d' || v === '3d' ? v : 'auto';
+  return q === '2d' ? '2d' : '3d';
+}
+
+/**
+ * [BOARDMODE] The board style a settings object asks for: 'auto' unless 设置 →「画面质量」has 画面自动调节 off, in which
+ * case its 棋盘样式 (`boardForce`): '3d' (the engine's 3D board) or 'flat' (the DOM simplified view — the whole field
+ * degrades, ui/fallbackField.js; asked for by fieldHost.flatFieldPreferred). A default (or old saved) profile has
+ * `pictureAuto !== false` → 'auto'; the stored default is 'flat' (ui/gameLogic/settings.js BOARD_FORCES).
+ * @param {{ pictureAuto?: boolean, boardForce?: string }} [settings]
+ * @returns {'auto'|'3d'|'flat'}
+ */
+export function boardSetting(settings) {
+  if (!settings || settings.pictureAuto !== false) return 'auto';
+  return settings.boardForce === '3d' ? '3d' : 'flat';
+}
+
+/**
+ * [UNITMODELS] The operator-model mode a settings object asks for: 'auto' unless 设置 →「画面质量」has 画面自动调节 off, in
+ * which case its 角色模型 (`unitsForce`: 'on'|'off'; 'off' keeps the avatar-in-rarity-diamond fallback). Default (or an old
+ * saved profile) has `pictureAuto !== false` → 'auto'.
+ *
+ * The automatic mode follows the same `gpuTier()` probe the「按 GPU 自动降档」uses (ui/settings.js / ui/fieldHost.js):
+ * `weak` (the caller passes `gpuTier() === 'weak'`) starts without any Spine model — a weak renderer cannot hold the 3D
+ * board + the models, and units.js draws its avatar diamonds instead. A player who turns 画面自动调节 off and picks a
+ * 角色模型 always keeps that choice (this function never consults the tier then).
+ * @param {{ pictureAuto?: boolean, unitsForce?: string }} [settings]
+ * @param {boolean} [weak] whether the renderer is weak (`diag.js gpuTier() === 'weak'`)
+ * @returns {'auto'|'on'|'off'}
+ */
+export function unitSetting(settings, weak = false) {
+  if (settings && settings.pictureAuto === false) return settings.unitsForce === 'on' ? 'on' : 'off';
+  return weak ? 'off' : 'auto';
 }
 
 /**

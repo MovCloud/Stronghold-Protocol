@@ -52,6 +52,10 @@
     "anchor": "shared/plugins/manifest.js#MANIFEST_FIELDS"
   },
   {
+    "name": "manifest.field.emotes",
+    "anchor": "shared/plugins/manifest.js#MANIFEST_FIELDS"
+  },
+  {
     "name": "manifest.field.enemies",
     "anchor": "shared/plugins/manifest.js#MANIFEST_FIELDS"
   },

@@ -53,6 +53,9 @@ function plainUrl(url) {
  *   2. the room's visual set (setRoom: its checked document, /vs/<vs16>/overlay.json; null outside a room or in a room
  *      without plugins: a room's art never stays behind or piles up);
  *   3. the player's personal plugins (setPersonal: `[{ id, doc }]`, in the order they apply) — over the room's art too.
+ *   4. the skin registry's entries (setSkins: public/js/skinRegistry.js — a skin plugin's attachments, whole-plugin
+ *      validated there), laid last under their global `<pluginId>/<skinId>` keys, which no document's write can share
+ *      (a skin key admits no '/', shared/plugins/visual.js isSkinKey), so the order between them never matters.
  * Every plugin URL is built from a document's composition and every reference is copied out of `base` itself
  * (shared/plugins/visual.js prepareVisualDoc, layVisualOps), so what the page draws is exactly what the documents' `vs`
  * name; a write that does not fit is left out (its entry keeps the art beneath it) and told to `onDrop` (once per
@@ -69,6 +72,12 @@ export function createCosmeticLayers() {
   let room = null;
   /** @type {(Layer & { id: string })[]} */
   let personal = [];
+  /**
+   * The skin registry's synthetic layer (public/js/skinRegistry.js setSkins): `{ ops }` in the shape of a PreparedSet,
+   * only it carries plain manifest records (no document behind it), so layVisualOps composes it unchanged.
+   * @type {{ ops: import('../../shared/plugins/visual.js').PreparedOp[] } | null}
+   */
+  let skins = null;
   /** @type {Set<string>} plugin URLs that failed to load */
   const failed = new Set();
   let gen = 0;
@@ -81,6 +90,7 @@ export function createCosmeticLayers() {
   // what was set while shared/plugins/visual.js was still loading (the last one wins)
   let pendingRoom;
   let pendingPersonal;
+  let pendingSkins;
   const prepared = new WeakMap(); // document → its PreparedSet (a document never changes)
   const prepare = (doc) => {
     let p = prepared.get(doc);
@@ -120,12 +130,23 @@ export function createCosmeticLayers() {
       personal = next.map((p) => ({ id: p.id, doc: p.doc, prep: prepare(p.doc) }));
       changed();
     },
+    /** The skin registry's entries (public/js/skinRegistry.js), already validated there: the ops laid last. */
+    setSkins(ops) {
+      const next = Array.isArray(ops) && ops.length ? ops : null;
+      if (next && !visual) { pendingSkins = next; later(() => { if (pendingSkins === next) { pendingSkins = undefined; this.setSkins(next); } }); return; }
+      pendingSkins = undefined;
+      if (next === skins) return;
+      skins = next ? { ops: next } : null;
+      changed();
+    },
     /** The room's document, or null. */
     get room() { return room ? room.doc : null; },
     /** The personal plugins applied: `[{ id, doc }]`. */
     get personal() { return personal; },
-    /** Is any layer on (a room set or a personal plugin)? */
-    get active() { return !!room || personal.length > 0; },
+    /** The skin registry's ops as set (diagnostics, tests), or null. */
+    get skins() { return skins ? skins.ops : null; },
+    /** Is any layer on (a room set, a personal plugin, a registered skin)? */
+    get active() { return !!room || personal.length > 0 || !!skins; },
     /**
      * A file of a layer failed to load (an image, a Spine model — any of its files —, a sound): its writes are left out
      * from now on and the listeners are told (the entry draws the art beneath it). Whether it was one of the layers'.
@@ -146,12 +167,12 @@ export function createCosmeticLayers() {
     /** `fn(reasons, count)` when writes had to be left out (see above); one listener. */
     onDrop(fn) { dropFn = typeof fn === 'function' ? fn : null; },
     apply(base) {
-      if (!room && !personal.length) return base;
+      if (!room && !personal.length && !skins) return base;
       const key = isObj(base) ? base : EMPTY_MANIFEST;
       const hit = memo.get(key);
       if (hit && hit.gen === gen) return hit.value;
-      // (a layer is only ever set with shared/plugins/visual.js there)
-      const { manifest, dropped } = visual.layVisualOps(key, [...(room ? [room.prep] : []), ...personal.map((p) => p.prep)], { failed });
+      // (a layer is only ever set with shared/plugins/visual.js there; the registry's ops carry their records plain)
+      const { manifest, dropped } = visual.layVisualOps(key, [...(room ? [room.prep] : []), ...personal.map((p) => p.prep), ...(skins ? [skins] : [])], { failed });
       // a reference the page's manifest lacks (told once per change, for a manifest that is loaded)
       if (dropped.length && key !== EMPTY_MANIFEST && toldLay !== gen) {
         toldLay = gen;

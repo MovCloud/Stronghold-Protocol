@@ -17,8 +17,20 @@
 // is gone): it opens the 成就统计 window (screens/stats.js AchievementDialog), whose 查看完整统计 opens 统计数据. The
 // 密钥加入 tile is a remake shortcut to 选择同盟方式 [ASSUMED: the event's hub has no such tile].
 // Both dialogs are the project's Modal (focus trap, Esc, focus restored) styled to fill the screen. The top bar shows
-// connection status + ping, and 大厅背景与音乐 (ui/lobbyMedia.js, PR #643 split 8): a lobby scene, the player's own
-// picture / video over the official backdrop and own lobby music, kept in this browser only.
+// the version chip and 大厅背景与音乐 (ui/lobbyMedia.js,
+// PR #643 split 8): a lobby scene, the player's own picture / video over the official backdrop and own lobby music,
+// kept in this browser only. 选择模拟协议 carries the solo-side settings at the bottom of its stage — the version pill
+// (this browser's choice, also what 创建同盟 uses) and the ⚙ (单人默认设置: the account defaults of a new 独立模拟,
+// 默认速度; the room's own ⚙ keeps the per-room rules and saves a speed picked there back to this pref).
+// This fork's own features kept on top of that layout (the hub design by 雨千代chiyo, adopted by the owner on
+// 2026-10-14): 公告 (ui/announcements.js) in the right column with the unread overlay, the feedback group and the design
+// credit under it, 全屏 (ui/device.js) and the online-player count pill in the top bar, the footer with the
+// licence notice, the repository link and the version, and the third entry 多人匹配 (ui/matchFlow.js + ui/matchmaking.js
+// QueueFlow: 搜寻中 / 确认入场 / 搜寻成功), which opens 选择模拟协议 for the public queue (MatchSelect). Joining a room
+// whose match has started goes back to this browser's own seat in it, else offers its spectator seat (joinRoom). There
+// is no title screen (2026-10-15). Maintenance: the server's presence.state `maintenance` pauses new matches (the entries
+// say so); an announcement's `banner` line is shown above the entries ahead of time. Chat, accounts and friends, the
+// cross-server room directory and public room list, 私密房间 and 无限火力 are not part of this server.
 //
 // Difficulty descriptions come from data/config.json `modes[modeId]` when present, else from the
 // official act2autochess `modeDataDict` texts embedded below (desc + effectDescList), so the
@@ -35,34 +47,46 @@
 // config.json mode texts come localized from data.js.
 
 import { TestMark } from '../ui/testConsole.js';
-import { ResumeMatchButton } from '../ui/resumeMatch.js';
+import { ResumeMatchButton, resumeLocalMatch } from '../ui/resumeMatch.js';
+import { Emblem } from '../ui/emblem.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
-import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor, ERR } from '../../../shared/constants.js';
-import { html, confirmDialog, Button, Icon, MicroLabel, Modal, PingPill, Spinner, DifficultyIcon, TextField } from '../ui/components.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, NAME_MAX_LEN, PLAYBACK, modeIdFor, ERR } from '../../../shared/constants.js';
+import { html, Fragment, confirmDialog, Button, Icon, MicroLabel, Modal, Spinner, DifficultyIcon, TextField, AvatarFrame, doctorNo, Tooltip } from '../ui/components.js';
 import { Sprite, Img } from '../ui/gameComponents.js';
-import { uiUrl } from '../ui/assetUrls.js';
+import { uiUrl, chessPortraitUrl } from '../ui/assetUrls.js';
+import { cardOperators, cardContext, cardAvatarUrl, lookOptions, lookUrl, seatOperator, seatCardSkin } from '../ui/seatArt.js';
+import { useMyCard, setCardOperator, setCardAvatar, setCardBackground, setCardLook, setAvatarLook } from '../ui/playerCard.js';
+import { CardOperatorPicker, AvatarPicker } from '../ui/opPicker.js';
+import { NameCardPicker, NameCardLayer, namecardOf } from '../ui/namecards.js';
+import { TrophyBadge } from '../ui/trophies.js';
+import { skinsStore, SKINS_KEY } from '../ui/skins.js';
+import { AnnouncementBoard, announcementRevision, announcementDismissed, dismissAnnouncement, announcementBanner, parseAnnouncements } from '../ui/announcements.js';
+import { SiteBoards } from '../ui/siteBoards.js';
+import { isValidName, sanitizeName, setNickname } from '../ui/nickname.js';
 import { peekStatsRecords, trophyMedalOf, aggregateStats, recordsOfSeason } from '../ui/stats.js';
 import { levelProgress, levelOf } from './settle.js';
+import { AchievementDialog, useStatsOpen } from './stats.js';
 import { OwnBackdrop, LobbyScene, LobbyMediaButton } from '../ui/lobbyMedia.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton, openGuide } from '../ui/guide.js';
-import { RadarScene, CreateArt, JoinArt } from '../ui/allyArt.js';
-import { ProtocolScene } from '../ui/protocolScene.js';
-import { AchievementDialog, useStatsOpen } from './stats.js';
-import { SweepReport } from './sweep.js';
-import { Emblem } from './title.js';
 import { SettingsButton } from '../ui/settings.js';
-import { PwaInstallButton, detectFeatures, useMediaQuery, SHORT_SCREEN_QUERY } from '../ui/device.js';
+import { PwaInstallButton, detectFeatures, useMediaQuery, SHORT_SCREEN_QUERY, FullscreenButton, fullscreen, reducedMotion } from '../ui/device.js';
 import { LoadoutButton } from './loadout.js';
+import { SweepReport } from './sweep.js';
+import { ProtocolScene } from '../ui/protocolScene.js';
+import { RadarScene, CreateArt, JoinArt } from '../ui/matchFlow.js';
+import { useLeave } from '../ui/transitions.js';
 import { net, identity } from '../net.js';
 import { store, useStore, shallowEqual, loadPref, savePref } from '../store.js';
 import { data, getConfig, getMode, getStage, useData } from '../data.js';
+import { QueueFlow, queueActive } from '../ui/matchmaking.js';
+import { queueCancellation } from '../queueCancellation.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { scriptOf } from '../../../shared/i18nPacks.js';
 import { NoticesButton } from '../ui/notices.js';
-import { VersionSwitch } from '../ui/versionPicker.js';
+import { VersionSwitch, VersionPicker } from '../ui/versionPicker.js';
 import { contentSet, retryContentSet } from '../content.js';
-import { DEFAULT_VERSION, lobbyVersion, offeredDifficulties, fallbackDifficulty, seasonOf, soloTimedOf, soloTimeMsgid, versionLabel } from '../versions.js';
+import { DEFAULT_VERSION, lobbyVersion, offeredDifficulties, fallbackDifficulty, seasonOf, serverDefaultVersion, setLobbyVersion, soloTimedOf, versionLabel } from '../versions.js';
 
 /** Official mode texts (activity_table act2autochess.modeDataDict), fallback when config.json is absent. */
 export const MODE_TEXT = {
@@ -117,14 +141,14 @@ const MODE_CARDS = [
   {
     id: 'solo', name: N_('独立模拟'), en: 'SOLO SIMULATION', icon: 'user',
     desc: N_('独自调配资金与干员，以自己的节奏完成整场模拟。'),
-    points: [N_('1 名博士'), N_('休整期与机变阶段不限时')],
   },
   {
     id: 'coop', name: N_('同盟模拟'), en: 'ALLIANCE SIMULATION', icon: 'users',
-    desc: N_('与至多 {n} 名博士组成同盟，共享干员池，联防协作抵御敌潮。'), params: { n: MAX_SEATS - 1 },
-    points: [N_('1–{n} 名博士 · 可由 AI 队友补位'), N_('联防阶段 · 最终攻势合并生命值')], pointParams: { n: MAX_SEATS },
-    // the hub's line above the entry on a short screen, where the whole line is wider than the entry (§35.51)
-    pointShort: N_('1–{n} 名博士'),
+    desc: N_('与至多 {n} 名博士组成同盟，调配干员、联防协作抵御敌潮。'), params: { n: MAX_SEATS - 1 },
+  },
+  {
+    id: 'match', name: N_('多人匹配'), en: 'PUBLIC MATCHMAKING', icon: 'search',
+    desc: N_('寻找相同难度的博士，确认后组成四人同盟；也可从好友房组队匹配。'),
   },
 ];
 
@@ -198,6 +222,43 @@ export function parseRoomParam(search) {
   }
 }
 
+/**
+ * Join a room, or — when the server says it has started — go back to this browser's own seat in it (a page whose token
+ * this one could not take over, identity.recoverable), else offer its read-only spectator seat.
+ */
+export async function joinRoom(code, { connection = net, confirm = confirmDialog, getState = store.get,
+  localSeats = () => identity.recoverable(), resume = resumeLocalMatch } = {}) {
+  const viewer = getState().me;
+  const current = () => {
+    const s = getState();
+    return viewer.playerId != null && connection.status === 'online' && s.session.entered && !s.room && !queueActive(s.queue)
+      && s.me.playerId === viewer.playerId && s.me.token === viewer.token;
+  };
+  if (!current()) return false;
+  try {
+    await connection.request('room.join', { code });
+    return true;
+  } catch (err) {
+    if (err?.code !== ERR.ROOM_STARTED) throw err;
+    if (!current()) return false;
+    // the seat of this match another (closed) page of this browser played: resume it instead of watching (the owner's
+    // report of 2026-10-13); a seat a live page still holds stays there and the offer below follows
+    const seat = localSeats().find((item) => item.code === code);
+    if (seat && await resume(seat)) return true;
+    if (!current()) return false;
+    const accepted = await confirm({
+      title: t('同盟已开始模拟'),
+      text: t('同盟 {code} 已经开局，不能再加入博士席位。是否使用原密钥进入观战？', { code }),
+      okText: t('观战'),
+      cancelText: t('取消'),
+      micro: 'SPECTATE STARTED ALLIANCE',
+    });
+    if (!accepted || !current()) return false;
+    await connection.request('room.spectate', { code });
+    return true;
+  }
+}
+
 /** Recently joined/created co-op room codes (most recent first). */
 export function recentRooms() {
   const list = loadPref('recentRooms', []);
@@ -242,12 +303,16 @@ function TipsPanel() {
     : fallback;
   const list = tips.length ? tips : fallback;
   const [idx, setIdx] = useState(() => Math.floor(Math.random() * list.length));
+  // the rotation waits while the tip is pointed at or focused, and stays off with reduced motion (the arrows still turn it)
+  const [held, setHeld] = useState(false);
   useEffect(() => {
+    if (held || reducedMotion()) return undefined;
     const id = setInterval(() => setIdx((i) => i + 1), TIP_ROTATE_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [held]);
   const i = ((idx % list.length) + list.length) % list.length;
-  return html`<div class="tips brackets">
+  return html`<div class="tips brackets" onPointerEnter=${() => setHeld(true)} onPointerLeave=${() => setHeld(false)}
+      onFocusIn=${() => setHeld(true)} onFocusOut=${() => setHeld(false)}>
     <div class="tips__head">
       <${Icon} name="info" />
       <span>${t('作战提示')}</span>
@@ -260,6 +325,27 @@ function TipsPanel() {
     </div>
     <p key=${i} class="tips__text">${list[i]}</p>
   </div>`;
+}
+
+/**
+ * 公告 in the right column: the newest notice's title and date, an unread dot; opens the board (ui/announcements.js).
+ * Takes the place the design gave a public room list (not part of this server).
+ */
+function NoticeCard({ value, unread, status, onOpen }) {
+  const entries = status === 'ready' ? parseAnnouncements(value) : null;
+  const top = entries?.[0] || null;
+  return html`<button type="button" class=${`hub-notice${unread ? ' is-unread' : ''}`} onClick=${onOpen} aria-haspopup="dialog"
+      aria-label=${unread ? `${t('公告')} · ${t('有未读公告')}` : t('公告')}>
+    <span class="hub-notice__head">
+      <span class=${`hub-recruit__pulse${unread ? ' is-live' : ''}`} aria-hidden="true"></span>
+      <span class="hub-notice__title">${t('公告')}</span><span class="hub-notice__en">NOTICE</span>
+      ${unread ? html`<i class="lobby-dot" aria-hidden="true"></i>` : null}
+      <span class="hub-notice__more">${t('查看')}<${Icon} name="chevronRight" /></span>
+    </span>
+    <span class="hub-notice__body">${top
+      ? html`<b>${top.title}</b>${top.date ? html`<small class="num">${top.date}</small>` : null}`
+      : html`<span class="t-dim">${status === 'ready' || status === 'missing' ? t('暂无公告') : status === 'error' ? t('公告加载失败，点击重试') : t('正在加载公告…')}</span>`}</span>
+  </button>`;
 }
 
 /** The hand-drawn ring of the 已选定 stamp (two loose strokes). */
@@ -299,6 +385,25 @@ function DifficultyCard({ roomMode, difficulty, selected, onSelect, disabled = f
     </span>
     <span class="pcard__stamp" aria-hidden="true"><${StampRing} /><span class="pcard__tick"><${Icon} name="check" /></span><span class="pcard__ok">${t('已选定')}</span></span>
   </button>`;
+}
+
+/**
+ * 全屏 / 退出全屏 in the top bar, styled like its neighbours; where the browser has no element fullscreen (iPhone) the
+ * button stays and explains how to get a full screen there (ui/device.js FullscreenButton).
+ */
+function HubFullscreenButton() {
+  const [on, setOn] = useState(() => fullscreen.active());
+  const [ok] = useState(() => fullscreen.supported());
+  useEffect(() => {
+    const upd = () => setOn(fullscreen.active());
+    document.addEventListener('fullscreenchange', upd);
+    document.addEventListener('webkitfullscreenchange', upd);
+    return () => { document.removeEventListener('fullscreenchange', upd); document.removeEventListener('webkitfullscreenchange', upd); };
+  }, []);
+  if (!ok) return html`<${FullscreenButton} class="hub-fs-btn hub-fs-btn--help" showUnavailable=${true} />`;
+  const label = on ? t('退出全屏') : t('全屏');
+  return html`<${Button} variant="secondary" size="sm" square=${true} icon=${on ? 'collapse' : 'expand'} class="hub-fs-btn"
+    title=${label} aria-label=${label} aria-pressed=${on ? 'true' : 'false'} onClick=${() => fullscreen.toggle()} />`;
 }
 
 /**
@@ -345,19 +450,10 @@ function ProtoFit() {
 }
 
 /**
- * One of the two entries at the bottom right of the hub (独立模拟 / 同盟模拟), with its line above it: opens its dialog.
- * `timePoint` (the solo card only): the version's time rule after 「1 名博士」. Absent, the markup is today's — the
- * co-op card's long/short pair, or the solo card's single line. `timeShort` replaces the phone line; absent, the phone
- * keeps points[0] (「1 名博士」).
+ * One of the entries at the bottom right of the hub (独立模拟 / 同盟模拟 / 多人匹配): opens its dialog.
  */
-export function HubEntry({ card, onOpen, timePoint = null, timeShort = null }) {
-  const line = timePoint
-    ? html`<span class="hub-entry__long">${t(card.points[0], card.pointParams)} · ${t(timePoint)}</span><span class="hub-entry__short">${timeShort ? t(timeShort) : t(card.points[0], card.pointParams)}</span>`
-    : card.pointShort
-      ? html`<span class="hub-entry__long">${t(card.points[0], card.pointParams)}</span><span class="hub-entry__short">${t(card.pointShort, card.pointParams)}</span>`
-      : t(card.points[0], card.pointParams);
+export function HubEntry({ card, onOpen }) {
   return html`<div class="hub-entry-wrap">
-    <span class="hub-entry__group"><${Icon} name=${card.icon} />${line}</span>
     <button type="button" class=${`mode-card hub-entry hub-entry--${card.id}`} data-mode=${card.id} onClick=${() => onOpen(card.id)}
         title=${t(card.desc, card.params)}>
       <span class="hub-entry__icon" aria-hidden="true"><${Icon} name=${card.icon} /></span>
@@ -366,6 +462,141 @@ export function HubEntry({ card, onOpen, timePoint = null, timeShort = null }) {
       <span class="hub-entry__corner" aria-hidden="true"></span>
     </button>
   </div>`;
+}
+
+/** 正在加入同盟…: bottom left while the room is being opened, a light running along the bottom edge (css tr-join). */
+function JoinLine({ text }) {
+  return html`<div class="tr-join" role="status"><span class="tr-join__mark" aria-hidden="true"></span>${text}<span class="tr-join__dots" aria-hidden="true"></span></div>`;
+}
+
+/** One difficulty of 选择模拟协议: name, text, effects; the extras (code, rounds, 隐秘核心, battlefields) below. */
+export function ProtoCard({ roomMode, difficulty, selected, onSelect, disabled = false }) {
+  const info = difficultyInfo(roomMode, difficulty);
+  return html`<button type="button" class=${`pcard${selected ? ' is-on' : ''}`} style=${`--d-color:${DIFFICULTY_COLORS[difficulty]}`}
+      onClick=${() => onSelect(difficulty)} aria-pressed=${selected ? 'true' : 'false'} disabled=${disabled}>
+    <span class="pcard__glow" aria-hidden="true"></span>
+    <span class="pcard__head">
+      <${DifficultyIcon} difficulty=${difficulty} class="pcard__glyph" />
+      <span class="pcard__name">${t(DIFFICULTY_NAMES[difficulty])}</span>
+    </span>
+    <span class="pcard__desc">${info.desc}</span>
+    <span class="pcard__effects">${info.effects.map((e) => html`<span key=${e}>${e}</span>`)}</span>
+    <span class="pcard__meta">
+      ${info.code ? html`<span class="num">${info.code}</span>` : null}
+      <span><b class="num">${info.rounds}</b> ${tc('rounds', '回合')}${info.hidden ? t(' + 隐秘核心') : ''}</span>
+      ${info.stageNote ? html`<span>${info.stageNote}</span>` : null}
+    </span>
+    <span class="pcard__stamp" aria-hidden="true"><${StampRing} /><span class="pcard__tick"><${Icon} name="check" /></span><span class="pcard__ok">${t('已选定')}</span></span>
+  </button>`;
+}
+
+/** 多人匹配's rules (the former lobby's 匹配说明, ui/matchmaking.js wording). */
+function MatchRules() {
+  const [open, setOpen] = useState(false);
+  return html`<${Button} variant="ghost" size="sm" icon="info" class="matchmaking__help" onClick=${() => setOpen(true)}>${t('匹配说明')}<//>
+    ${open ? html`<div class="modal hub-dialog" role="presentation" onMouseDown=${(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
+      <div class="modal__box hub-dialog__box brackets" role="dialog" aria-modal="true" aria-label=${t('多人匹配规则')}>
+        <div class="modal__stripe" aria-hidden="true"></div>
+        <header class="hub-dialog__head"><${MicroLabel} tone="mint">MATCHMAKING RULES<//>
+          <div class="hub-dialog__title-row"><h2 class="modal__title">${t('多人匹配规则')}</h2>
+            <button type="button" class="mm-modal__close" onClick=${() => setOpen(false)} aria-label=${t('关闭')}><${Icon} name="close" /></button></div>
+        </header>
+        <div class="hub-dialog__body">
+          <p class="modal__text">${t('{n} 名真人按相同人数模式和难度匹配，不自动补 AI；好友小队保持整队。', { n: MAX_SEATS })}</p>
+          <p class="modal__text">${t('集齐后有 30 秒确认时间，全部确认后直接开局。未完成确认者不自动回队。最多等待 10 分钟，可随时取消。')}</p>
+          <p class="modal__text">${t('好友小队沿用房间的实验性选项，单人匹配跟随所加入房间。四名单人组局时，复活和禁用共享卡池默认关闭。')}</p>
+        </div>
+      </div>
+    </div>` : null}`;
+}
+
+/**
+ * 多人匹配 (this fork's own entry, kept on top of the hub; the hub's own 选择模拟协议 is the Modal above): full screen, the picture of the selected
+ * difficulty at the left (ui/protocolScene.js, original), the difficulties down the right with the 已选定 stamp, the
+ * start button at the bottom right — 开始模拟 (solo: room.create) or 开始多人匹配 (queue.join). While queued the right
+ * column is the queue (QueueFlow: 搜寻中 / 确认入场 / 搜寻成功); ‹ returns to the hub and the queue keeps running.
+ * Comes up from black over the hub (`chained`: straight after 选择同盟方式, already black) and fades back out
+ * (ui/transitions.js); the picture is redrawn for each difficulty.
+ */
+function MatchSelect({ card, purpose = 'create', difficulty, onDifficulty, onClose, online, maint, busy, queue, onCreate, onQueue, chained = false }) {
+  const [leaving, leave] = useLeave(onClose);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.modal, .guide')) leave(); };
+    addEventListener('keydown', onKey);
+    document.body.classList.add('hub-dialog-open');
+    return () => { removeEventListener('keydown', onKey); document.body.classList.remove('hub-dialog-open'); };
+  }, []);
+  const fx = `${leaving ? ' is-leaving' : ''}${chained ? ' is-chained' : ''}`;
+  const match = purpose === 'match';
+  const roomMode = match ? 'coop' : card.id === 'solo' ? 'solo' : 'coop';
+  const queued = queueActive(queue);
+  const d = queued && DIFFICULTIES.includes(queue.difficulty) ? queue.difficulty : difficulty;
+  const info = difficultyInfo(roomMode, d);
+  const back = html`<button type="button" class="proto-back" onClick=${leave} title=${queued ? t('返回大厅（继续匹配）') : t('返回大厅 (Esc)')} aria-label=${t('返回大厅')}>
+    <${Icon} name="chevronLeft" /><span class="proto-back__home"><${Icon} name="rook" /></span>
+  </button>`;
+  if (match && queued) {
+    return html`<div class=${`proto proto--searching${fx}`} style=${`--d-color:${DIFFICULTY_COLORS[d]}`} data-difficulty=${d} role="dialog" aria-label=${t('多人匹配')}>
+      <div class="proto__bg" aria-hidden="true"></div>
+      <header class="proto-top">${back}
+        <div class="proto-title"><h2>${t('同盟集结')}</h2><span class="proto-title__mode">${t('多人匹配')}<i>PUBLIC MATCHMAKING</i></span></div>
+      </header>
+      <div class="proto-body">
+        <section class="proto-stage"><${ProtocolScene} key=${d} difficulty=${d} /></section>
+        <section class="proto-side proto-side--search">
+          <${QueueFlow} queue=${queue} difficulty=${d} online=${online} />
+        </section>
+      </div>
+    </div>`;
+  }
+  const label = maint ? t('维护中 · 暂停开局') : match ? t('开始多人匹配') : roomMode === 'solo' ? t('开始模拟') : t('创建同盟');
+  const hint = !online ? t('正在连接服务器…') : maint ? t('服务器即将维护，暂停开启新的模拟')
+    : match ? t('{n} 名真人 · 不自动补 AI · 集齐后 30 秒内确认入场', { n: MAX_SEATS })
+    : roomMode === 'solo' ? t('独自调配阵容，按自己的节奏开始模拟') : t('创建后可邀请好友或添加 AI 队友');
+  const working = busy === 'create' || busy === 'queue';
+  return html`<div class=${`proto${fx}`} style=${`--d-color:${DIFFICULTY_COLORS[d]}`} data-difficulty=${d} role="dialog" aria-label=${t('选择模拟协议')}>
+    <div class="proto__bg" aria-hidden="true"></div>
+    <header class="proto-top">${back}
+      <div class="proto-title">
+        <h2>${t('选择模拟协议')}</h2>
+        <span class="proto-title__mode">${t(card.name)}<i>${card.en}</i></span>
+      </div>
+    </header>
+    <div class="proto-body">
+      <section class="proto-stage">
+        <${ProtocolScene} key=${d} difficulty=${d} />
+        <div class="proto-brief">
+          <span class="proto-brief__code num">${info.code}</span>
+          <b class="proto-brief__name">${t(DIFFICULTY_NAMES[d])}</b>
+          <p>${t(card.desc, card.params)}</p>
+        </div>
+      </section>
+      <section class="proto-side">
+        <div class="proto-list" role="radiogroup" aria-label=${t('模拟难度')}>
+          ${DIFFICULTIES.map((x) => html`<${ProtoCard} key=${x} roomMode=${roomMode} difficulty=${x} selected=${d === x} onSelect=${onDifficulty} disabled=${working} />`)}
+        </div>
+        <div class="proto-foot">
+          ${match ? html`<div class="proto-opts"><span class="proto-mode-chip"><${Icon} name="search" />${t('多人匹配')}</span><${MatchRules} /></div>` : null}
+          <p class="proto-hint">${hint}</p>
+          <button type="button" class="proto-start" disabled=${!online || maint || working} onClick=${match ? onQueue : onCreate}>
+            <span class="proto-start__mark" aria-hidden="true"><span class="proto-start__rook"><i>[</i><${Icon} name="rook" /><i>]</i></span><small>STRONGHOLD<br />PROTOCOL</small></span>
+            <span class="proto-start__label">${working ? html`<${Spinner} size="sm" />` : null}${label}</span>
+            <span class="proto-start__deco" aria-hidden="true"></span>
+          </button>
+        </div>
+      </section>
+    </div>
+    ${busy === 'create' ? html`<${JoinLine} text=${roomMode === 'solo' ? t('正在进入模拟') : t('正在建立同盟')} />` : null}
+  </div>`;
+}
+
+// Mounted on demand. Keep optional announcement I/O here, outside the shared in-match UI data contract.
+function LobbyAnnouncements({ snapshot, onClose }) {
+  useData('announcements');
+  const status = data.status('announcements');
+  const ready = snapshot.value === data.get('announcements');
+  return html`<${AnnouncementBoard} status=${status === 'ready' && !ready ? 'loading' : status} value=${snapshot.value}
+    onRetry=${() => data.invalidate('announcements')} onClose=${onClose} />`;
 }
 
 /**
@@ -445,6 +676,118 @@ function SweepGlyph() {
   </svg>`;
 }
 
+/**
+ * The 个人名片 plate (the user's request of 2026-11-05: one's card is kept in the lobby, like one's profile, not edited on
+ * a room's seat card). Same plate as 干员调配 — no REPORT tag.
+ */
+function ProfilePlate({ onClick }) {
+  return html`<button type="button" class="hub-plate hub-plate--profile lobby-profile" data-testid="profile-open"
+      onClick=${onClick} title=${t('个人名片')} aria-label=${t('个人名片')}>
+    <span class="hub-plate__glyph" aria-hidden="true"><${Icon} name="user" /></span>
+    <span class="hub-plate__label">${t('个人名片')}</span>
+  </button>`;
+}
+
+/**
+ * 个人名片: one's own 博士代号, 头像, 名片干员 (立绘) and 名片底图 beside a vertical preview of the card a room's seat card
+ * shows (the 立绘 over the 底图). Every pick — the callsign too — is only a draft: 关闭 / backdrop / Esc drops it, 保存
+ * writes it to the stores the seat card and ui/loadoutSync.js read (ui/playerCard.js) and closes. 头像 and 名片干员 are
+ * separate fields: neither preview ever falls back to the other's operator.
+ */
+function ProfileDialog({ onClose, queued }) {
+  useData('chess', 'assets');
+  const me = useStore((s) => s.me, shallowEqual);
+  const card = useMyCard();
+  const chess = data.get('chess');
+  const m = data.get('assets');
+  const list = useMemo(() => cardOperators(data.list('chess')), [chess]);
+  const cards = useMemo(() => cardContext(list), [list]);
+  const localSkins = useStore((s) => s[SKINS_KEY], Object.is, skinsStore);
+  const [picking, setPicking] = useState(null); // 'op' | 'avatar' | 'bg'
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(() => ({
+    charId: card.charId, avatar: card.avatar, bg: card.bg, look: card.look, avatarLook: card.avatarLook,
+    name: me?.name || '',
+  }));
+  const nameRef = useRef(null);
+  useLayoutEffect(() => { if (renaming) nameRef.current?.select(); }, [renaming]);
+  const pick = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const op = draft.charId ? list.find((c) => c.charId === draft.charId) || null : null;
+  // the room's own picture (ui/seatArt.js seatOperator): '' shows the operator the seat card assigns by player id
+  const portraitOp = seatOperator({ playerId: me?.playerId, card: { charId: draft.charId } }, cards,
+    { myId: me?.playerId, myCard: draft.charId });
+  const portraitSkin = portraitOp
+    ? seatCardSkin({ playerId: me?.playerId }, portraitOp.chess.charId, { myId: me?.playerId, localSkins }) : null;
+  const portrait = portraitOp
+    ? (draft.look && lookUrl(m, portraitOp.chess.charId, draft.look, 'portrait')) || chessPortraitUrl(m, portraitOp.chess, { skin: portraitSkin })
+    : null;
+  const face = cardAvatarUrl(draft.avatar, m, draft.avatarLook);
+  const nc = namecardOf(draft.bg);
+  const save = () => {
+    if (queued && draft.name !== (me?.name || '')) {
+      toast(t('请先取消多人匹配再修改代号'), 'warn');
+      return;
+    }
+    if (draft.name !== (me?.name || '')) setNickname(sanitizeName(draft.name));
+    // 立绘 affects look and 头像 affects avatarLook: the two looks go AFTER the setters that clear them
+    setCardOperator(draft.charId);
+    setCardAvatar(draft.avatar);
+    setCardBackground(draft.bg);
+    setCardLook(draft.charId ? draft.look : '');
+    setAvatarLook(draft.avatar ? draft.avatarLook : '');
+    onClose();
+  };
+  const row = (label, value, action) => html`<div class="prof__row">
+    <span class="prof__k">${label}</span><span class="prof__v">${value}</span>
+    <${Button} variant="secondary" size="sm" class="prof__btn" onClick=${action.onClick} aria-label=${action.aria} data-testid=${action.test}>${t('修改')}<//>
+  </div>`;
+  return html`<${Modal} open=${true} class="prof" micro="DOCTOR CARD" title=${t('个人名片')} width="min(8.6rem, 94vw)" onClose=${onClose}
+      actions=${html`<${Button} variant="primary" onClick=${save} data-testid="profile-save">${t('保存')}<//>
+        <${Button} variant="ghost" onClick=${onClose}>${t('关闭')}<//>`}>
+    <div class="prof__body">
+      <div class=${`prof__preview${nc ? ' has-nc' : ''}`}>
+        <${NameCardLayer} card=${draft.bg} />
+        ${portrait ? html`<img class="prof__portrait" src=${portrait} alt="" draggable=${false} />`
+          : html`<span class="prof__portrait prof__portrait--none" aria-hidden="true"><${Icon} name="user" /></span>`}
+      </div>
+      <div class="prof__main">
+        <div class=${`prof__card${nc ? ' has-nc' : ''}`}>
+          <${NameCardLayer} card=${draft.bg} />
+          <div class="prof__head">
+            <${AvatarFrame} name=${draft.name || t('博士')} src=${face} size="md" self=${true} />
+            <span class="prof__who">
+              <b class="prof__name">${draft.name || t('博士')}</b>
+              <small class="prof__doc num">${me?.playerId != null ? `DOCTOR #${doctorNo(me.playerId)}` : 'DOCTOR'}</small>
+            </span>
+            <${TrophyBadge} count=${Number.isSafeInteger(card.trophies) ? card.trophies : null} />
+          </div>
+        </div>
+        <div class="prof__rows">
+          ${row(t('博士代号'), draft.name || t('博士'), { onClick: () => setRenaming(true), aria: t('修改博士代号'), test: 'profile-rename' })}
+          ${row(t('头像'), draft.avatar ? t('已选择') : t('默认'), { onClick: () => setPicking('avatar'), aria: t('更换头像'), test: 'profile-avatar' })}
+          ${row(t('名片干员'), op ? op.name : t('默认'), { onClick: () => setPicking('op'), aria: t('更换名片干员'), test: 'profile-op' })}
+          ${row(t('名片底图'), nc ? t(nc.name) : t('不使用底图'), { onClick: () => setPicking('bg'), aria: t('更换底图'), test: 'profile-bg' })}
+        </div>
+        <p class="prof__note"><${Icon} name="info" />${t('同盟里的博士都会看到这张名片；只保存在这台设备的浏览器里')}</p>
+      </div>
+    </div>
+    ${picking === 'op' ? html`<${CardOperatorPicker} current=${draft.charId} list=${list} m=${m} localSkins=${localSkins}
+      looks=${{ kind: 'portrait', current: draft.look, onLook: (look) => pick({ look }) }}
+      onPick=${(id) => { pick({ charId: id, look: '' }); setPicking(null); }} onClose=${() => setPicking(null)} />` : null}
+    ${picking === 'avatar' ? html`<${AvatarPicker} current=${draft.avatar} list=${list} m=${m}
+      looks=${{ kind: 'avatar', current: draft.avatarLook, onLook: (look) => pick({ avatarLook: look }) }}
+      onPick=${(id) => { pick({ avatar: id, avatarLook: '' }); if (!id || lookOptions(m, id, 'avatar').length < 2) setPicking(null); }} onClose=${() => setPicking(null)} />` : null}
+    ${picking === 'bg' ? html`<${NameCardPicker} current=${draft.bg} onPick=${(bg) => pick({ bg: namecardOf(bg) ? bg : '' })} onClose=${() => setPicking(null)} />` : null}
+    ${renaming ? html`<${Modal} open=${true} micro="CALLSIGN" title=${t('博士代号')} onClose=${() => setRenaming(false)} class="name-dialog"
+      actions=${html`<${Button} variant="ghost" onClick=${() => setRenaming(false)}>${t('取消')}<//>
+        <${Button} variant="primary" disabled=${!isValidName(draft.name)} onClick=${() => setRenaming(false)}>${t('确认')}<//>`}>
+      <${TextField} size="lg" icon="user" value=${draft.name} maxLength=${NAME_MAX_LEN}
+        placeholder=${t('输入你的代号（最多 {NAME_MAX_LEN} 字）', { NAME_MAX_LEN })}
+        inputRef=${nameRef} onInput=${(value) => pick({ name: value })} onEnter=${() => { if (isValidName(draft.name)) setRenaming(false); }} />
+    <//>` : null}
+  <//>`;
+}
+
 /** S.W.E.E.P.报告: a light plate with bracket marks; opens the report (screens/sweep.js). */
 function SweepPlate({ onClick }) {
   return html`<button type="button" class="hub-plate hub-plate--sweep lobby-sweep" onClick=${onClick} title=${t('S.W.E.E.P.报告：盟约、策略与敌方资料')}>
@@ -516,10 +859,16 @@ function BackPlate({ onClick, class: cls = '' }) {
  * trap, Esc, focus restored) styled to fill the screen. The lobby opens it for 独立模拟 only (a co-op room is created
  * from 选择同盟方式 and its difficulty changed in the room); the room (screens/room.js) opens it with `action` / `hint`
  * replacing the button's label and the hint (the host's 确认), or `readOnly` — the cards shown, not chosen, and no
- * button (the other doctors: the host chooses).
+ * button (the other doctors: the host chooses). `soloSetup` (the lobby's 独立模拟 only) adds the room footer's setting
+ * group centred at the bottom of the dialog — the version pill and the ⚙ (单人默认设置: 默认速度) — so the solo setup
+ * keeps the same 难度 / 版本 / ⚙ trio as the room, in the room footer's place; the room itself passes false (its footer
+ * already holds them).
  */
 export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, onCreate, busy, online, testMode, asTest, onTest, action = null, hint = null, readOnly = false,
-  difficulties = DIFFICULTIES, loading = false, failed = false, soloTime = null }) {
+  difficulties = DIFFICULTIES, loading = false, failed = false, soloTime = null, soloSetup = false }) {
+  // 单人设置 (the lobby's solo dialog only; SoloSetup has the hooks): the room footer's trio for solo, one entry each —
+  // the room (screens/room.js) passes soloSetup false, its own footer holds them
+  const setup = soloSetup && roomMode === 'solo' && !readOnly;
   const card = MODE_CARDS.find((c) => c.id === roomMode) || MODE_CARDS[0];
   const info = difficultyInfo(roomMode, difficulty);
   const label = action || (roomMode === 'solo' ? t('开始独立模拟') : t('创建同盟'));
@@ -579,6 +928,7 @@ export function ProtocolSelect({ roomMode, difficulty, onDifficulty, onClose, on
             </button>
           </div>`}
         </section>
+        ${setup ? html`<${SoloSetup} />` : null}
       </div>
     </div>
   <//>`;
@@ -653,10 +1003,75 @@ export function AllianceSelect({ onClose, onCreate, difficulty = 'FUNNY', code, 
   <//>`;
 }
 
+/**
+ * 单人默认设置 (the ⚙ beside the version chip): the account defaults a new 独立模拟 room starts from. A small panel above
+ * the ⚙, as the room's ⚙ (screens/room.js RoomOptions) — 默认速度 only: the room's own ⚙ holds the per-room 不限时 and
+ * speed, and a speed picked there is saved back here (room.js setSpeed). Closes on a click outside it or Esc, where a
+ * dialog above it keeps the priority.
+ */
+function SoloDefaults({ speed, onSpeed, onClose }) {
+  const hint = t('每局与每回合开始时按房规速度进行；60× 跳过只在本回合有效，下一回合需重新投票');
+  useEffect(() => {
+    const away = (e) => { if (!e.target.closest?.('.proto-setup, .modal')) onClose(); };
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.modal')) { e.stopPropagation(); onClose(); } };
+    addEventListener('pointerdown', away);
+    addEventListener('keydown', onKey);
+    return () => { removeEventListener('pointerdown', away); removeEventListener('keydown', onKey); };
+  }, []);
+  return html`<div class="proto-setup__pop" role="dialog" aria-label=${t('单人默认设置')}>
+    <h4>${t('单人默认设置')}</h4>
+    <div class="proto-setup__row" data-testid="solo-default-speed">
+      <span class="proto-setup__k">${t('默认速度')}</span>
+      <div class="proto-setup__ctl" role="group" aria-label=${t('默认速度')}>
+        ${[PLAYBACK.NORMAL, PLAYBACK.FAST].map((v) => html`<${Tooltip} key=${v} text=${hint}>
+          <button type="button" class=${`dpick__opt ailast__opt${speed === v ? ' is-active' : ''}`}
+            aria-pressed=${speed === v ? 'true' : 'false'} onClick=${() => onSpeed(v)}>${v}×</button>
+        <//>`)}
+      </div>
+    </div>
+  </div>`;
+}
+
+/**
+ * 单人设置 (centred at the bottom of 选择模拟协议, the lobby's solo dialog only): the version pill + ⚙ of the room footer's setting
+ * group, for the solo side. The version pill picks the version this browser creates rooms in (独立模拟 and 创建同盟 alike);
+ * the ⚙ opens 单人默认设置 — this account's 默认速度, saved as `lobby.soloSpeed` and applied once to a new solo room
+ * (screens/room.js); a speed changed in the room is saved back to the same pref.
+ */
+function SoloSetup() {
+  const versions = useStore((s) => s.versions);
+  const ver = useStore(lobbyVersion);
+  const serverDefault = useStore(serverDefaultVersion);
+  const [verOpen, setVerOpen] = useState(false);
+  const [gearOpen, setGearOpen] = useState(false);
+  const [speed, setSpeed] = useState(() => (loadPref('lobby.soloSpeed', PLAYBACK.FAST) === PLAYBACK.NORMAL ? PLAYBACK.NORMAL : PLAYBACK.FAST));
+  const pickSpeed = (v) => {
+    const next = v === PLAYBACK.NORMAL ? PLAYBACK.NORMAL : PLAYBACK.FAST;
+    setSpeed(next);
+    savePref('lobby.soloSpeed', next);
+  };
+  return html`<${Fragment}>
+    <div class="proto-setup" data-testid="solo-setup">
+      ${Array.isArray(versions) && versions.length ? html`<button type="button" class="proto-setup__ver" data-testid="solo-setup-version"
+        title=${t('游戏版本：{name}', { name: versionLabel(ver) })} aria-haspopup="dialog" onClick=${() => setVerOpen(true)}>
+        <${Icon} name="book" /><span>${versionLabel(ver)}</span></button>` : null}
+      <button type="button" class="proto-setup__gear" data-testid="solo-setup-gear" title=${t('单人默认设置')} aria-label=${t('单人默认设置')}
+        aria-haspopup="dialog" onClick=${() => setGearOpen(true)}><${Icon} name="gear" /></button>
+      ${gearOpen ? html`<${SoloDefaults} speed=${speed} onSpeed=${pickSpeed} onClose=${() => setGearOpen(false)} />` : null}
+    </div>
+    ${verOpen ? html`<${VersionPicker} mode="lobby" versions=${versions} current=${ver} serverDefault=${serverDefault}
+      onPick=${(id) => { setLobbyVersion(id); setVerOpen(false); }} onClose=${() => setVerOpen(false)} />` : null}
+  <//>`;
+}
+
 /** Lobby screen component. */
 export function LobbyScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
-  useData('config', 'assets');
+  const presence = useStore((s) => s.presence, shallowEqual);
+  useData('config', 'announcements', 'assets');
+  const queue = useStore((s) => s.queue);
+  const pendingJoin = useStore((s) => s.ui.pendingJoin);
+  const queued = queueActive(queue);
   const [difficulty, setDifficulty] = useState(() => {
     const d = loadPref('lobby.difficulty', 'FUNNY');
     return DIFFICULTIES.includes(d) ? d : 'FUNNY';
@@ -668,21 +1083,28 @@ export function LobbyScreen() {
   const [allyOpen, setAllyOpen] = useState(false);
   const [soloOpen, setSoloOpen] = useState(false);
   const [code, setCode] = useState('');
-  const [asTest, setAsTest] = useState(false);
-  const testMode = useStore((s) => s.testMode === true);
   const [busy, setBusy] = useState(null);
+  const [overlay, setOverlay] = useState(null); // 'announcements'
+  const [announcements, setAnnouncements] = useState({ value: null, revision: null });
+  const noticeStatus = data.status('announcements'), noticeValue = data.get('announcements');
   const [recent] = useState(recentRooms);
   const marks = loadPref('recentTestRooms', []);
   const [sweepOpen, setSweepOpen] = useState(false);
   const [achOpen, setAchOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [coarse] = useState(() => detectFeatures().coarse);
   const shortScreen = useMediaQuery(SHORT_SCREEN_QUERY);
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
   useEffect(() => () => { alive.current = false; }, []);
 
-  const online = conn.status === 'online';
+  const resourcesReady = useStore((s) => !s.session.preloadRequired || s.session.preloadReady);
+  const online = conn.status === 'online' && resourcesReady;
   const codeOk = CODE_RE.test(code);
+  // the server's maintenance switch (presence.state, server/lobby.js): no new rooms, matches or queue tickets
+  const maint = online && presence?.maintenance === true;
+  const banner = maint ? t('服务器即将维护，暂停开启新的模拟') : announcementBanner(noticeValue);
+
   // official versions (DESIGN §35.23): the lobby's version, the difficulties it offers and the one shown — the remembered
   // one, or the server's fallback when the version lacks it (the pref is only overwritten when the player picks)
   const versions = useStore((s) => s.versions);
@@ -698,7 +1120,34 @@ export function LobbyScreen() {
   const shownSolo = fallbackDifficulty(solo, difficulty);
   const shownCoop = fallbackDifficulty(coop, difficulty);
 
-  const openMode = (m) => { if (m === 'solo') setSoloOpen(true); else setAllyOpen(true); };
+  // 公告 (this fork's own feature): low-frequency checks exist only while the lobby is mounted, never during a match.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'hidden' || data.status('announcements') === 'loading') return;
+      if (data.status('announcements') === 'ready' || data.status('announcements') === 'missing') data.invalidate('announcements');
+    };
+    refresh();
+    const timer = setInterval(refresh, 60_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
+  }, []);
+  useEffect(() => {
+    if (noticeStatus !== 'ready') return undefined;
+    let current = true;
+    announcementRevision(noticeValue).then(revision => {
+      if (current && data.status('announcements') === 'ready' && data.get('announcements') === noticeValue) {
+        setAnnouncements({ value: noticeValue, revision });
+      }
+    });
+    return () => { current = false; };
+  }, [noticeStatus, noticeValue]);
+  useEffect(() => {
+    if (online && !queued && !busy && !pendingJoin && overlay == null && announcements.revision && !announcementDismissed(announcements.revision)) setOverlay('announcements');
+  }, [online, queued, busy, pendingJoin, overlay, announcements.revision]);
+  const closeAnnouncements = () => { dismissAnnouncement(announcements.revision); setOverlay(null); };
+  const unread = !!announcements.revision && !announcementDismissed(announcements.revision);
+
+  const openMode = (m) => { if (m === 'solo') openSolo(); else if (m === 'match') openMatch(); else openAlly(); };
   const pickDifficulty = (d) => { setDifficulty(d); savePref('lobby.difficulty', d); };
   const setSoloFreePref = (on) => { const next = on === true; setSoloFree(next); savePref('lobby.soloUnlimited', next); };
 
@@ -712,27 +1161,34 @@ export function LobbyScreen() {
       if (alive.current) setBusy(null);
     }
   };
+  // 多人匹配 (this fork's own entry): its own sheet; 独立模拟 and 同盟模拟 use the hub's dialogs
+  const [sheet, setSheet] = useState(null);                // null | 'match'
+  const [sheetChained, setSheetChained] = useState(false); // opened from 选择同盟方式: no darkening of the hub between
+  const [asTest, setAsTest] = useState(false);
+  const testMode = useStore((s) => s.testMode === true);
+  // an offer while the hub shows: 多人匹配 comes up with 确认入场 (the 30-second window must not go unseen)
+  useEffect(() => { if (queue?.state === 'offered' && sheet !== 'match') { setAllyOpen(false); setSheetChained(false); setSheet('match'); } }, [queue?.state]);
   // 独立模拟: at the difficulty picked on 选择模拟协议; 创建同盟: at the remembered one, changed in the room by the host
   // (`version`: the lobby's, only when welcome.versions is present — protocol §4; omitted when the server offers 第二期下半 alone)
   const create = (mode) => run('create', () => net.request('room.create', {
     mode, difficulty: mode === 'solo' ? shownSolo : shownCoop, ...(testMode && asTest ? { test: true } : {}), ...(versions ? { version } : {}),
     ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}),
   }));
+  const queueMatch = () => run('queue', () => net.request('queue.join', { difficulty }));
   const join = (c = code) => {
-    // `onClick=${join}` hands the click EVENT as the first argument, and a default parameter only applies to
-    // `undefined` — codeArg keeps an event target out of the key and falls back to the input field
+    if (queued) { toast(t('请先取消多人匹配，再加入好友同盟'), 'warn'); return; }
+    // Click callbacks may pass an event; only an explicit string overrides the typed key.
     const k = codeArg(c, code);
     if (!k) { toast(t('同盟密钥为 {ROOM_CODE_LEN} 位字母或数字', { ROOM_CODE_LEN }), 'warn'); return; }
-    run('join', () => joinKnown('room.join', k));
+    run('join', () => joinRoom(k));
   };
   // a spectator seat: no player seat taken, nothing to do but watch (also a match already running)
   const spectate = (c = code) => {
-    // same guard as join: `onClick=${spectate}` passes the click event, not a code
+    if (queued) { toast(t('请先取消多人匹配，再进入观战席'), 'warn'); return; }
     const k = codeArg(c, code);
     if (!k) { toast(t('同盟密钥为 {ROOM_CODE_LEN} 位字母或数字', { ROOM_CODE_LEN }), 'warn'); return; }
-    run('spectate', () => joinKnown('room.spectate', k).catch((err) => {
-      // Clearer than the bare ERR_TEXT: the usual cause is a code that is not the host's (a remembered one from an
-      // earlier room, or another machine's) — the server can only answer "no such room".
+    run('spectate', () => net.request('room.spectate', { code: k }).catch((err) => {
+      // Keep a missing or already-joined room distinct from a generic network error.
       if (err?.code === ERR.ROOM_NOT_FOUND) {
         toast(t('没有找到密钥 {k} 对应的同盟：请和房主核对密钥（同盟结束后密钥即失效）', { k }), 'warn');
         return;
@@ -744,29 +1200,31 @@ export function LobbyScreen() {
       throw err;
     }));
   };
-  const backToTitle = () => {
-    identity.setEntered(false);
-    store.set((s) => ({ session: { ...s.session, entered: false } }));
-  };
+  const openSolo = () => { if (queued) { toast(t('请先取消多人匹配'), 'warn'); return; } savePref('lobby.mode', 'solo'); setSoloOpen(true); };
+  const openAlly = () => { savePref('lobby.mode', 'coop'); setAllyOpen(true); };
+  const openMatch = () => { savePref('lobby.mode', 'match'); setSheetChained(allyOpen); setAllyOpen(false); setSheet('match'); };
+  const sheetCard = MODE_CARDS.find((c) => c.id === sheet) || MODE_CARDS[0];
+  const cancelling = useStore((s) => s.ui.queueCancel);
 
   return html`<div class="screen lobby-screen lobby-hub">
     <${HubBackdrop} />
     <header class="topbar">
       <div class="topbar__left">
-        <${Button} variant="ghost" size="sm" icon="chevronLeft" onClick=${backToTitle} title=${t('返回标题')}>${t('返回')}<//>
-        <${PingPill} ms=${conn.ping} online=${online} />
-        <span class="topbar__sep" aria-hidden="true"></span>
         <div class="topbar__tools">
           <${NoticesButton} />
           <${SettingsButton} class="lobby-settings" variant="secondary" square=${true} />
           <${GuideButton} class="lobby-guide" variant="secondary" square=${true} />
           <${LobbyMediaButton} />
+          <${HubFullscreenButton} />
           <${PwaInstallButton} class="lobby-pwa" square=${true} />
         </div>
       </div>
       <div class="topbar__right">
         <${VersionSwitch} />
         <${ResumeMatchButton} />
+        <span class="hub-online" title=${t('按已连接的玩家会话计数，不含机器人、离线保留局和未进入的连接；不等于去重自然人数。')}>
+          <span class="online-pill__dot"></span>${Number.isInteger(presence?.online) && conn.status === 'online'
+            ? html`<span class="num">${presence.online}</span><span class="online-word">${t('名博士在线')}</span>` : html`<span>${t('在线人数 —')}</span>`}</span>
       </div>
     </header>
 
@@ -776,21 +1234,35 @@ export function LobbyScreen() {
         <${AchievementCard} onOpen=${() => setAchOpen(true)} />
         <${HubTile} icon="key" label=${t('密钥加入')} en="JOIN WITH KEY" class="hub-tile--key" onClick=${() => setAllyOpen(true)} />
         <${TipsPanel} />
+        <div class="hub-contact"><${SiteBoards} /></div>
       </aside>
       <aside class="hub-right">
-        <${SweepPlate} onClick=${() => setSweepOpen(true)} />
-        <${LoadoutButton} from="lobby" size="lg" class="hub-plate hub-plate--loadout lobby-loadout" label=${t('干员调配')} />
-        <${AchievementPlate} onOpen=${() => setAchOpen(true)} />
+        <${NoticeCard} value=${noticeValue} status=${noticeStatus} unread=${unread} onOpen=${() => setOverlay('announcements')} />
+        <div class="hub-right__plates">
+          <${ProfilePlate} onClick=${() => setProfileOpen(true)} />
+          <${SweepPlate} onClick=${() => setSweepOpen(true)} />
+          <${LoadoutButton} from="lobby" size="lg" class="hub-plate hub-plate--loadout lobby-loadout" label=${t('干员调配')} />
+          <${AchievementPlate} onOpen=${() => setAchOpen(true)} />
+        </div>
       </aside>
       <section class="hub-entries" aria-label=${t('模拟方式')}>
-        ${MODE_CARDS.map((c) => {
-          const timedCard = c.id === 'solo';
-          const timePoint = timedCard ? soloTimeMsgid('card', { timed: soloTimed, unlimited: soloFree }) : '';
-          const timeShort = timedCard ? soloTimeMsgid('short', { timed: soloTimed, unlimited: soloFree }) : '';
-          return html`<${HubEntry} key=${c.id} card=${c} onOpen=${openMode} timePoint=${timePoint || null} timeShort=${timeShort || null} />`;
-        })}
+        ${queued && sheet !== 'match' ? html`<div class="matchmaking-hud brackets hub-searching" role="status">
+            <div class="matchmaking-hud__info">
+              <${Spinner} size="sm" />
+              <span class="matchmaking-hud__text">${queue.state === 'offered' ? t('队友已集结，请确认入场') : t('正在匹配同盟')} · ${t(DIFFICULTY_NAMES[queue.difficulty] || '')}</span>
+            </div>
+            <${Button} variant="secondary" size="md" onClick=${openMatch}>${t('查看')}<//>
+            <${Button} variant="danger" size="md" loading=${cancelling?.ticketId === queue.ticketId && cancelling?.status !== 'idle' && cancelling?.status !== 'failed'}
+              onClick=${() => queueCancellation.cancel(queue.ticketId)}>${t('取消匹配')}<//>
+          </div>` : null}
+        ${banner ? html`<div class="hub-maint" role="status">${banner}</div>` : null}
+        ${MODE_CARDS.map((c) => html`<${HubEntry} key=${c.id} card=${c} onOpen=${openMode} />`)}
       </section>
     </main>
+
+    ${sheet === 'match' ? html`<${MatchSelect} card=${sheetCard} purpose="match" difficulty=${difficulty}
+      onDifficulty=${pickDifficulty} onClose=${() => setSheet(null)} online=${online} maint=${maint} busy=${busy} queue=${queue}
+      onCreate=${() => create('coop')} onQueue=${queueMatch} chained=${sheetChained} />` : null}
 
     ${allyOpen ? html`<${AllianceSelect} onClose=${() => setAllyOpen(false)} onCreate=${() => create('coop')} difficulty=${shownCoop}
       code=${code} onCode=${(v) => setCode(normalizeCode(v))} codeOk=${codeOk} online=${online} busy=${busy}
@@ -799,8 +1271,11 @@ export function LobbyScreen() {
     ${soloOpen ? html`<${ProtocolSelect} roomMode="solo" difficulty=${shownSolo} onDifficulty=${pickDifficulty}
       onClose=${() => setSoloOpen(false)} onCreate=${() => create('solo')} busy=${busy} online=${online}
       testMode=${testMode} asTest=${asTest} onTest=${setAsTest} difficulties=${solo} loading=${versionLoading} failed=${versionFailed}
-      soloTime=${soloTimed === true ? { on: soloFree, onToggle: setSoloFreePref } : null} />` : null}
+      soloTime=${soloTimed === true ? { on: soloFree, onToggle: setSoloFreePref } : null} soloSetup=${true} />` : null}
+    ${overlay === 'announcements' ? html`<${LobbyAnnouncements} snapshot=${announcements} onClose=${closeAnnouncements} />` : null}
     ${sweepOpen ? html`<${SweepReport} onClose=${() => setSweepOpen(false)} />` : null}
     ${achOpen ? html`<${AchievementDialog} onClose=${() => setAchOpen(false)} />` : null}
+    ${profileOpen ? html`<${ProfileDialog} onClose=${() => setProfileOpen(false)} queued=${queued} />` : null}
   </div>`;
 }
+

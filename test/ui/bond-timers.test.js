@@ -44,8 +44,9 @@ test('card labels Sargon next stack expiry and each Siracusa effect separately; 
 test('settings toggle, explanatory hint and all effect labels are translated in every shipped pack', () => {
   const src = read('public/js/ui/settings.js');
   assert.match(src, /value=\$\{s\.bondTimers\} onChange=\$\{\(v\) => updateSettings\(\{ bondTimers: v \}\)\}/);
+  // this fork does not offer the 作战统计 toggle (settings.js: PR #618's switch was merged into ui/damageBoard.js),
+  // so only the order against the toggle that is still shipped is guarded here
   assert.ok(src.indexOf('value=${s.bondTimers}') > src.indexOf('value=${s.ammoEnergyCount}'));
-  assert.ok(src.indexOf('value=${s.bondTimers}') < src.indexOf('value=${s.combatMetrics}'));
   const ids = [...BOND_TIMERS.map(d => d.label), '盟约效果剩余时间', '{n} 层 · 下一层 {s} 秒', '剩余 {s} 秒',
     '在选中单位的详情中显示叙拉古、萨尔贡效果的剩余时间；萨尔贡显示层数与下一层到期时间。官方界面没有这些数字。'];
   for (const lang of ['en', 'ja', 'ko', 'zh-TW']) {

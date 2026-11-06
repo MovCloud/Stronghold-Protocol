@@ -2,7 +2,7 @@
 // Chrome). Opt-in: SP_E2E=1 node --test test/ui/loadout.e2e.test.js
 //
 // Desktop 1920×1080: lobby → 干员调配 → search 隐现 → S1 + 不装备 (persisted in localStorage, synced with room.loadout)
-// → create a 独立模拟 room → start → the briefing's m.private.loadout carries the choice, the briefing entry reopens the
+// → create a 独立狩猎 room → start → the briefing's m.private.loadout carries the choice, the briefing entry reopens the
 // overlay, the solo briefing shows no countdown value from the server (deadline 0) → 准备就绪 closes the overlay
 // (auto-close when INFO_CHECK ends). Phone 844×390 (touch): the roster → tap a card → the detail slides over → back.
 // Module cards: the official module type icons from the local-client art (data/local-assets.json groups.module, optional)
@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { settled } from '../e2e/client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -23,6 +24,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const INSIDE = 'chess_char_1_01_a';
 /** 隐现's operator: the stored loadout is by operator (sp.pref.loadout v2, DESIGN §35.23), what is sent by chess id. */
 const INSIDE_CHAR = 'char_498_inside';
+const ROSTER_SIZE = Object.values(JSON.parse(readFileSync(path.join(ROOT, 'data/chess.json'), 'utf8'))).filter(c => c.visible && !c.isGolden).length;
 /** Whether this machine has the extracted module type icons (local-client art is optional, DESIGN §13). */
 function localModuleIcons() {
   try { return !!JSON.parse(readFileSync(path.join(ROOT, 'data/local-assets.json'), 'utf8'))?.groups?.module; } catch { return false; }
@@ -45,19 +47,27 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
 
   async function open({ w = 1920, h = 1080, touch = false } = {}) {
     const ctx = await browser.createBrowserContext();
-    const page = await ctx.newPage();
+    const page = await ctx.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids
     await page.setViewport({ width: w, height: h, hasTouch: touch, isMobile: touch, deviceScaleFactor: 1 });
     const problems = [];
-    page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
+    // Optional Google fonts can be unavailable in an offline/cloud test; local fonts remain exercised.
+    page.on('console', (m) => { if (m.type() === 'error' && !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(m.location()?.url || '')) problems.push(`console: ${m.text()}`); });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
     page.on('requestfailed', (r) => { if (!/fonts\.(googleapis|gstatic)/.test(r.url())) problems.push(`requestfailed: ${r.url()} ${r.failure()?.errorText}`); });
     page.on('response', (r) => { if (r.status() >= 400) problems.push(`http ${r.status()}: ${r.url()}`); });
     await page.evaluateOnNewDocument(() => {
       localStorage.setItem('sp.name', '调配测试');
       sessionStorage.setItem('sp.entered', '1');
+      // the list view these tests drive (the card view of 2026-10-14 is the overlay's own default)
+      if (localStorage.getItem('sp.pref.loadout.view') == null) localStorage.setItem('sp.pref.loadout.view', '"list"');
     });
     await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => globalThis.__SP__?.store.get().connection.status === 'online' && !!document.querySelector('.lobby-screen'), { timeout: 30000 });
+    // the lobby opens its 公告板 by itself while a notice is unread: closed, so the clicks below reach the lobby
+    if (await page.waitForSelector('.announcement-board', { visible: true, timeout: 2500 }).catch(() => null)) {
+      await page.click('.announcement-board .modal__actions button');
+      await page.waitForSelector('.announcement-board', { hidden: true, timeout: 10000 });
+    }
     return { ctx, page, problems };
   }
   const st = (page) => page.evaluate(() => {
@@ -114,7 +124,7 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     const { ctx, page, problems } = await open();
     await clickSel(page, '.lobby-screen [data-testid="loadout-open"]');
     await page.waitForSelector('.lo .lo-card', { visible: true, timeout: 15000 });
-    assert.equal(await page.$$eval('.lo-card', (els) => els.length), 112, 'every visible chess');
+    assert.equal(await page.$$eval('.lo-card', (els) => els.length), ROSTER_SIZE, 'every visible chess, including the added operators');
     await assertBgLayer(page);
     await page.screenshot({ path: path.join(OUT, 'loadout-desktop.png') });
     // a click on the row's own area picks that operator too, and the detail follows
@@ -246,9 +256,12 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     assert.equal(box.inside, false, 'a sibling of .lo, so `.lo > *` needs no exception for it');
     assert.ok(Math.abs(box.y + box.h / 2 - box.vh / 2) < 2, `centred vertically (${JSON.stringify(box)})`);
     const payload = JSON.parse(await page.$eval('[data-testid="loadout-io-text"]', (t) => t.value));
-    assert.equal(payload.kind, 'stronghold.loadout');
+    assert.equal(payload.kind, 'stronghold.operator-preset');
     assert.equal(payload.v, 2, 'v2: by operator (DESIGN §35.23)');
     assert.deepEqual(payload.byChar, stored.byChar, 'what is exported is what is stored');
+    assert.deepEqual(payload.notOwned, []);
+    assert.deepEqual(payload.diy, {});
+    assert.deepEqual(payload.skins, {}, 'the shared export includes all explicit sections');
     await page.screenshot({ path: path.join(OUT, 'loadout-export.png') });
     await page.evaluate(() => [...document.querySelectorAll('.modal__actions .btn')].find((b) => b.textContent.trim() === '关闭').click());
     await page.waitForFunction(() => !document.querySelector('.modal'), { timeout: 3000 });
@@ -278,7 +291,7 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     // a payload this build cannot use at all (every chess unknown) must leave the loadout alone too (review fix)
     await page.$eval('[data-testid="loadout-io-text"]', (t) => { t.value = '{"v":1,"entries":{"chess_not_here":{"skill":0}}}'; t.dispatchEvent(new Event('input', { bubbles: true })); });
     await page.click('[data-testid="loadout-io-apply"]');
-    await page.waitForFunction(() => /没有可用的调配/.test(document.body.textContent || ''), { timeout: 5000 });
+    await page.waitForFunction(() => /当前版本不可用的配置/.test(document.body.textContent || ''), { timeout: 5000 });
     assert.ok(await page.$('.modal'), 'the dialog stays open for the player to fix the payload');
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('sp.pref.loadout')).byChar), stored.byChar, 'an import that keeps nothing changes nothing');
     assert.deepEqual(problems, []);
@@ -291,6 +304,9 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     await waitSt(page, (s) => !!s.room, 'room');
     await page.evaluate(() => globalThis.__SP__.net.request('room.start', {}));
     await waitSt(page, (s) => s.phase === 'INFO_CHECK', 'briefing');
+    // 准备就绪 below is pressed at once after the overlay closes: its own entrance is over by then (a click during it
+    // falls through)
+    await settled(page, '.brief-go');
     await clickSel(page, '.brief [data-testid="loadout-open"]');
     await page.waitForSelector('.lo .lo-card', { visible: true, timeout: 15000 });
     await page.type('.lo-search input', '隐现');
@@ -328,33 +344,25 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     await page.waitForSelector('.lo-top .lo-deadline', { visible: true, timeout: 3000 });
     assert.match(await page.$eval('.lo-top .lo-deadline', (el) => el.getAttribute('aria-label')), /剩余\d+秒/);
     // review: the two new 导出 / 导入 buttons must fit next to the countdown on a narrow phone in landscape (667×375).
-    // 0.2.0: the third tab (自选编队) ran the right column into the tabs there, at 844×390, and in English at every size.
-    // Only the size changes (toggling isMobile / hasTouch would make puppeteer reload the page).
-    const switchLang = async (lang) => {
-      await page.evaluate((l) => import('/js/ui/lang.js').then((m) => m.switchLang(l)), lang);
-      await page.waitForFunction((l) => document.documentElement.lang.startsWith(l) && /[一-鿿]/.test(document.querySelector('.lo-tabs').textContent) === (l === 'zh'), { timeout: 5000 }, lang);
-    };
-    for (const [lang, sizes] of [['zh', [[667, 375], [844, 390]]], ['en', [[667, 375], [844, 390], [1920, 1080]]]]) {
-      if (lang !== 'zh') await switchLang(lang);
-      for (const [w, h] of sizes) {
-        await page.setViewport({ width: w, height: h });
-        const bar = await page.evaluate(() => {
-          const top = document.querySelector('.lo-top');
-          const tabs = document.querySelector('.lo-tabs');
-          const right = document.querySelector('.lo-top__right').getBoundingClientRect();
-          const center = document.querySelector('.lo-top__center').getBoundingClientRect();
-          const buttons = [...document.querySelectorAll('.lo-top__right .btn')].map((b) => Math.round(b.getBoundingClientRect().right));
-          return { overflow: top.scrollWidth - top.clientWidth, overlap: right.left < center.right, offscreen: right.right > innerWidth, tabsCut: tabs.scrollWidth - tabs.clientWidth, buttons };
-        });
-        const at = `${lang} ${w}×${h} ${JSON.stringify(bar)}`;
-        assert.ok(bar.overflow <= 0, `the top bar does not scroll sideways (${at})`);
-        assert.equal(bar.overlap, false, `the right column does not run into the title (${at})`);
-        assert.equal(bar.offscreen, false, `every button ends inside the viewport (${at})`);
-        assert.ok(bar.tabsCut <= 0, `the three tabs show in full (${at})`);
-        if (w === 667) await page.screenshot({ path: path.join(OUT, `loadout-narrow-toolbar${lang === 'zh' ? '' : `-${lang}`}.png`) });
-      }
+    // 0.2.0: the third tab (自选编队) ran the right column into the tabs there, at 844×390. Only the size changes
+    // (toggling isMobile / hasTouch would make puppeteer reload the page).
+    for (const [w, h] of [[667, 375], [844, 390], [1920, 1080]]) {
+      await page.setViewport({ width: w, height: h });
+      const bar = await page.evaluate(() => {
+        const top = document.querySelector('.lo-top');
+        const tabs = document.querySelector('.lo-tabs');
+        const right = document.querySelector('.lo-top__right').getBoundingClientRect();
+        const center = document.querySelector('.lo-top__center').getBoundingClientRect();
+        const buttons = [...document.querySelectorAll('.lo-top__right .btn')].map((b) => Math.round(b.getBoundingClientRect().right));
+        return { overflow: top.scrollWidth - top.clientWidth, overlap: right.left < center.right, offscreen: right.right > innerWidth, tabsCut: tabs.scrollWidth - tabs.clientWidth, buttons };
+      });
+      const at = `${w}×${h} ${JSON.stringify(bar)}`;
+      assert.ok(bar.overflow <= 0, `the top bar does not scroll sideways (${at})`);
+      assert.equal(bar.overlap, false, `the right column does not run into the title (${at})`);
+      assert.equal(bar.offscreen, false, `every button ends inside the viewport (${at})`);
+      assert.ok(bar.tabsCut <= 0, `the three tabs show in full (${at})`);
+      if (w === 667) await page.screenshot({ path: path.join(OUT, 'loadout-narrow-toolbar.png') });
     }
-    await switchLang('zh');
     await page.setViewport({ width: 1920, height: 1080 });
     await page.type('.lo-search input', '隐现');
     await page.waitForFunction(() => document.querySelectorAll('.lo-card').length === 1, { timeout: 5000 });
@@ -499,8 +507,8 @@ describe('干员调配 overlay (real server, headless Chrome)', { skip: !ENABLED
     await clickSel(page, '.lobby-screen [data-testid="loadout-open"]');
     await page.waitForSelector('.lo .lo-card', { visible: true, timeout: 15000 });
     await pickChess(page, '隐现');
-    // between the skills and the modules, 精锐 shown first: the default module's numbers, the 3 × 4 range
-    assert.deepEqual(await page.$$eval('.lo-detail__body > .lo-sec > header h3', (els) => els.map((e) => e.firstChild.textContent)), ['潜能与练度', '技能', '局内数值', '模组']);
+    // between the skills and the modules (外观, the skins, last), 精锐 shown first: the default module's numbers, the 3 × 4 range
+    assert.deepEqual(await page.$$eval('.lo-detail__body > .lo-sec > header h3', (els) => els.map((e) => e.firstChild.textContent)), ['潜能与练度', '技能', '局内数值', '模组', '外观']);
     const stats = await shownStats(page);
     assert.deepEqual(Object.keys(stats), ['生命上限', '攻击', '防御', '法术抗性', '攻击间隔', '阻挡数', '部署费用', '再部署']);
     assert.equal(stats['生命上限'], fmt((golden.statsBase.maxHp + mod.attr.maxHp) * T4.max_hp));

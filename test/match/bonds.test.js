@@ -74,10 +74,11 @@ test('actual normal/elite 缪尔赛思 activates every available core bond at tw
     assert.equal(two.length, 2, id);
     for (const mu of ['chess_char_6_11_a', 'chess_char_6_11_b']) {
       const s = computeBonds(gd, state({ board: [piece(mu), ...two.map(id => piece(id))] }));
-      assert.equal(s[id].count, 3, `${id}: two operators plus ${mu}`); assert.ok(s[id].active);
+      const expected = 3 + Number(gd.chess(mu).bonds.includes(id)); // her native faction also counts normally
+      assert.equal(s[id].count, expected, `${id}: two operators plus ${mu}`); assert.ok(s[id].active);
     }
     const dup = computeBonds(gd, state({ board: [piece('chess_char_6_11_a'), piece('chess_char_6_11_b'), ...two.map(id => piece(id))] }));
-    assert.equal(dup[id].count, 3, `${id}: duplicate harmony is not +2`);
+    assert.equal(dup[id].count, 3 + Number(gd.chess('chess_char_6_11_a').bonds.includes(id)), `${id}: duplicate harmony is not +2`);
     const hand = computeBonds(gd, state({ board: two.map(id => piece(id)), hand: [piece('chess_char_6_11_a')] }));
     assert.equal(hand[id].count, 2, `${id}: harmony needs deployment`);
   }
@@ -105,7 +106,7 @@ test('助力: upper tier counts operators differing in name OR elite state', () 
   assert.equal(s.deputShip.tier, 2, 'normal + elite count as different for the 3-member tier');
 });
 
-test('layers persist on every bond; Σ activated layers only counts active bonds; FUNNY inactive bonds omitted', () => {
+test('layers persist on every bond; Σ activated layers only counts active bonds; FUNNY mode bans do not disable activation', () => {
   const [a, b, c] = members('yanShip', 3);
   const s = computeBonds(gd, state({ board: [piece(a), piece(b), piece(c)], layers: { yanShip: 40, egirShip: 100 } }));
   assert.equal(s.yanShip.layers, 40);
@@ -113,8 +114,8 @@ test('layers persist on every bond; Σ activated layers only counts active bonds
   assert.equal(activatedLayers(s), 40);
   const list = bondList(gd, s);
   assert.equal(list[0].bondId, 'yanShip', 'active first');
-  assert.ok(list.some((x) => x.bondId === 'egirShip' && !x.active), 'inactive bonds with layers are listed');
+  assert.ok(!list.some((x) => x.bondId === 'egirShip'), 'a bond whose count is 0 leaves the strip even with layers kept');
   const funny = new GameData(DATA, 'mode_multi_funny');
   const f = computeBonds(funny, state({ board: [piece(a)] }));
-  for (const off of DATA.config.modes.mode_multi_funny.inactiveBondIds) assert.ok(!(off in f), `${off} omitted in FUNNY`);
+  for (const off of DATA.config.modes.mode_multi_funny.inactiveBondIds) assert.ok(off in f, `${off} can activate in FUNNY`);
 });

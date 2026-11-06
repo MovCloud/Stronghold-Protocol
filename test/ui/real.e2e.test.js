@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { aimedDrag } from '../e2e/client.mjs';
+import { aimedDrag, settled } from '../e2e/client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -45,7 +45,7 @@ class Client {
   async open(query = '') {
     this.browser = await this.puppeteer.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS, protocolTimeout: 60000 });
     const [first] = await this.browser.pages();
-    const page = first || await this.browser.newPage();
+    const page = first || await this.browser.newPage(); await page.evaluateOnNewDocument(() => { try { if (localStorage.getItem('sp.pref.lang') == null) localStorage.setItem('sp.pref.lang', JSON.stringify('zh')); if (localStorage.getItem('sp.pref.room.findMates') == null) localStorage.setItem('sp.pref.room.findMates', 'false'); } catch { /* opaque origin */ } }); // (fork) the checks read Chinese msgids; 搜寻队友 off so the host gets 开始模拟
     this.page = page;
     await page.setViewport({ width: this.w, height: this.h });
     page.on('console', (m) => { if (m.type() === 'error') this.problems.push(`console: ${m.text()}`); });
@@ -53,9 +53,9 @@ class Client {
     page.on('requestfailed', (r) => { if (!/fonts\.(googleapis|gstatic)/.test(r.url())) this.problems.push(`requestfailed: ${r.url()} ${r.failure()?.errorText}`); });
     page.on('response', (r) => {
       if (r.status() >= 400) this.problems.push(`http ${r.status()}: ${r.url()}`);
-      // the served manifest's content-hashed URLs (docs/ASSETS.md): Spine files, audio through /media/~<hash>/, the rest
+      // this fork's release-versioned URLs (docs/development/ASSETS.md): Spine files, audio through /_v/<tag>/media/…, the rest
       const p = new URL(r.url()).pathname;
-      if (r.status() === 200 && /^\/(?:assets|media)\/~[0-9a-f]{16}\//.test(p)) {
+      if (r.status() === 200 && /^\/_v\/[0-9a-f]{16}\/(?:assets|media)\//.test(p)) {
         this.hashed[/\.(?:skel|atlas)$|\/spine\//.test(p) ? 'spine' : p.startsWith('/media/') ? 'media' : 'other']++;
       }
     });
@@ -133,13 +133,62 @@ class Client {
     this.shots += 1;
   }
 
-  /** Title → lobby with a callsign. */
+  /** The lobby with a callsign: no title screen since 2026-10-15 — the remembered name, then a reload (boot says hello). */
   async enter(name) {
-    await this.page.waitForSelector('.title-login input', { timeout: 20000 });
-    await this.click('.title-login input'); // fresh profile per client: the field starts empty
-    await this.page.keyboard.type(name);
-    await this.click('.title-login button', '开始');
+    await this.page.waitForFunction(() => !!globalThis.__SP__, { timeout: 20000 });
+    await this.page.evaluate((n) => localStorage.setItem('sp.name', n), name);
+    await this.page.reload({ waitUntil: 'domcontentloaded' });
+    await this.page.waitForFunction((n) => globalThis.__SP__?.net.status === 'online' && globalThis.__SP__.net.helloName === n,
+      { timeout: 30000 }, name);
   }
+
+  // ---- hub and room (the lobby / room design of 2026-10-14; as test/e2e/client.mjs) ---------------------------------
+
+  /**
+   * Closes the lobby's 公告板 when it opened by itself — over the hub, once the session is online and the notices are
+   * loaded (screens/lobby.js); no board is a no-op.
+   */
+  async dismissBoard(timeout = 2500) {
+    await this.page.waitForFunction(() => ['ready', 'missing'].includes(globalThis.__SP__?.data.status('announcements')), { timeout: 15000 });
+    const board = await this.page.waitForSelector('.announcement-board', { visible: true, timeout }).catch(() => null);
+    if (!board) return false;
+    await this.click('.announcement-board .modal__actions button');
+    await this.page.waitForSelector('.announcement-board', { hidden: true, timeout: 10000 });
+    return true;
+  }
+
+  /** Hub 独立模拟 → 选择模拟协议: the card named `difficulty` and 开始模拟 (room.create). */
+  async createSolo(difficulty = '标准模拟') {
+    await this.dismissBoard();
+    await this.click('.hub-entry', '独立模拟');
+    await this.page.waitForSelector('.proto .proto-list', { visible: true, timeout: 15000 });
+    await this.click('.proto .pcard__name', difficulty);
+    await this.click('.proto .proto-start', '开始模拟');
+  }
+
+  /** Hub 同盟模拟 → 选择同盟方式 → 创建同盟, then the room's difficulty when given. Resolves with the alliance key. */
+  async createCoop(difficulty = null) {
+    await this.dismissBoard();
+    await this.click('.hub-entry', '同盟模拟');
+    await this.page.waitForSelector('.ally', { visible: true, timeout: 15000 });
+    await this.click('.ally-card--create');
+    const { room } = await this.waitFor((s) => !!s.room?.code, 'room created', 20000);
+    await this.page.waitForSelector('.rs', { visible: true, timeout: 15000 });
+    if (difficulty) {
+      await this.click('.rs-pill__diff');
+      await this.page.waitForSelector('.modal__box.proto', { visible: true, timeout: 10000 }); // the fork's .rs-proto overlay is gone: the pill opens the project Modal
+      await this.click('.modal__box.proto .pcard__name', difficulty);
+      await this.click('.modal__box.proto .proto-start', '确认');
+      await this.page.waitForSelector('.modal__box.proto', { hidden: true, timeout: 10000 });
+    }
+    return room.code;
+  }
+
+  /** Room: 开始模拟 (the host). */
+  roomStart(opts) { return this.click('.rs-go', '开始模拟', opts); }
+
+  /** Room: 准备就绪 (a teammate). */
+  roomReady(opts) { return this.click('.rs-go', '准备就绪', opts); }
 
   // ---- field view helpers (render engine debug hooks) ------------------------------------------------------------
 
@@ -155,10 +204,13 @@ class Client {
       const x = r.left + r.width / 2, y = r.top + r.height * 0.72;
       return x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight ? { x, y } : null;
     }, uid);
-    let last = null;
-    for (const end = Date.now() + 2500; Date.now() < end; await sleep(80)) {
+    // (fork) settled = 4 equal reads in a row (~240 ms): two reads 80 ms apart also matched while a slow camera move was
+    // still starting, and the drag then grabbed the spot the piece had already left (no pickup, no direction wheel)
+    let last = null, still = 0;
+    for (const end = Date.now() + 4000; Date.now() < end; await sleep(80)) {
       const p = await read();
-      if (p && last && Math.abs(p.x - last.x) < 1.5 && Math.abs(p.y - last.y) < 1.5) return p;
+      still = p && last && Math.abs(p.x - last.x) < 1.5 && Math.abs(p.y - last.y) < 1.5 ? still + 1 : 0;
+      if (still >= 3) return p;
       last = p;
     }
     return last;
@@ -177,7 +229,7 @@ class Client {
     }, row, col);
   }
 
-  /** Press, move in steps, release — re-aimed after the pickup: the deploy fold zooms the board (GitHub #602, e2e/client.mjs aimedDrag). */
+  /** Press, move in steps, release — re-aimed after the pickup (e2e/client.mjs aimedDrag). */
   async drag(from, to, steps = 14) {
     await aimedDrag(this.page, from, to, { steps, settle: 120 });
   }
@@ -461,8 +513,7 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
     const { startServer } = await import('../../server/index.js');
     puppeteer = (await import('puppeteer-core')).default;
     srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
-    // the content-hash index first, so the pages load the served manifests' /assets/~<hash>/… URLs like a player's
-    await srv.assetIndex?.whenReady();
+    // this fork serves the manifests' /_v/<tag>/… URLs (docs/development/ASSETS.md "Manifest URLs and cache busting")
     base = `http://127.0.0.1:${srv.port}`;
     mkdirSync(OUT, { recursive: true });
   });
@@ -491,16 +542,16 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
       await guest.open(`?room=${room.code}`);
       await guest.enter('阿米娅');
       await guest.waitFor((s) => s.room?.code === room.code, 'guest joined via invite link');
-      await guest.click('.room-bar__right button', '准备就绪');
+      await guest.roomReady();
       await host.shot('room');
-      await host.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await host.roomStart({ timeout: 20000 });
 
       // ---- briefing ---------------------------------------------------------------------------------------------------
       for (const c of both) await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
       await sleep(800);
       await host.shot('briefing');
       await guest.shot('briefing-720');
-      for (const c of both) await c.click('.brief__foot .btn--primary', '准备就绪');
+      for (const c of both) { await settled(c.page, '.brief-go'); await c.click('.brief__foot .btn--primary', '准备就绪'); }
 
       // ---- band draft -------------------------------------------------------------------------------------------------
       for (const c of both) await c.waitFor((s) => s.phase === 'BAND_DRAFT' || s.phase === 'BATTLE_CHECK' || s.phase === 'PREP', 'band draft', 40000);
@@ -633,7 +684,9 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
               if (!(await c.click('.team__ob', '前往查看', { optional: true, timeout: 3000 }))) continue;
               const ok = await c.page.waitForFunction((fid) => { const s = globalThis.__SP_RUNNER__?.state(); return !!s && s.fieldId === fid && s.watch; }, { timeout: 15000 }, other.fieldId).then(() => true, () => false);
               if (!ok) continue;
-              await sleep(1200);
+              // its units are built from the observed field's first frames (a busy host: later than a fixed pause)
+              await c.page.waitForFunction(() => { try { return (globalThis.__SP_VIEW__?.raw?.stats?.()?.units ?? 0) > 0; } catch { return false; } },
+                { timeout: 10000, polling: 100 }).catch(() => {});
               const other2 = await c.viewStats();
               assert.ok(other2 && other2.units > 0, 'the observed field renders units');
               await c.shot(`combat-observe-r${hs.round}`);
@@ -659,10 +712,8 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
       assert.ok(did.inspected && did.bond, 'detail panel + bond popup');
       assert.ok(did.emote, 'emote bubble reached the teammate');
       assert.ok(did.enemies >= 0, 'enemy drawer opened');
-      if (srv.assetIndex) {
-        host.note(`content-hashed responses: ${JSON.stringify(host.hashed)}`);
-        assert.ok(host.hashed.spine > 0 && host.hashed.media > 0 && host.hashed.other > 0, `Spine, audio and art through hashed URLs: ${JSON.stringify(host.hashed)}`);
-      }
+      host.note(`release-versioned responses: ${JSON.stringify(host.hashed)}`);
+      assert.ok(host.hashed.spine > 0 && host.hashed.other > 0, `Spine and art through /_v/<tag>/ URLs: ${JSON.stringify(host.hashed)}`);
       await assertClean(both);
     } finally {
       console.log([...host.log, ...guest.log].join('\n'));
@@ -676,12 +727,11 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
     try {
       await solo.open();
       await solo.enter('杜宾');
-      await solo.click('.mode-card', '独立模拟');
-      await solo.click('.diff-card', '标准模拟');
-      await solo.click('.create-box button', '开始独立模拟');
+      await solo.createSolo('标准模拟');
       await solo.waitFor((s) => !!s.room, 'solo room');
-      if (!(await solo.st()).phase) await solo.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      if (!(await solo.st()).phase) await solo.roomStart({ timeout: 20000 });
       await solo.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+      await settled(solo.page, '.brief-go'); // (a click during its entrance falls through)
       await solo.click('.brief__foot .btn--primary', '准备就绪');
       await solo.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
       await sleep(600);

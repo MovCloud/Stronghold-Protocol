@@ -11,7 +11,7 @@ import { checkButtons } from '../../public/js/ui/hud.js';
 import { penPlacement, penZoneTiles, previewEnemyKey, PEN } from '../../public/js/ui/gameLogic.js';
 import { bannerVisible } from '../../public/js/ui/connBanner.js';
 import { layoutPen } from '../../public/js/render/pen.js';
-import { stripLoneSurrogates, sanitizeName } from '../../public/js/screens/title.js';
+import { stripLoneSurrogates, sanitizeName } from '../../public/js/ui/nickname.js';
 import { AudioManager } from '../../public/js/audio.js';
 
 // ---- fakes -----------------------------------------------------------------------------------------------------------
@@ -377,6 +377,26 @@ describe('ui/device.js screen wake lock', () => {
     await flush();
     assert.equal(current.releases, 1);
   });
+});
+
+test('fullscreen never reports success when the browser resolves without entering fullscreen', async () => {
+  const f = fakeWindow();
+  f.doc.documentElement.requestFullscreen = async () => {};
+  assert.equal(await fullscreen.enter(f.win), false);
+  f.doc.documentElement.requestFullscreen = async () => { throw new Error('permission denied'); };
+  assert.equal(await fullscreen.enter(f.win), false);
+  assert.equal(fullscreen.active(f.win), false);
+});
+
+test('prefixed mobile fullscreen waits for the actual fullscreen element and cleans listeners', async () => {
+  const f = fakeWindow({ fs: false });
+  f.doc.documentElement.webkitRequestFullscreen = () => setTimeout(() => {
+    f.doc.webkitFullscreenElement = f.doc.documentElement;
+    f.doc.dispatch(new FakeEvent('webkitfullscreenchange'));
+  }, 0);
+  assert.equal(await fullscreen.enter(f.win), true);
+  assert.equal(f.doc.count('webkitfullscreenchange'), 0);
+  assert.equal(f.doc.count('webkitfullscreenerror'), 0);
 });
 
 describe('ui/device.js installDeviceSupport', () => {

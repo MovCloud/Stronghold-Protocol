@@ -480,8 +480,8 @@ test('timeout, bots and majority skip unavailable slots in order, or close with 
     });
     h.m.dispose();
   }
-  for (const bots of [0, 2]) {
-    const h = matchWith([stockOffer({ chess: 'chess_char_5_diy1_a' }, { quorum: 'majority' })], { fake: true, humans: 3, bots });
+  for (const bots of [0, 2]) { // (this fork's ordinary room holds four seats in all: two humans beside two AI seats)
+    const h = matchWith([stockOffer({ chess: 'chess_char_5_diy1_a' }, { quorum: 'majority' })], { fake: true, humans: bots ? 2 : 3, bots });
     h.m.openOfferWindow('prep', 3);
     const w = h.m.offerWin[0];
     const idx = w.options.get('p_0').findIndex(c => c.id === 'funds');

@@ -1,5 +1,5 @@
 // server/http/common.js — what every HTTP answer shares:
-// (i18n-ignore-file: the error pages are bilingual by design, 中文 · English — docs/I18N.md)
+// (i18n-ignore-file: the error pages are bilingual by design, 中文 · English — docs/development/I18N.md)
 //
 //   * the security headers, set on every response before any route runs (routes.js);
 //   * splitUrl (raw path + query, also from absolute-form URLs), the bilingual error page (sendError) and JSON replies
@@ -16,7 +16,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 
 function errorPage(status, title, detail = '') {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${status} · 卫戍协议：盟约</title><style>
+<title>${status} · 卫戍协议：狩猎模拟</title><style>
 :root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111614;color:#d8e3de;font:16px/1.6 "Noto Sans SC",system-ui,sans-serif}
 main{border:1px solid #2c3a35;padding:32px 40px;max-width:520px;text-align:center}h1{margin:0;color:#4ed8af;font-size:56px;letter-spacing:4px}
 p{margin:8px 0}a{color:#4ed8af}</style></head><body><main><h1>${status}</h1><p>${escapeHtml(title)}</p>
@@ -31,7 +31,11 @@ export function sendError(req, res, status, title, detail) {
 }
 
 export function sendJson(req, res, status, obj) {
-  const body = Buffer.from(JSON.stringify(obj));
+  sendJsonBody(req, res, status, Buffer.from(JSON.stringify(obj)));
+}
+
+/** Already encoded JSON; same security/cache/HEAD contract as sendJson. */
+export function sendJsonBody(req, res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
   res.end(req.method === 'HEAD' ? undefined : body);
 }

@@ -67,9 +67,14 @@ describe('emote catalog (shared/constants.js)', () => {
     assert.ok(Object.isFrozen(EMOTE_THEME) && Object.isFrozen(EMOTE_LABEL));
   });
 
-  test('protocol accepts exactly the 36 official battle ids (g.emote { id })', () => {
+  test('protocol accepts the 36 official battle ids plus a namespaced plugin id (g.emote { id })', () => {
     for (const id of EMOTES) assert.equal(validateC2S({ t: 'g.emote', id }), null, id);
-    for (const id of ['happy', 'thanks', 'autochess_room_hello', 'multiv3_battle_thanks', 'duel_battle_happy', '__proto__', '', 7, null]) {
+    // a plugin page's ids are namespaced with the plugin id (shared/plugins/emoteCatalog.js), so they can never
+    // shadow an official one: `emote_<namespace(pluginId)>_<slug>`
+    for (const id of ['emote_ciallo_murasame', 'emote_my_plugin_hello']) {
+      assert.equal(validateC2S({ t: 'g.emote', id }), null, id);
+    }
+    for (const id of ['happy', 'thanks', 'autochess_room_hello', 'multiv3_battle_thanks', 'duel_battle_happy', 'emote_ciallo', 'emote_x', '__proto__', '', 7, null]) {
       assert.notEqual(validateC2S({ t: 'g.emote', id }), null, String(id));
     }
   });
@@ -440,8 +445,8 @@ describe('public/js/ui/emotes.js helpers', () => {
     } finally { console.warn = warn; }
   });
 
-  test('the art-manifest clock is not armed for other files; the default wait is ART_MANIFEST_TIMEOUT_MS', async () => {
-    const { createDataStore, ART_MANIFEST_TIMEOUT_MS } = await import('../../public/js/data.js');
+  test('art keeps its eight-second clock while core data gets a separate bounded deadline', async () => {
+    const { createDataStore, ART_MANIFEST_TIMEOUT_MS, CORE_DATA_TIMEOUT_MS } = await import('../../public/js/data.js');
     assert.equal(ART_MANIFEST_TIMEOUT_MS, 8000);
     const arms = [];
     let release;
@@ -462,7 +467,8 @@ describe('public/js/ui/emotes.js helpers', () => {
     try {
       const chess = store.load('chess');
       await new Promise((r) => setImmediate(r));
-      assert.deepEqual(arms, [], 'chess is not on the emote clock');
+      assert.equal(CORE_DATA_TIMEOUT_MS, 30000);
+      assert.deepEqual(arms, [CORE_DATA_TIMEOUT_MS], 'core data is on its own clock, not the shorter art one');
       assert.equal(store.status('chess'), 'loading');
       release();
       await chess;

@@ -20,6 +20,7 @@ import {
 import { createStore, emptyMatch } from '../../public/js/store.js';
 import { normalizeResult } from '../../public/js/ui/gameLogic.js';
 import { PHASE } from '../../shared/constants.js';
+import { MAX_PLAYER_CAPACITY } from '../../shared/playerCapacity.js';
 
 /** A realistic m.result in the shape server/match/results.js buildResult emits (replayed byte-identically). */
 function baseResult(over = {}) {
@@ -478,8 +479,9 @@ describe('local stats: bounded storage', () => {
       })),
       bigUnknown: 'y'.repeat(1e6),
     });
-    assert.ok(JSON.stringify(rec).length < 40_000, `${JSON.stringify(rec).length} chars`);
-    assert.equal(rec.players.length, 6);
+    // Preserve the upstream per-seat bound while accepting all supported seats; the store budget stays unchanged.
+    assert.ok(JSON.stringify(rec).length < Math.ceil(40_000 * MAX_PLAYER_CAPACITY / 6), `${JSON.stringify(rec).length} chars`);
+    assert.equal(rec.players.length, MAX_PLAYER_CAPACITY);
     assert.equal(rec.players[0].lineup.length, 12);
     assert.equal(rec.players[0].lineup[0].items.length, 4);
     assert.equal(rec.players[0].name.length, 24);

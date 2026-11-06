@@ -23,6 +23,16 @@
 // time (`gt`): the render engine then knows how late a form fx is and skips a change clip that has already ended.
 // Display replicas (a teammate's field after the own battle, 联防 observers, the partner of a boss pair) run the same
 // spec fast-forwarded to the server's clock (`elapsed`) and never report.
+// Local display replicas under server-run combat (m.public.localReplica, DESIGN §14): once the sim is loaded the runner
+// declares g.sim { local: true } (per match and per connection; localStorage 'sp.localSim' = '0' opts out), and the
+// server then sends the field this seat is shown — its own, a teammate's it watches, the one it follows once eliminated —
+// as a b.start { local: true } instead of streaming it. The replica digests its state right after every sync step
+// (/sim/syncHash.js) and compares it with the Worker's b.sync; a different digest or end tick, or a replica too slow to
+// keep up (SLOW_TICK_MS), sends g.sim { battleId, stream: true } (or { local: false }) and drops it — the server streams
+// that field from then on. b.end { reason: 'stream' } drops it too. A boss / hidden replica also replays the Worker's
+// record of the shared pool (b.start `ext`, then b.ext; /sim/spec.js ReplayBossPool): it steps only through the ticks that
+// record covers (`to`), trailing the field clock by an adaptive lag (EXT_LAG_*: the record's lateness over the last
+// EXT_LAG_WINDOW_MS), and ends where the Worker forced the end; a record with a gap or a bad value drops it (stream).
 // A b.start is registered as pending the moment it arrives — before the sim module has loaded, while the Battle is built
 // and caught up silently — so what comes for that battle meanwhile is applied to it in order (PR #266): a b.end takeover
 // stops its reports; a forced / timeout b.end (the first end counts) ends it as soon as the Battle exists, without
@@ -56,11 +66,11 @@
 //   battleRunner.stats()  → { ticks, stepMs, avgTickMs, maxFrameMs, catchups, errors, battles }
 //   battleRunner.unitStats(unitId, fieldId?) → the live stats of a unit of the battle on screen (shared/protocol.js
 //                           unitStatsEntry: current HP, effective max HP / ATK / DEF / RES / interval / block / move
-//                           speed next to its base; an ally also its live attack range `range` — unit.liveRangeGrid,
-//                           facing RIGHT, never a kit's target-selection grid) | null — the detail card reads it a few
-//                           times a second (user playtest #4 item 7; the range mini-map, community report E1 after
-//                           0.1.0). Read-only: it takes the stats the sim computed last (`unit._s`) and the range grid it
-//                           keeps, and never makes the unit recompute them, so looking never changes the battle's floats.
+//                           speed next to its base; an ally also its live attack range `range`) | null — the detail card
+//                           re-reads it 4× a second (the owner, 2026-10-14: combat runs in the browser now, so the card
+//                           follows this sim live; the 2026-10-10 opening-only cache stays for server-run fields).
+//                           Read-only: it takes the stats the sim computed last (`unit._s`) and the range grid it keeps,
+//                           never `unit.s`, whose lazy recompute would move the battle's floats.
 //   battleRunner.unitIdOf(uid, ownerId, fieldId?) → the id of an own board piece's unit in that battle | null
 //   battleRunner.ownerOps(ownerId, fieldId?) → [{ kind: 'op', ownerId, defId, items?, standInFor?, diy? }] that player's
 //                           operators in the battle on screen with their equipment (a teammate's bond popup: the members in
@@ -87,10 +97,11 @@ import { net as appNet } from '../net.js';
 import { store as appStore } from '../store.js';
 import { contentFor as appContentFor, simContent as appSimContent, contentSet as appContentSet } from '../content.js';
 import { fxForm } from '../../../shared/protocol.js';
-import { spectateEffects } from './observe.js';
+import { spectateEffects, uniteRelayKey } from './observe.js';
+import { MAX_PLAYER_CAPACITY } from '../../../shared/playerCapacity.js';
 import { recordError, setBattleSource } from '../diag.js';
+import { codeSource } from '../codeSource.js';
 import { loadBrowserSim } from './simLoader.js';
-import { data as gameData } from '../data.js';
 import { InPageSimHost, WorkerSimHost } from './simHost.js';
 import { trackCombat, combineCombat } from './metrics.js';
 import { t } from '../../../shared/i18n.js';
@@ -133,6 +144,22 @@ export function compactHeld(list) {
   });
   return list.filter((x, i) => (x[0] === 'status' ? last.get(`s:${x[1]}:${x[2]}`) === i : x[0] === 'skill' ? last.get(`k:${x[1]}`) === i : true));
 }
+/** A local display replica whose steps average more than this (ms per tick, over SLOW_MIN_TICKS) asks for the stream. */
+export const SLOW_TICK_MS = 2.5;
+const SLOW_MIN_TICKS = 300;
+/** Digests kept per replica (its own and the server's, awaiting the other side). */
+const SYNC_KEEP = 200;
+/**
+ * A boss / hidden replica trails the field clock by the lateness of the pool record (b.ext `to` behind the replica's own
+ * clock) over the last EXT_LAG_WINDOW_MS plus EXT_LAG_MARGIN_MS, never less than EXT_LAG_MIN_MS nor more than
+ * EXT_LAG_MAX_MS; a later record raises it at once, an earlier one lowers it gently (EXT_LAG_EASE of a tick per record).
+ */
+export const EXT_LAG_MIN_MS = 150;
+export const EXT_LAG_MAX_MS = 3000;
+const EXT_LAG_MARGIN_MS = 60;
+const EXT_LAG_WINDOW_MS = 5000;
+const EXT_LAG_EASE = 0.5;
+
 /** Request failures after which a b.result counts as never delivered (re-sent on resume / b.start). */
 export const LOST_RESULT_CODES = Object.freeze(['DISCONNECTED', 'OFFLINE', 'TIMEOUT']);
 
@@ -146,6 +173,33 @@ export const ticksPerFrameCap = (speed) => Math.max(8, Math.ceil((Number(speed) 
  * @param {any} b the battle
  */
 export const uniteLeftMark = (b) => `${Number(b.killed) || 0}:${Number(b.leakedCount) || 0}:${Number(b.total) || 0}:${Array.isArray(b.enemies) ? b.enemies.length : 0}:${b.finished ? 1 : 0}`;
+
+/** How long the Studio copy of the simulation (codeSource.js) may take to load before the page loads its own. */
+export const SIM_REMOTE_TIMEOUT_MS = 20000;
+
+/**
+ * The simulation from the release's Studio copy (codeSource.js) when there is one — the whole module graph and its data
+ * from there, so simdata.js exists once — else, or when that fails or takes longer than `timeoutMs`, from this host.
+ * A failure is sticky for the page (source.fail): the next b.start loads from this host at once.
+ */
+export async function loadSimFrom(source, { load = loadBrowserSim, timeoutMs = SIM_REMOTE_TIMEOUT_MS } = {}) {
+  const sim = source ? await source.base('sim') : null;
+  if (sim) {
+    const data = await source.base('data');
+    let timer = null;
+    try {
+      return await Promise.race([
+        load({ base: sim, ...(data ? { dataBase: data } : {}) }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeoutMs); }),
+      ]);
+    } catch (err) {
+      source.fail('sim', err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return load();
+}
 
 /**
  * Battle logger: content errors are isolated by the sim; report them as warnings (the server logs its own) and keep
@@ -175,8 +229,9 @@ export function createBattleRunner(deps) {
   const setIv = deps.setInterval || ((fn, ms) => globalThis.setInterval(fn, ms));
   const clearIv = deps.clearInterval || ((h) => globalThis.clearInterval(h));
   const doc = deps.doc !== undefined ? deps.doc : (typeof document !== 'undefined' ? document : null);
-  // `content` (DESIGN §32.6): `{ cs, data }` of a room's content set → the sim on it; null → the original content
-  const loadSim = deps.loadSim || ((content) => (content ? loadBrowserSim({ data: content.data, cs: content.cs, bounds: content.bounds ?? null, scripts:content.scripts || [], hashInput:content.hashInput, nativeVerified:content.nativeVerified }) : loadBrowserSim({ reuse: deps.reuseSimData || ((n) => gameData.getRaw(n)), reuseOwner: deps.reuseSimOwner || (() => gameData.contentId()) })));
+  // `content` (DESIGN §32.6): `{ cs, data }` of a room's content set → the sim on it; null → the original content, from
+  // the release's Studio copy when there is one (codeSource.js, loadSimFrom)
+  const loadSim = deps.loadSim || ((content) => (content ? loadBrowserSim({ data: content.data, cs: content.cs, bounds: content.bounds ?? null, scripts:content.scripts || [], hashInput:content.hashInput, nativeVerified:content.nativeVerified }) : loadSimFrom(codeSource)));
   const logger = deps.logger || SIM_LOGGER;
   // the content sets (DESIGN §32.6): the room's set the page holds (content.js) and the server's original one
   const contentFor = deps.contentFor || appContentFor;
@@ -271,6 +326,11 @@ export function createBattleRunner(deps) {
   let pausedAt = null;
   /** a normal field's leak count (or a battle's bond layers) changed since the last publishState() */
   let leaksDirty = false;
+  /** local display replicas: the match this connection declared g.sim { local: true } for; off for this page */
+  let declaredFor = null;
+  let localOff = false;
+  /** battleIds whose local replica went back to the stream (a late b.start of one is not run again) */
+  const droppedIds = new Set();
   const stats = { ticks: 0, stepMs: 0, maxFrameMs: 0, catchups: 0, errors: 0, battles: 0, frames: 0 };
   /** Hidden-tab backlog tuple → the game time it was drained at (emitFrame batches the backlog by it). */
   const heldAt = new WeakMap();
@@ -427,6 +487,13 @@ export function createBattleRunner(deps) {
 
   /** Target tick of an entry on its clock. */
   const targetTick = (e, t) => Math.max(0, Math.floor((((t - e.t0) / 1000) * e.speed) / TICK + 1e-9));
+  /** The tick an entry steps to: its clock's, a boss replica's held back by its lag and by what the pool record covers. */
+  const goalTick = (e, t) => {
+    const tt = targetTick(e, t);
+    return e.replay ? Math.max(0, Math.min(tt - Math.round(e.lag), e.replay.to)) : tt;
+  };
+  /** Ticks of a duration at an entry's speed. */
+  const msTicks = (e, ms) => ((ms / 1000) * e.speed) / TICK;
 
   /**
    * Step `n` ticks. `sliced` (a catch-up frame, a hidden-tab step): every EV_SLICE ticks the events drained so far go to
@@ -438,25 +505,201 @@ export function createBattleRunner(deps) {
     let k = 0;
     const accept = (out) => { k = out.ticks; e.slices.push(...out.slices); };
     try {
-      const out = e.host.step(n, { slice: sliced ? EV_SLICE : 0 });
-      if (e.host.remote) return out.then((value) => {
-        if (e.failed) return 0;
-        accept(value);
-        const dt = now() - t;
-        stats.ticks += k; stats.stepMs += dt;
-        return dt;
-      });
-      accept(out);
+      // a Worker host (a room's gameplay plugins, DESIGN §32.11) steps in its own thread and answers once
+      if (e.host.remote) {
+        return e.host.step(n, { slice: sliced ? EV_SLICE : 0 }).then((value) => {
+          if (e.failed) return 0;
+          accept(value);
+          const dt = now() - t;
+          stats.ticks += k; stats.stepMs += dt;
+          return dt;
+        });
+      }
+      // the page's own Battle (InPageSimHost): stepped here, tick by tick, so a local display replica can follow the
+      // pool record and compare its digests between two steps
+      for (; k < n && !b.finished; k++) {
+        const pool = e.replay;
+        if (pool) {
+          // a boss replica steps only through what the pool record covers, with the Worker's pool before each step
+          const next = (Number(b.tickCount) || 0) + 1;
+          if (!pool.ready(next)) break;
+          pool.enter(next);
+        }
+        b.step();
+        if (e.replica && !noteSync(e)) { k++; break; }
+        // the Worker forced this field's end right after this step (team LP 0, the hard cap): after its digest, like it
+        const end = pool && pool.endAfter(Number(b.tickCount) || 0);
+        if (end && !b.finished) b.forceEnd(end.reason);
+        if (sliced && (k + 1) % EV_SLICE === 0 && k + 1 < n) {
+          const ev = b.drainEvents() || [];
+          if (ev.length) e.slices.push({ gt: Number(b.time) || 0, ev });
+        }
+      }
     } catch (err) {
       stats.errors++;
       console.warn('[runner] battle step failed', err);
       recordError('runner', err, 'battle step failed');
       try { b.forceEnd('timeout'); } catch { /* ignore */ }
+      if (e.replica) noteSync(e);
     }
     const dt = now() - t;
     stats.ticks += k;
     stats.stepMs += dt;
     return dt;
+  }
+
+  /**
+   * A local display replica after a step: past the server's end tick without ending → stream; on a sync step, its digest
+   * (compared with the server's when both are known). False when the replica was dropped for the stream.
+   */
+  function noteSync(e) {
+    const b = e.battle;
+    if (e.serverEnd != null && b.tickCount >= e.serverEnd && !(b.finished && b.tickCount === e.serverEnd)) {
+      toStream(e, e.serverEnd, 'end');
+      return false;
+    }
+    const sync = e.sim && e.sim.sync;
+    if (!sync || e.hashDone || !sync.isSyncTick(b)) return true;
+    if (b.finished) e.hashDone = true;
+    let h;
+    try { h = sync.stateHash(b); } catch { return true; }
+    e.hashes.set(b.tickCount, { h, done: !!b.finished });
+    if (e.hashes.size > SYNC_KEEP) e.hashes.delete(e.hashes.keys().next().value);
+    if (b.finished) for (const t of e.serverHashes.keys()) if (t > b.tickCount) { toStream(e, t, 'end'); return false; }
+    return checkSync(e, b.tickCount);
+  }
+
+  /** Compare the digests of `tick` when both sides have one; a difference drops the replica for the stream. */
+  function checkSync(e, tick) {
+    const mine = e.hashes.get(tick);
+    const theirs = e.serverHashes.get(tick);
+    if (!mine || !theirs) return true;
+    e.hashes.delete(tick);
+    e.serverHashes.delete(tick);
+    if (mine.h !== theirs.h || mine.done !== theirs.done) { toStream(e, tick, 'digest'); return false; }
+    e.synced++;
+    return true;
+  }
+
+  /** b.sync { battleId, tick, h, done? }: the Worker battle's digest after step `tick`. */
+  function onSync(msg) {
+    if (!msg || typeof msg.battleId !== 'string' || !Number.isInteger(msg.tick)) return;
+    const e = entries.get(msg.battleId) || pending.get(msg.battleId);
+    if (!e || !e.replica || e.dropped) return;
+    e.serverHashes.set(msg.tick, { h: Number(msg.h) >>> 0, done: !!msg.done });
+    if (e.serverHashes.size > SYNC_KEEP) e.serverHashes.delete(e.serverHashes.keys().next().value);
+    if (msg.done) e.serverEnd = msg.tick;
+    const b = e.battle;
+    if (!b) return;
+    // this replica ended before the server's tick, or went past the server's end without ending
+    if ((b.finished && b.tickCount < msg.tick) || (msg.done && b.tickCount > msg.tick)) { toStream(e, msg.tick, 'end'); return; }
+    checkSync(e, msg.tick);
+  }
+
+  /** Pool records a boss replica still being built may queue (b.ext before the sim loaded); past it: the stream. */
+  const EXT_QUEUE_MAX = 600;
+
+  /**
+   * Feed a boss replica its pool record (b.start `ext` / b.ext). An end the replica has already stepped to is applied now;
+   * one it stepped past, a gap or a bad value drop it for the stream. False when it was dropped.
+   */
+  function feedExt(e, x) {
+    const pool = e.replay;
+    if (!pool || e.dropped) return false;
+    if (!x || typeof x !== 'object' || !pool.feed(x.i, x.to, x.hp, x.end)) { toStream(e, null, 'ext'); return false; }
+    const b = e.battle;
+    if (pool.end && b && !b.finished) {
+      const at = Number(b.tickCount) || 0;
+      if (at > pool.end.tick) { toStream(e, pool.end.tick, 'end'); return false; }
+      if (at === pool.end.tick) { if (!e.endReason) e.endReason = pool.end.reason; endBattle(e); }
+    }
+    return true;
+  }
+
+  /**
+   * The lag of a boss replica after a b.ext that covers the record through tick `to`: how far `to` trails the replica's
+   * own clock now, its worst over EXT_LAG_WINDOW_MS plus a margin (EXT_LAG_* above) — raised at once, lowered gently.
+   */
+  function noteExt(e, to) {
+    if (e.t0 == null || !Number.isInteger(to)) return;
+    const t = clock();
+    e.lateness.push([t, targetTick(e, t) - to]);
+    while (e.lateness.length > 1 && t - e.lateness[0][0] > EXT_LAG_WINDOW_MS) e.lateness.shift();
+    let worst = -Infinity;
+    for (const l of e.lateness) if (l[1] > worst) worst = l[1];
+    const want = Math.min(msTicks(e, EXT_LAG_MAX_MS), Math.max(msTicks(e, EXT_LAG_MIN_MS), worst + msTicks(e, EXT_LAG_MARGIN_MS)));
+    e.lag = want > e.lag ? want : Math.max(want, e.lag - EXT_LAG_EASE);
+  }
+
+  /** b.ext { battleId, i, to, hp, end? }: more of a boss replica's pool record (one still being built queues it). */
+  function onExt(msg) {
+    if (!msg || typeof msg !== 'object' || typeof msg.battleId !== 'string') return;
+    const e = entries.get(msg.battleId) || pending.get(msg.battleId);
+    if (!e || !e.replica || e.dropped || !bossLike(e)) return;
+    if (!e.replay) {
+      if (e.battle) return;
+      if (e.extQ.length >= EXT_QUEUE_MAX) { toStream(e, null, 'ext'); return; }
+      e.extQ.push(msg);
+      return;
+    }
+    if (feedExt(e, msg)) noteExt(e, msg.to);
+  }
+
+  /**
+   * Hand a local display replica back to the server stream: tell the server (`slow`: no local replicas for the rest of
+   * this page — g.sim { local: false }) and drop it; the view stays on its last frame until the stream's m.field.
+   */
+  function toStream(e, tick, why) {
+    if (!e.replica || e.dropped) return;
+    if (why === 'slow') { localOff = true; askSim({ local: false }); }
+    else askSim(tick != null ? { battleId: e.battleId, stream: true, tick } : { battleId: e.battleId, stream: true });
+    if (why !== 'slow') recordError('runner', `local replica ${why} at tick ${tick}`, 'local replica → server stream');
+    droppedIds.add(e.battleId);
+    if (droppedIds.size > 32) droppedIds.delete(droppedIds.values().next().value);
+    drop(e);
+  }
+
+  /** g.sim as a request (a refusal never surfaces as a toast); an offline one is redone by the reconnect. */
+  function askSim(fields) {
+    if (!net || typeof net.request !== 'function') return Promise.resolve(false);
+    try { return Promise.resolve(net.request('g.sim', fields)).then(() => true, () => false); } catch { return Promise.resolve(false); }
+  }
+
+  /** Whether the game screen shows this entry now (the store's field is its local meta). */
+  function onScreen(e) {
+    let f = null;
+    try { f = store.get().match.field; } catch { f = null; }
+    return !!f && f.local === true && f.battleId === e.battleId;
+  }
+
+  /**
+   * Declare g.sim { local: true } once per match (and again per connection) when the server offers local display
+   * replicas, this seat plays in the match, the sim loaded and nobody opted out (localStorage 'sp.localSim' = '0').
+   */
+  function declareLocal(pub) {
+    if (!net || !pub || pub.localReplica !== true || localOff || typeof pub.matchId !== 'string' || declaredFor === pub.matchId) return;
+    let me = null;
+    try { me = store.get().me.playerId; } catch { me = null; }
+    if (!me || !Array.isArray(pub.players) || !pub.players.some((p) => p && p.playerId === me)) return;
+    try { if (globalThis.localStorage && globalThis.localStorage.getItem('sp.localSim') === '0') { localOff = true; return; } } catch { /* no storage */ }
+    const id = pub.matchId;
+    declaredFor = id;
+    ensureSim().then((sim) => {
+      if (declaredFor !== id || localOff) return;
+      if (!sim || !sim.sync || typeof sim.sync.stateHash !== 'function') { localOff = true; return; }
+      askSim({ local: true }).then((ok) => { if (!ok && declaredFor === id) declaredFor = null; });
+    }, () => { localOff = true; });
+  }
+
+  /** Forget an entry without ending it (a local replica the server streams now). */
+  function drop(e) {
+    e.dropped = true;
+    if (entries.get(e.battleId) === e) entries.delete(e.battleId);
+    if (pending.get(e.battleId) === e) pending.delete(e.battleId);
+    if (loading === e) loading = null;
+    if (cur === e) cur = null;
+    publishState();
+    schedule();
   }
 
   function frameOf(e) {
@@ -547,8 +790,8 @@ export function createBattleRunner(deps) {
       }
     } else {
       msg.leaks = Math.min(1e6, p.leaks);
-      // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 4 players)
-      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
+      // Expanded rooms may have twenty leak sources; field participants remain bounded separately.
+      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, MAX_PLAYER_CAPACITY));
     }
     try { net.send('b.progress', msg); } catch { /* offline */ }
   }
@@ -621,7 +864,32 @@ export function createBattleRunner(deps) {
     for (const e of [...retained]) if (e.delivery === 'undelivered') deliver(e);
   }
 
-  /** Solo pause (m.public.paused): freeze / resume every local battle clock. */
+  /**
+   * Match control (m.public.speed): re-anchor every local battle clock at the new playback speed. The game seconds
+   * already simulated stay what they are — only the wall clock ahead of them changes, so a 2× entry that ran 10 game
+   * seconds is still at tick 10 when it drops to 1× (the same rule the server applies to its field deadlines).
+   */
+  function setSpeed(newSpeed) {
+    const speed = Number(newSpeed) > 0 ? Number(newSpeed) : 2;
+    const t = clock();
+    let changed = false;
+    for (const e of [...entries.values(), ...pending.values()]) {
+      if (e.speed === speed) continue;
+      changed = true;
+      if (e.t0 != null) {
+        const elapsed = ((t - e.t0) / 1000) * e.speed;   // the game seconds this entry has run so far
+        const next = t - (elapsed / speed) * 1000;
+        e.lastProgressAt += next - e.t0;
+        e.t0 = next;
+      }
+      e.speed = speed;
+    }
+    if (!changed) return;
+    publishState();
+    schedule();
+  }
+
+  /** Pause (m.public.paused): freeze / resume every local battle clock. */
   function setPaused(on) {
     if (on === (pausedAt != null)) return;
     if (on) {
@@ -639,7 +907,7 @@ export function createBattleRunner(deps) {
   /** Advance one entry to its clock (bounded); render it when it is on screen. */
   function advance(e, t, render) {
     if (e.battle.finished) { if (!e.done) finished(e); return; }
-    const behind = targetTick(e, t) - (e.battle.tickCount || 0);
+    const behind = goalTick(e, t) - (e.battle.tickCount || 0);
     if (behind <= 0) return;
     const cap = ticksPerFrameCap(e.speed);
     const catchingUp = behind > cap * 4;
@@ -647,8 +915,14 @@ export function createBattleRunner(deps) {
     const n = Math.min(behind, catchingUp ? CATCHUP_TICKS : cap);
     if (e.stepping || e.failed) return;
     const finishStep = (dt) => {
-      if (e.failed || entries.get(e.battleId) !== e) return;
+      if (e.failed || e.dropped || entries.get(e.battleId) !== e) return;
       if (dt > stats.maxFrameMs) stats.maxFrameMs = dt;
+      if (e.replica && render && !catchingUp) {
+        // a device too slow for its own battle: the stream is cheaper than falling behind
+        e.costMs += dt;
+        e.costTicks += n;
+        if (e.costTicks >= SLOW_MIN_TICKS && e.costMs / e.costTicks > SLOW_TICK_MS) { toStream(e, null, 'slow'); return; }
+      }
       if (render && e === cur) emitFrame(e, catchingUp);
       else hold(e);
       noteLeaks(e);
@@ -757,8 +1031,18 @@ export function createBattleRunner(deps) {
     const seq = ++startSeq;
     const prep = pending.get(msg.battleId);
     const existing = entries.get(msg.battleId) || prep;
+    if ((existing && existing.dropped) || (msg.local && droppedIds.has(msg.battleId))) {
+      if (msg.local) askSim({ battleId: msg.battleId, stream: true });
+      return;
+    }
     if (existing) {
       existing.seq = seq;
+      if (msg.local && !msg.authoritative) existing.replica = true;
+      // a resent boss replica (a reconnect, 返回战场): the whole pool record again — what it already has is skipped
+      if (msg.local && msg.ext && existing.replica && bossLike(existing)) {
+        if (existing.replay) { if (!feedExt(existing, msg.ext)) return; }
+        else if (!existing.battle) existing.extQ.push(msg.ext);
+      }
       const was = existing.authoritative;
       existing.authoritative = !!msg.authoritative && !existing.failed && !existing.resultSent && csAccepted(existing.spec.cs, { loading: !existing.battle });
       existing.watch = !!msg.watch;
@@ -780,9 +1064,10 @@ export function createBattleRunner(deps) {
         return prep.ready;
       }
       loading = null;
-      // a resend of what is already on screen (reconnect / resync) only updates the state; switching back shows it
+      // a resend of what is already on screen (reconnect / resync) only updates the state; switching back shows it — a
+      // local replica's too when the view went to a streamed field meanwhile (返回战场 after watching a teammate)
       if (existing.failed) return;
-      if (cur !== existing) show(existing);
+      if (cur !== existing || (existing.replica && !onScreen(existing))) show(existing);
       else { publishState(); schedule(); }
       return;
     }
@@ -804,6 +1089,13 @@ export function createBattleRunner(deps) {
       leaks: 0, leakMark: '', left: null,
       // live bond layers grown in this battle { [playerId]: { [bondId]: n } } and their total gain (noteLayers)
       live: null, layerSum: 0,
+      // a server-run field's local display replica (b.start local): its digests and the server's awaiting comparison
+      // (tick → { h, done }), the server's end tick, the comparisons passed, its step cost (noteSync / onSync / advance)
+      replica: !!msg.local && !msg.authoritative, hashes: new Map(), serverHashes: new Map(), serverEnd: null,
+      hashDone: false, synced: 0, costMs: 0, costTicks: 0, dropped: false,
+      // a boss / hidden replica: its ReplayBossPool (built with the Battle; the pool records that came before wait in
+      // `extQ`), its lag behind the field clock (ticks) and the recent lateness of the record ([at, ticks]; noteExt)
+      replay: null, extQ: msg.local && !msg.authoritative && msg.ext ? [msg.ext] : [], lag: 0, lateness: [],
       // state-bearing events of the steps run while the tab was hidden (hold(); delivered by the next rendered frame;
       // heldAt = the game time each was drained at), and whether that backlog overflowed (the next frame re-enters the
       // view from the field meta); the event batches of the current sliced step (stepEntry)
@@ -829,13 +1121,24 @@ export function createBattleRunner(deps) {
       try { sim = await ensureSim(e.spec.cs); } catch (err) {
         console.warn('[runner] simulation unavailable', err);
         recordError('runner', err, 'simulation unavailable');
+        if (e.replica) toStream(e, null, 'sim');
         return;
       }
       if (!wanted()) return;
       // the content the simulation holds must still be the spec's (the room could have changed it meanwhile)
       if (!csAccepted(e.spec.cs)) e.authoritative = false;
       let battle;
+      let replay = null;
+      if (e.replica && bossLike(e)) {
+        // a boss replica runs only on the Worker's pool record (b.ext); without one it cannot follow its field
+        const boss = e.spec.boss;
+        if (!boss || typeof sim.spec.ReplayBossPool !== 'function') { toStream(e, null, 'ext'); return; }
+        replay = new sim.spec.ReplayBossPool(boss.poolMax, boss.poolHp);
+      }
       try {
+        // a local display replica of a room's gameplay plugins would run in a Worker, which cannot follow the digests
+        // step by step: the server streams that field instead
+        if (e.replica && sim.remote && !deps.createHost) { toStream(e, null, 'construct'); return; }
         const reused = sim.remote ? takeParked(sim.cs) : null;
         if (reused) {
           reused.onFailure = (err) => failWorker(e, err);
@@ -851,11 +1154,15 @@ export function createBattleRunner(deps) {
             if (!wanted()) return;
           }
           await e.host.start(e.spec);
-        } else { e.host.sim = sim; e.host.start(e.spec, { logger }); }
+        } else { e.host.sim = sim; e.host.start(e.spec, replay ? { logger, sharedBoss: replay } : { logger }); }
         battle = e.host.battle;
       } catch (err) {
         if (e.host?.remote) failWorker(e, err);
-        else { console.warn('[runner] battle construction failed', err); recordError('runner', err, 'battle construction failed'); }
+        else {
+          console.warn('[runner] battle construction failed', err);
+          recordError('runner', err, 'battle construction failed');
+          if (e.replica) toStream(e, null, 'construct');
+        }
         return;
       }
       if (!wanted() || e.failed) return;
@@ -867,13 +1174,22 @@ export function createBattleRunner(deps) {
       // run there. An in-page Battle gets the meter only when 作战统计 is on (default off; a test may pin it).
       if (metricsEnabled() && !e.host.remote) e.combatMetrics = trackCombat(battle);
       e.t0 = clock() - (e.elapsed / e.speed) * 1000;
+      if (replay) {
+        e.replay = replay;
+        e.lag = msTicks(e, EXT_LAG_MIN_MS);
+        const queued = e.extQ;
+        e.extQ = [];
+        for (const x of queued) if (!feedExt(e, x)) return;
+      }
+      // digests that arrived while it was loading: compared as the replica reaches them
       if (lastPool) await e.host.syncPool(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined);
       if (e.endReason) await endBattle(e);
       // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field) — for the view
       // asked for; a superseded authority catches up in the background (advance)
-      while (!battle.finished && e.seq === startSeq && targetTick(e, clock()) - battle.tickCount > ticksPerFrameCap(e.speed)) {
-        const n = Math.min(PREPARE_SLICE, targetTick(e, clock()) - battle.tickCount);
+      while (!battle.finished && e.seq === startSeq && goalTick(e, clock()) - battle.tickCount > ticksPerFrameCap(e.speed)) {
+        const n = Math.min(PREPARE_SLICE, goalTick(e, clock()) - battle.tickCount);
         await stepEntry(e, n);
+        if (e.dropped) return;
         try { battle.drainEvents(); } catch { /* ignore */ }
         noteLeaks(e);
         progress(e);
@@ -912,6 +1228,8 @@ export function createBattleRunner(deps) {
   function onEnd(msg) {
     const e = msg && (entries.get(msg.battleId) || pending.get(msg.battleId));
     if (!e || e.failed) return;
+    // the server streams this field now (its local replica diverged / was switched off): forget it, never end it
+    if (msg.reason === 'stream') { if (e.replica) drop(e); return; }
     if (msg.reason === 'takeover') {
       e.authoritative = false;
       if (e === cur) publishState();
@@ -990,11 +1308,25 @@ export function createBattleRunner(deps) {
     offs.push(net.on('b.start', (m) => { onStart(m).catch((err) => console.warn('[runner] b.start failed', err)); }));
     offs.push(net.on('b.pool', onPool));
     offs.push(net.on('b.end', onEnd));
-    // the session is back (reconnect / resume): results lost with the old socket go out again
-    offs.push(net.on('status', (st) => { if (st && st.status === 'online') redeliver(); }));
+    offs.push(net.on('b.sync', onSync));
+    offs.push(net.on('b.ext', onExt));
+    // the session is back (reconnect / resume): results lost with the old socket go out again; a local replica
+    // declaration is made again (the server keeps it, a new match does not have it)
+    // ('status' also comes with every ping: only a transition to online is a new connection)
+    let online = false;
+    offs.push(net.on('status', (st) => {
+      const was = online;
+      online = !!st && st.status === 'online';
+      if (!online) return;
+      redeliver();
+      if (was) return;
+      declaredFor = null;
+      try { declareLocal(store.get().match.public); } catch { /* no match */ }
+    }));
   }
   // phase changes: combat fields live until the next prep; leaving the match drops everything
   let lastPhase = null;
+  let lastRelay = null;
   let lastRound = 0;
   if (store && typeof store.subscribe === 'function') {
     offs.push(store.subscribe((s) => {
@@ -1005,9 +1337,20 @@ export function createBattleRunner(deps) {
         || (pub?.phase !== lastPhase && ['LOBBY', 'INFO_CHECK', 'BAND_DRAFT', 'BATTLE_CHECK'].includes(pub?.phase));
       if (resetMetrics) forgetCombat();
       lastRound = round;
-      // solo pause (DESIGN §14): the local battle clocks follow m.public.paused
+      // match control (DESIGN §14): the local battle clocks follow m.public.paused and the playback speed
       setPaused(!!(pub && pub.paused));
+      if (pub && Number(pub.speed) > 0) setSpeed(pub.speed);
+      declareLocal(pub);
       const phase = pub ? pub.phase : null;
+      const relay = uniteRelayKey(pub);
+      const relayChanged = relay && lastRelay && relay !== lastRelay;
+      lastRelay = relay;
+      if (relayChanged && cur?.kind === 'unite' && cur.battleId !== pub.unite?.battleId) {
+        // Detach the old view, not its authority/result: lost b.result must still be re-delivered.
+        cur = null;
+        if (loading?.battleId !== pub.unite?.battleId) { ++startSeq; loading = null; }
+        publishState();
+      }
       if (phase === lastPhase && !resetMetrics) return;
       lastPhase = phase;
       if (!phase || ['PREP', 'ROUND_START', 'SP_DRAFT', 'RESULT', 'LOBBY', 'INFO_CHECK', 'BAND_DRAFT', 'BATTLE_CHECK'].includes(phase)) {
@@ -1133,7 +1476,7 @@ export function createBattleRunner(deps) {
     _entries: entries,
     _frame: frame,
     _pump: pump,
-    onStart, onPool, onEnd, clear, ensureSim, redeliver, setPaused,
+    onStart, onPool, onEnd, onSync, onExt, clear, ensureSim, redeliver, setPaused, setSpeed,
     dispose() {
       clear();
       releaseParked();

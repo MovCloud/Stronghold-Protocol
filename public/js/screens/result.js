@@ -17,11 +17,13 @@
 
 import { useEffect } from '../../vendor/hooks.module.js';
 import { html, Button, Icon, MicroLabel, DifficultyTag } from '../ui/components.js';
-import { useGameData, Img, UnitThumb, BandIcon, PlayerAvatar, BondGlyph, LpTower, Sprite } from '../ui/gameComponents.js';
+import { useGameData, Img, UnitThumb, BandIcon, BondGlyph, LpTower, Sprite } from '../ui/gameComponents.js';
+import { ResultAvatar } from '../ui/resultAvatar.js';
 import { normalizeResult, fmtNum, diyRecordFor, cardStandIn, standInForText } from '../ui/gameLogic.js';
 import { data } from '../data.js';
 import { enemyIconUrl, titleIconUrl, uiUrl } from '../ui/assetUrls.js';
 import { audio } from '../audio.js';
+import { openStats } from './stats.js';
 import { sentText } from '../ui/lang.js';
 import { UnofficialMark, VersionTag } from '../ui/pluginTag.js';
 import { TestMark } from '../ui/testConsole.js';
@@ -76,7 +78,7 @@ function PlayerCard({ p, myId, titles, best, solo = false, skinOwnerId = null })
   const bonds = resultBonds(p.bonds, (id) => gd.bond(id));
   return html`<article class=${cx('rcard', p.playerId === myId && 'is-self', p.alive === false && 'is-dead')}>
     <header class="rcard__head">
-      <${PlayerAvatar} player=${p} self=${p.playerId === myId} />
+      <${ResultAvatar} player=${p} self=${p.playerId === myId} />
       <div class="rcard__who">
         <b class="rcard__name">${p.name}${p.isBot ? html`<span class="rcard__ai">AI</span>` : null}${p.playerId === myId ? html`<span class="rcard__you">${t('你')}</span>` : null}</b>
         ${Number.isInteger(p.aiTakeoverRound) ? html`<small>${t('第 {round} 回合接替 AI；含此前席位数据，不计入个人统计或奖励。', { round: p.aiTakeoverRound })}</small>` : null}
@@ -160,6 +162,7 @@ export function ResultView({ res, pub = null, myId = null, backLabel, onBack, qu
         </div>
         <footer class="result__foot">
           <${Button} variant="primary" size="xl" icon="chevronLeft" onClick=${onBack}>${backLabel}<//>
+          <${Button} variant="secondary" size="xl" icon="book" onClick=${() => openStats('history')}>${t('对局记录')}<//>
         </footer>
       </section>
       <section class="result__players">
@@ -171,4 +174,3 @@ export function ResultView({ res, pub = null, myId = null, backLabel, onBack, qu
     </main>
   </div>`;
 }
-

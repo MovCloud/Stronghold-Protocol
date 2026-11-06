@@ -13,20 +13,21 @@
 // one semantic difference is the DRAFT — a row's quick choice writes it (确认 saves it, 取消 / Esc drop it) while a 潜能 /
 // 练度 write stays immediate like the roster's; a taken option disables its row, a prototype's locked cells are static.
 
-import { useLayoutEffect, useState } from '../../vendor/hooks.module.js';
+import { useEffect, useLayoutEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon, Button, TierChip, TextField } from '../ui/components.js';
-import { OperatorImage, Img, BondGlyph } from '../ui/gameComponents.js';
-import { profIconUrl, subProfIconUrl, bondIconUrl, skillRecordIconUrl, moduleTypeIconUrl } from '../ui/assetUrls.js';
-import { data } from '../data.js';
-import { MODULE_NONE, PROF_NAME, skillLabel, moduleBadge, quickSkillTags, opsOf, chessOptions } from '../ui/loadoutModel.js';
+import { OperatorImage, Img, RichText, BondGlyph } from '../ui/gameComponents.js';
+import { chessAvatarUrl, chessPortraitUrl, profIconUrl, subProfIconUrl, bondIconUrl, skillRecordIconUrl, moduleTypeIconUrl } from '../ui/assetUrls.js';
+import { data, useData } from '../data.js';
+import { MODULE_NONE, PROF_NAME, skillLabel, moduleBadge, fullTraitText, skillTags, quickSkillTags, opsOf, chessOptions } from '../ui/loadoutModel.js';
 import { diySlotList, pickChoices, pickOptions, slotRecord, defaultPick } from '../ui/diyModel.js';
+import { skinsStore, availableSkins, loadSkinData, setSkin, clearSkin } from '../ui/skins.js';
 import { OperatorVoice } from '../ui/operatorVoice.js';
-// 皮肤 (docs/SKINS.md): the same self-contained section the 干员调配 detail draws, keyed by the operator being picked
-import { SkinSection } from '../ui/skinPicker.js';
 import { LoadoutStats } from '../ui/loadoutStats.js';
 import { CultivationSelects, CultivationSection } from './cultivation.js';
 import { SkillIcon, ModuleGlyph, SkillSection, ModuleSection, ProfFilter, rowControlHit } from './loadoutSections.js';
 import { t } from '../../../shared/i18n.js';
+import { SkinSection } from '../ui/skinPicker.js';
+import { ownAppearance } from '../ui/skinAssets.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI'];
@@ -57,8 +58,8 @@ function Bonds({ bonds }) {
   return html`<span class="diy-bonds">${(bonds || []).map((b) => html`<span key=${b} class="diy-bond"><${BondGlyph} bondId=${b} /><span>${bondName(b)}</span></span>`)}</span>`;
 }
 
-/** One slot: the pick (operator, class, bonds, skill, module, an owned pick's 潜能 / 练度) or an empty slot to fill. */
-function SlotCard({ m, slot, pick, illegal, onOpen, onClear, ops = {}, onOps = null }) {
+/** One slot: operator, class, bonds, skill/module, display skin and an owned pick's potential/cultivation. */
+function SlotCard({ m, slot, pick, illegal, onOpen, onClear, skins = {}, ops = {}, onOps = null }) {
   const D = diyData();
   const rec = pick ? slotRecord(slot.slotId, pick, D) : null;
   const elite = pick ? slotRecord(slot.slotId, pick, D, { elite: true }) : null;
@@ -92,6 +93,15 @@ function SlotCard({ m, slot, pick, illegal, onOpen, onClear, ops = {}, onOps = n
         ${mod ? html`<${Img} src=${moduleTypeIconUrl(data.get('local'), mod.type)} class="diy-slot__micon" fallback=${html`<b class="num">${moduleBadge({ typeName: mod.type })}</b>`} />` : html`<span class="diy-slot__micon diy-slot__micon--none">—</span>`}
         <span>${mod ? html`<b class="num">${mod.type || ''}</b> ${mod.name || ''}` : t('不装备模组')} <small class="t-dim">${t('（精锐时生效）')}</small></span>
       </span>
+      ${(() => {
+        const skin = skinsStore.get().skins[rec.charId] || skinsStore.get().skins[slot.slotId];
+        if (!skin) return null;
+        const skinInfo = availableSkins(rec.charId).find((s) => s.id === skin);
+        return html`<span class="diy-slot__kit" data-skin=${skin}>
+          <span class="diy-slot__micon" style="color: var(--mint-400); font-weight: bold; font-size: 11px;">${t('衣')}</span>
+          <span style="color: var(--mint-400);">${t('时装：{name}', { name: skinInfo?.name || skin })}</span>
+        </span>`;
+      })()}
       ${proto ? html`<small class="diy-slot__cult t-dim">${t('原型干员没有潜能与练度')}</small>`
         : onOps ? html`<span class="diy-slot__cult"><${CultivationSelects} charId=${rec.charId} ops=${ops} onSet=${onOps} /></span>` : null}
       <${OperatorVoice} charId=${rec.assets?.voice || rec.charId} />
@@ -270,13 +280,71 @@ export function DiyPicker(props) {
     filter, prof, query, draft, onFilter: setFilter, onProf: setProf, onQuery: setQuery, onDraft: setDraft });
 }
 
+export const skinAvatarUrl = (skin) => (skin ? `/assets/char/skin_avatar/${skin.replace(/[@#]/g, '_')}.png` : null);
+
+function DiySkinSection({ charId, slotId }) {
+  useData('skins');
+  useData('assets');
+  const [equipped, setEquipped] = useState(() => skinsStore.get().skins[charId] || skinsStore.get().skins[slotId] || null);
+  useEffect(() => {
+    loadSkinData();
+    setEquipped(skinsStore.get().skins[charId] || skinsStore.get().skins[slotId] || null);
+  }, [charId, slotId]);
+
+  const skins = availableSkins(charId);
+  if (!skins.length) return null;
+
+  const defAvatar = data.get('assets')?.chars?.[charId]?.avatar || `/assets/char/avatar/${charId}.png`;
+
+  const onChoose = (skin) => {
+    if (skin) {
+      setSkin(charId, skin);
+      if (slotId) setSkin(slotId, skin);
+      setEquipped(skin);
+    } else {
+      clearSkin(charId);
+      if (slotId) clearSkin(slotId);
+      setEquipped(null);
+    }
+  };
+
+  return html`
+    <h4 class="diy-pick__sec" style="margin-top: 0.1rem;">
+      ${t('时装 / 皮肤')}<small>${t('{n} 款可选 · 局内与结算生效', { n: skins.length })}</small>
+    </h4>
+    <div class="diy-skin-grid" role="radiogroup" aria-label=${t('选择皮肤')}>
+      <button type="button" role="radio" aria-checked=${equipped ? 'false' : 'true'}
+        class=${cx('diy-skin-card', !equipped && 'is-on')}
+        onClick=${() => onChoose(null)}>
+        <img src=${defAvatar} class="diy-skin-card__img" alt="" loading="lazy" onError=${(e) => { e.currentTarget.style.opacity = '0.3'; }} />
+        <span class="diy-skin-card__info">
+          <b class="diy-skin-card__name">${t('默认')}</b>
+          <small class="diy-skin-card__tag">DEFAULT</small>
+        </span>
+      </button>
+      ${skins.map((sk) => {
+        const art = skinAvatarUrl(sk.id);
+        const isEquipped = equipped === sk.id;
+        return html`<button key=${sk.id} type="button" role="radio" aria-checked=${isEquipped ? 'true' : 'false'}
+          class=${cx('diy-skin-card', isEquipped && 'is-on')}
+          onClick=${() => onChoose(sk.id)}>
+          <img src=${art} class="diy-skin-card__img" alt="" loading="lazy" onError=${(e) => { e.currentTarget.src = defAvatar; }} />
+          <span class="diy-skin-card__info">
+            <b class="diy-skin-card__name">${sk.name}</b>
+            <small class="diy-skin-card__tag">${sk.group || 'SPECIAL'}</small>
+          </span>
+        </button>`;
+      })}
+    </div>`;
+}
+
 /**
  * The picker's view (no hooks: the tests draw it): `filter` 'all' | 'proto' | 'owned', `prof` the profession the roster's
  * chips select (null = every one), `query`, `draft` the pick being made (null = none chosen yet) and their setters,
  * `narrowDetail` the phone layout (the detail over the list).
  */
 export function DiyPickerView({ m, slot, picks, kitted, onDone, onClose, filter, prof = null, query, draft, onFilter: setFilter,
-  onProf = () => {}, onQuery: setQuery, onDraft: setDraft,
+  onProf = () => {}, onQuery: setQuery, onDraft: setDraft, skins = {}, skinSync = 'idle', onSkins,
   ops = {}, onOps = null, previewLevel = 'elite', onPreviewLevel = () => {}, narrowDetail = false, onNarrowDetail = () => {} }) {
   const D = diyData();
   const cur = picks[slot.slotId] || null;
@@ -318,6 +386,7 @@ export function DiyPickerView({ m, slot, picks, kitted, onDone, onClose, filter,
   const golden = draft ? slotRecord(slot.slotId, draft, D, { elite: true, potential }) : null;
   const previewEntries = base ? { [base.baseId || base.chessId]: { skill: skillOn, module: modOn || 'none' } } : {};
   const previewChess = (id) => id === golden?.chessId ? golden : base;
+
   // the 默认 badge is suppressed: on a slot record `isDefault` marks the CURRENT pick (shared/standIn.js composeUnitRecord),
   // not the operator's official default; the module list itself is the DIY one (ui/diyModel.js), 不装备 first
   const skillOptions = !ch ? []
@@ -386,7 +455,7 @@ export function DiyPickerView({ m, slot, picks, kitted, onDone, onClose, filter,
                    keeps it in this detail panel and not on the slot card. The key is draft.charId, which is what the
                    manifest groups skins under and what the server stores (ps.skins[charId]), so a slot fielded as its
                    golden form keeps the appearance. */ null}
-              <${SkinSection} charId=${draft.charId} />
+              <${SkinSection} m=${m} charId=${draft.charId} record=${golden || base} choices=${skins} sync=${skinSync} onChange=${onSkins} />
               ${ch.proto
                 ? html`<p class="lo-locknote"><${Icon} name="info" />${t('原型干员没有潜能与练度')}</p>`
                 : onOps ? html`<${CultivationSection} charId=${draft.charId} ops=${ops} onSet=${onOps} />` : null}
@@ -399,6 +468,7 @@ export function DiyPickerView({ m, slot, picks, kitted, onDone, onClose, filter,
               ${ch.proto ? html`<p class="lo-locknote"><${Icon} name="info" />${t('原型干员的技能与补位时一致，不可更改')}</p>` : null}
             </div>` : html`<div class="diy-pick__detail"><p class="lo-empty t-dim">${t('从左侧选择一名干员')}</p></div>`}
         </div>
+
       </div>
     </div>
     <footer class="diy-pick__foot">
@@ -421,7 +491,7 @@ export function DiyPanel(props) {
 }
 
 /** The tab's view (no hooks: the tests draw it): `picking` = the slot being filled, or null. */
-export function DiyPanelView({ m, picks, legal, kitted, onSet, picking, onPicking: setPicking, ops = {}, onOps = null }) {
+export function DiyPanelView({ m, picks, legal, kitted, onSet, picking, onPicking: setPicking, skins = {}, skinSync = 'idle', onSkins, ops = {}, onOps = null }) {
   const slots = diySlotList(diyData());
   const slot = picking ? slots.find((s) => s.slotId === picking) : null;
   const tiers = [...new Set(slots.map((s) => s.tier))];
@@ -434,11 +504,11 @@ export function DiyPanelView({ m, picks, legal, kitted, onSet, picking, onPickin
         <h3 class="own-tier__head"><${TierChip} tier=${tier} size="sm" /><span class="num">${ROMAN[tier]}</span><span>${t('阶')}</span></h3>
         <div class="diy-grid">
           ${slots.filter((s) => s.tier === tier).map((s) => html`<${SlotCard} key=${s.slotId} m=${m} slot=${s} pick=${picks[s.slotId] || null}
-            illegal=${!!picks[s.slotId] && !legal[s.slotId]} onOpen=${setPicking} onClear=${(id) => onSet(id, null)} ops=${ops} onOps=${onOps} />`)}
+            skins=${skins} illegal=${!!picks[s.slotId] && !legal[s.slotId]} onOpen=${setPicking} onClear=${(id) => onSet(id, null)} ops=${ops} onOps=${onOps} />`)}
         </div>
       </section>`)}
     </div>
-    ${slot ? html`<${DiyPicker} m=${m} slot=${slot} picks=${picks} kitted=${kitted} ops=${ops} onOps=${onOps} onClose=${() => setPicking(null)}
+    ${slot ? html`<${DiyPicker} m=${m} slot=${slot} picks=${picks} kitted=${kitted} skins=${skins} skinSync=${skinSync} onSkins=${onSkins} ops=${ops} onOps=${onOps} onClose=${() => setPicking(null)}
       onDone=${(pick) => { onSet(slot.slotId, pick); setPicking(null); }} />` : null}
   </main>`;
 }

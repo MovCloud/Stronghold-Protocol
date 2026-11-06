@@ -29,8 +29,8 @@ Q / X prefer the selected operator, otherwise the hovered operator (PR #859, the
 [§35.31](history/0.3.2.md#3531-q--x-prefer-the-selected-operator-otherwise-use-hover-pr-859-felixsion28).
 Current interaction contract: [design/client.md](design/client.md).
 
-设置 → 异形屏适配 →「界面大小」 (75–100 %, manual, default 100 %, at 文字大小 小 only) scales the layout root and every
-px floor while the touch floor stays: [§35.43](history/0.3.2.md#3543-界面大小-in-异形屏适配-837-pr-838-reworked-zasx77771); contract:
+设置 → 异形屏适配 →「界面大小」 (70–120 %, manual, default 100 %, at every 文字大小 step — the text floors carry the
+factor here) scales the layout root and every px floor while the touch floor stays: [§35.43](history/0.3.2.md#3543-界面大小-in-异形屏适配-837-pr-838-reworked-zasx77771); contract:
 [design/client.md](design/client.md).
 
 The damage settlement follows PRTS 伤判效果 / 伤害分类 since 0.3.2 (@Siornya's series): the public entry

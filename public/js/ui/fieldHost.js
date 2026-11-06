@@ -14,6 +14,7 @@ import { data } from '../data.js';
 import { audio } from '../audio.js';
 import { store } from '../store.js';
 import { settingsStore } from './settings.js';
+import { outfitModelOf } from './outfits.js';
 
 const LOAD_TIMEOUT_MS = 12000;
 // [ASSUMED] Two automatic retries; keep the existing two event retries available for a later network/tab recovery.
@@ -89,14 +90,17 @@ export function hudBands(kind, size, opts) {
   const folded = !!opts && opts.shop === false;
   const h = size?.height || 1080;
   let rem = 100;
+  // 异形屏适配 (ui/screenFit.js): the board's host may not start at the viewport's top — the HUD rects are measured from it
+  let oy = 0;
   let safeTop = 0;
   let safeBottom = 0;
   let corner = 0;
+  let shopRow = 0;
   let bondsBottom = 0;
   try {
     rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 100;
     // 异形屏适配 (ui/screenFit.js): the board's host may not start at the viewport's top — the HUD rects are measured from it
-    const oy = document.querySelector('.gm__field')?.getBoundingClientRect()?.top || 0;
+    oy = document.querySelector('.gm__field')?.getBoundingClientRect()?.top || 0;
     // the HUD layer starts below the top safe-area inset and ends above the bottom one (css/devices.css .gm__hud)
     const hud = document.querySelector('.gm__hud')?.getBoundingClientRect();
     safeTop = Math.max(0, (hud?.top || 0) - oy);
@@ -107,11 +111,15 @@ export function hudBands(kind, size, opts) {
     if (folded) {
       if (hud && hud.bottom - oy > 0) safeBottom = Math.max(0, h - (hud.bottom - oy));
       corner = cornerBand(h, oy);
+    } else {
+      // Phone cards have a readable pixel floor; reserve their actual row, not the old rem-only height.
+      const row = document.querySelector('.gm__hud > .shopbar .shopbar__row')?.getBoundingClientRect();
+      if (row && row.height > 0) shopRow = Math.max(0, h - row.top);
     }
   } catch { /* ignore */ }
   const bottom = folded
     ? Math.max(safeBottom + rem * HUD_REM.shopTabTop + HUD_REM.shopTabBorderPx, corner || safeBottom + rem * HUD_REM.cornerTop)
-    : rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx;
+    : Math.max(rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx, shopRow);
   return {
     top: Math.min(h * 0.4, Math.max(bondsBottom, safeTop + Math.max(rem * HUD_REM.bondStripBottom,
       rem * HUD_REM.bondStripTop + HUD_REM.bondArrowPx))),
@@ -236,6 +244,8 @@ export async function mountFieldView(host, { signal } = {}) {
   const pref = renderPref();
   let fallbackReason = 'explicit';
   const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), padding: hudPadding, hud: hudBands };
+  // (fork, docs/OUTFITS.md) the outfit model of a unit (its owner's choice), read by render/units.js
+  opts.outfitOf = outfitModelOf;
   if (pref !== 'fallback') {
     const controller = new AbortController();
     const onAbort = () => controller.abort(abortError(signal));
@@ -311,7 +321,9 @@ export function useFieldView(hostRef) {
       if (dead) { view.destroy(); return; }
       viewRef.current = view;
       if (view.kind === 'engine') { retries.current = 0; automaticRetries.current = 0; }
-      // Preserve the upstream skin/identity initialization before the first board arrives.
+      // 设置「显示其他玩家的皮肤」 needs to know which pieces are this page's own: the identity is on the
+      // app store (`me.playerId`, set by welcome), so the view is told it rather than resolving it per frame. Told
+      // before the first board arrives — the mount waits for `enterBattle`/`setPrep`, which the game screen calls after.
       view.setMe?.(store.get().me?.playerId || null);
       view.setSkins?.(store.get().match?.public?.players);
       globalThis.__SP_VIEW__ = view; // dev / E2E introspection (view.raw.stats?.())

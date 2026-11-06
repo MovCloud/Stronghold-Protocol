@@ -81,7 +81,9 @@ test('positionClass: a MELEE chess whose trait reads 「可以放置于远程位
 });
 
 test('g.move: legality per chess position, BAD_TILE outside, deploy cap 8, swaps allowed at cap', () => {
-  const { h, m, ps } = prepMatch();
+  // Placement capacity needs seven distinct tier-II melee fillers, independently of opening BAN rotation.
+  const data = { ...DATA, config: { ...DATA.config, bans: { ...DATA.config.bans, NORMAL: { core: 0, addon: 0 } } } };
+  const { h, m, ps } = prepMatch('act2autochess_m01', { data });
   const meleeId = chessOfTier(1, MELEE).find((id) => m.pool.has(id));
   const rangedId = chessOfTier(1, RANGED).find((id) => m.pool.has(id));
   const a = give(m, ps, meleeId);
@@ -101,6 +103,7 @@ test('g.move: legality per chess position, BAD_TILE outside, deploy cap 8, swaps
   const tiles = legalTiles(ps.deployMap(), 'melee').filter(([r, c]) => !ps.board.has(tileKey(r, c)));
   const extra = [];
   for (const id of chessOfTier(2, MELEE).filter((x) => m.pool.has(x)).slice(0, 7)) extra.push(give(m, ps, id));
+  assert.equal(extra.length, 7, 'seven distinct fillers keep merge rules out of the capacity test');
   for (let i = 0; i < 6; i++) assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: extra[i].uid, to: { area: 'board', row: tiles[i][0], col: tiles[i][1] } }), { ok: true });
   assert.equal(ps.deployCount, 8);
   assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: extra[6].uid, to: { area: 'board', row: tiles[6][0], col: tiles[6][1] } }), { error: ERR.BOARD_FULL });
@@ -139,7 +142,8 @@ test('g.move to the hand: withdraw, full-hand swap with a chess, hand↔hand swa
   assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: boardPiece.uid, to: { area: 'hand', idx: itemIdx } }), { error: ERR.HAND_FULL });
   // items cannot be placed on the board but can move inside the hand
   assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: item.uid, to: { area: 'board', row: 9, col: 4 } }).error, ERR.BAD_TARGET);
-  const other = handChess[0];
+  const other = handChess.find((p) => ps.find(p.uid)?.area === 'hand');
+  assert.ok(other, 'a chess remains in the hand after the board swap');
   const oi = ps.hand.findIndex((p) => p && p.uid === other.uid);
   assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: item.uid, to: { area: 'hand', idx: oi } }), { ok: true });
   assert.equal(ps.hand[oi].uid, item.uid);
@@ -220,7 +224,9 @@ test('terrain 机变 card (模拟战场演变·模式二 on 战场 m02): an oper
   const r = give(m, ps, ranged);
   assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: r.uid, to: { area: 'board', row: 12, col: 5 } }), { ok: true });
   // a full hand: the withdrawn operator overflows into temp (the player re-places it during the prep)
-  for (let i = 1; ps.hand.some((p) => p == null); i++) give(m, ps, melees[i % melees.length]);
+  const fillers = m.gd.visibleChess.filter(id => m.pool.has(id) && id !== a.id && id !== r.id);
+  assert.ok(fillers.length >= ps.hand.length, 'the scenario has enough different fillers to avoid an unrelated merge');
+  for (let i = 0; ps.hand.some((p) => p == null); i++) give(m, ps, fillers[i]);
   const card = m.gd.choices.cards.tactic.find((c) => c.effectId === 'map_m02_1');
   assert.ok(card, 'data: the m02 terrain card');
   applyCard(m, ps, { kind: 'tactic', id: 'map_m02_1', name: card.name, desc: card.desc, team: false, tacticKind: 'terrain' });

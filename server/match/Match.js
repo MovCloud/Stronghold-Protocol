@@ -15,12 +15,16 @@
 //   opts.aiPicksLast boolean (optional)         the co-op room option 「AI 队友最后选择」 (room.setAiPicksLast, GitHub #338):
 //                                              the strategy and 机变 drafts put every human seat before every AI seat
 //                                              (MatchPhases.humansFirst); only `true` turns it on; ignored in solo
-//   opts.seats       Array<{ seat: 0..3, playerId: string, name: string, isBot: boolean, connected: boolean,
+//   opts.combatSpeed number (optional)          the room rule 「全局默认速度」 (room.setSpeed): 1 or 2 — every match and
+//                                              every round starts at it (Match.defaultSpeed). A 快进 / 60× that a vote won
+//                                              covers only the battle it was voted in; absent → GAME_SPEED
+//   opts.seats       Array<{ seat: 0..(capacity-1), playerId: string, name: string, isBot: boolean, connected: boolean,
 //                            loadout?: { [baseChessId]: { skill: index, module: uniEquipId|'none'|null } } | null,
 //                            ops?: { [charId]: { potential: 1–6, cultivate: 0–3 } } | null,
 //                            notOwned?: string[] | null,
-//                            diy?: { [slotBaseId]: { charId, skillIndex, uniEquipId } } | null }>
-//                    sorted by seat, 1–4 entries, ≥ 1 human; solo ⇒ exactly 1 human and no bots.
+//                            diy?: { [slotBaseId]: { charId, skillIndex, uniEquipId } } | null,
+//                            band?: bandId | null }>
+//                    sorted by seat, ordinary 1–4 entries; opt-in friend-room capacity up to 20. Solo stays one seat.
 //                    Bot playerIds start with 'ai_'. Seat indexes may have gaps (e.g. seats 0 and 2).
 //                    `loadout` (DESIGN §16, optional): the human's operator loadout, already checked by the lobby
 //                    (shared/protocol.js checkLoadout); PlayerState re-checks it against opts.data and ignores it for bots.
@@ -31,6 +35,11 @@
 //                    for the match; those chess fight as their stand-ins (PlayerState setNotOwned; bots own everything).
 //                    `diy` (0.2.0 自选编队, optional): the human's 自选 picks (shared/protocol.js checkDiyPicks) — fixed for
 //                    the match; the slotted operators join the human's own shop (PlayerState setDiy / initDiyStock).
+//                    `band` (optional, AI seats only; room.setBotBand): the strategy the host designated for the AI
+//                    seat — co-op only, and only a band the mode offers (gd.bandAllowed), one AI seat per band (the
+//                    lowest seat keeps a repeated one). The draft holds it for that seat until it picks: nobody else can
+//                    take it (MatchPhases.bandTaken) and the seat takes it on its turn (designatedBand); m.public
+//                    draft.reserved lists the held ones. Absent / null: the AI picks by itself (botPickBand).
 //   opts.kitted      string[] (optional)        the operators a 自选 slot may field in this room (the content set's
 //                                              list, lobby.kittedFor). Absent on a vanilla match, so setDiy keeps
 //                                              KITTED_CHARS and a normal match stays byte-identical. A modded room
@@ -69,6 +78,11 @@
 //                                              sent. The platform then (synchronously) returns the room to
 //                                              LOBBY and (asynchronously, next macrotask) calls dispose().
 //                                              `summary` is free-form JSON (kept as room.lastSummary).
+//   opts.onRemove(playerId, { reason, rounds }) → void   (optional) the match removed a human for good (the AFK rule,
+//                                              reason 'afk'; a passed 投票移出, reason 'kicked', rounds = the seat's
+//                                              offline rounds — right after it sent the player m.removed): the platform
+//                                              detaches the seat exactly like a g.leave, whose onLeave(playerId) follows
+//                                              at once or later (the match quits the seat itself either way)
 //
 // start()                   Called once, right after construction. Must broadcast the first m.public and send
 //                           each human its m.private. May call onEnd synchronously (the platform copes).
@@ -87,8 +101,8 @@
 //                           during INFO_CHECK (the briefing's 干员调配 entry); afterwards the match's loadout is locked
 //                           (WRONG_PHASE). A room whose prepLoadout rule is prep also accepts one merge during PREP
 //                           while that seat has not pressed 准备 (DESIGN §34.15).
-// onLeave(playerId)         The human quit permanently (g.leave, room.leave, or the 10-minute reconnect
-//                           window expired). They will never return under this playerId in this match;
+// onLeave(playerId)         The human quit permanently (g.leave, room.leave, or the reconnect window
+//                           expired). They will never return under this playerId in this match;
 //                           treat as quit (AI takes over / eliminated per DESIGN). No onDisconnect follows.
 // dispose()                 Stop every timer/interval and release resources. Idempotent. After dispose the
 //                           platform ignores send/broadcast/onEnd from this instance.
@@ -130,8 +144,11 @@
 // sim, seeds and scoring and answers b.rehearsalResult with the index of its pick (server/sim/rehearsal.js). A timeout,
 // a host that changed / disconnected / left or a task this client cannot run makes the server simulate the very same
 // candidates itself; the task is dropped either way, so a late answer is ignored (server/match/match/rehearsal.js).
-// Solo pause (g.pause { on }, setPause): freezes the field clocks, result deadlines, server release timers, the boss
-// clock and the server pacers; m.public.paused; resume shifts every clock / deadline by the pause.
+// Pause (g.pause { on } → a match control request, matchControl.js): freezes the field clocks, result deadlines,
+// server release timers, the boss clock and the server pacers; m.public.paused; resume shifts every clock / deadline
+// by the pause. The three battle controls (pause, fast-forward, 跳过) are requests the connected humans must all
+// agree to; with no other connected human the server applies them directly. m.public.speed carries the playback
+// speed, and a passed speed change recomputes every end time from the game seconds still left (setGameSpeed).
 // Live LP (user playtest #3 item 2): during COMBAT / 联防 m.public players[].pendingLp = min(lpCapPerRound, the counted
 // leaks of the player's own battle so far) (_pendingLpView; omitted when 0) — the teammates' rows of the team panel
 // show lp − pendingLp; the settlement lands with the SETTLE view, where it is gone. 联防 (user playtest #6 item 7): a
@@ -143,10 +160,19 @@
 // phase outside its battles (soloUntimed); the co-op strategy draft has ONE countdown — BAND_TURN_SECONDS per turn,
 // published as m.public.deadline — AI seats pick at once and a turn that runs out takes the highlighted strategy
 // (g.bandFocus → timeoutBand); g.unitStats answers m.unitStats: the stats the board's units start their next battle with.
+//   opts.afkRemoveRounds  integer ≥ 0 (default AFK_REMOVE_ROUNDS = 2; 0 = off): the AFK rule — see the leave policy below
+//   opts.experimental locked room revivalEnabled / disableSharedPool / optional disableDuckLord, false by default
+//   opts.snapshotHz   20 | 10 | 5, server snapshots only
+//   opts.localReplica default true (env SP_LOCAL_REPLICA=0 → false): server-run combat shows a Worker-run field to the
+//                     seated humans' browsers that declared g.sim { local: true } (own, watched or followed; boss / hidden
+//                     ones with the Worker's pool record, b.ext) as a b.start display replica checked by b.sync digests,
+//                     instead of streaming it (localReplica.js; DESIGN §14)
 //   opts.clientCombat  default true (env SP_COMBAT=server → false: the legacy server-run + snapshot streaming mode)
 //   opts.verify        'off' | 'sample' | 'all' (env SP_VERIFY, default 'off'): re-simulate accepted client results
 //                      ('sample': ~1 in 8, in later slices, mismatches logged; 'all': before accepting — the
 //                      server's result wins on a mismatch)
+//   opts.workerPool    shared process-wide CPU pool (server/workers); production uses it for rehearsal, normal/unite
+//                      headless runs and verification. Virtual schedulers and custom Battle classes stay local.
 //
 // Engine-only extra options (tests / tools; the lobby never passes them):
 //   opts.scheduler     RealScheduler (default, uses opts.now) | VirtualScheduler (./scheduler.js)
@@ -156,7 +182,9 @@
 //   opts.timerScale    multiplier on every real-time phase timer (default 1)
 //   opts.combatSpeed   game seconds per real second while battles run in real time (default 2, the forced 2×)
 //   opts.botRehearsal  candidate layouts a bot simulates per prep before placing (default 3, 0 = heuristic only;
-//                      a whole battle per candidate: ~20–300 ms of CPU each, see server/match/bot.js createRehearsal)
+//                      a whole battle per candidate: ~20–300 ms of CPU each, see server/match/bot.js createRehearsal).
+//                      Env SP_BOT_REHEARSAL (0..8) when no option is given: the operator's biggest CPU knob — bot
+//                      rehearsal is ~70 % of one co-op match's server CPU (docs/DEPLOY.md §3.4)
 //   opts.botStrategy  a registered ID or trusted server-side strategy object; defaults to SP_BOT_STRATEGY / 'legacy'
 //   opts.botSliceMs    wall-clock ms of rehearsal per scheduler callback (default 8 with a real scheduler, unbounded
 //                      with a virtual one); the rest runs in later callbacks (scheduleBotPrep)
@@ -177,30 +205,50 @@
 //   * disconnected human: the seat keeps playing its last lineup; draft turns and prep auto-resolve at their
 //     deadlines (band → 华法琳, 机变 → a random remaining card, prep → auto-ready with temp auto-resolved). Nothing is
 //     bought for them unless they toggled "AI 托管" (g.autoplay { on: true }), which lets the bot play the seat.
+//     掉线由 AI 接管 (the owner's rule of 2026-10-14): a seat still offline as its OFFLINE_TAKEOVER_ROUNDS-th prep in a
+//     row ends gets AI 托管 from the next phase on (m.public autoplay, a ticker to everyone); the seat stays the
+//     player's, and reconnecting turns that AI 托管 off again (a ticker, and a toast to the player) — one the player
+//     turned on itself stays (MatchPlatform._checkOffline, onReconnect). Untimed matches (soloUntimed) just wait. The
+//     lobby keeps such a session resumable while another player of the match is online (server/lobby.js).
 //   * departed human (onLeave): 中途退出 counts as elimination (research 00-INDEX §3, 01 §9, 06 §7 / §10.3) — every
 //     copy the seat holds returns to the shared pool at once, the seat leaves the round loop, the Final Assault
 //     pairing and the boss pool; its own running normal battle is force-ended. The seat shows status 'left'. When no
 //     human is left at all the match ends ('abandoned'); when nobody alive is left it ends as 'eliminated'.
+//   * idle human (挂机移出, opts.afkRemoveRounds; matches that started with ≥ 2 humans): as each round's PREP ends, before
+//     its battle, an alive human seat without an accepted substantive intent (common.js AFK_ACTIONS) since the previous
+//     check gains an idle round, one with such an intent — or under AI 托管, or disconnected, at that moment — resets
+//     to 0 (a dropped seat is left to the disconnect policy above: the reconnect window decides; the first
+//     check counts from the match start: strategy draft, 机变). At afkRemoveRounds the seat is removed like a departed
+//     human: m.removed { reason: 'afk', rounds } to it, m.notice { kind: 'afkRemoved', playerId, name, rounds } to
+//     everyone else in the match (spectator seats included), opts.onRemove, onLeave (MatchPlatform._checkIdle).
+//   * 投票移出 (the owner's rule of 2026-10-17, kickVote.js): in SP_DRAFT / PREP the connected humans may vote out a seat
+//     under the offline takeover above (g.kickVote / g.kickBallot, majority); a passed vote removes it like the AFK
+//     rule — m.removed { reason: 'kicked' }, m.notice kickPassed instead of afkRemoved, opts.onRemove, onLeave.
 //
 // Code layout: this file keeps the constructor (options, seats, the per-match setup, the state fields); the methods
 // live in server/match/match/, one module per concern, and are installed on Match.prototype below in a fixed order,
 // with the descriptors of class methods (non-enumerable; `this` is the match, subclasses and `super` calls work as
 // before):
-//   platform.js      the interface above: start, handle, setLoadout, disconnect / reconnect / resync, leave, dispose
+//   platform.js      the interface above: start, handle, setLoadout, disconnect / reconnect / resync, leave, the AFK
+//                    rule's removal, the offline takeover, dispose
 //   infra.js         error isolation, timers and the phase deadline, player lists, bonds in the pool, deploy field,
 //                    meta dispatch
 //   messaging.js     send / broadcast / toasts / tickers, dirty marks, flush (m.private per player, m.public throttled)
 //   views.js         m.public (statuses, field progress, pendingLp / uniteLeft), the nextEnemies preview, the prep
 //                    scout's m.field
 //   watch.js         spectator seats, g.watch, who is shown which field, resend on reconnect, prep-scout pushes
-//   intents.js       the g.* / b.* router, emotes, AI 托管, g.unitStats
+//   intents.js       the g.* / b.* router, emotes, AI 托管, g.unitStats, g.bondPlan
 //   pause.js         the solo pause
 //   phases.js        INFO_CHECK, BAND_DRAFT (the strategy draft), BATTLE_CHECK, ROUND_START
+//   setupVote.js     the INFO_CHECK opening reroll vote (重刷本局) and its transactional setup replacement
+//   kickVote.js      投票移出: the vote to remove a teammate under the offline takeover
 //   spDraft.js       SP_DRAFT (机变) and the rolls the meta effects ask for (bounties, item ids, pools)
 //   prep.js          PREP: its start, the AI seats' sliced preps, Ready, the deadline, its end
 //   combat.js        battle construction, COMBAT (both modes), the per-field results, then 联防 or SETTLE
 //   clientCombat.js  client-side combat bookkeeping: field records, the field clock, authority, b.start, result
 //                    deadlines and releases, server runs, field completion
+//   localReplica.js  server-run combat: local display replicas of the field a seat is shown (g.sim, b.start, b.sync, b.ext,
+//                    stream fallback)
 //   rehearsal.js     the bot layout rehearsal delegated to the current host's browser: the b.rehearsal task, its answer,
 //                    its timeout and the server takeover (DESIGN §14)
 //   reports.js       b.progress / b.result (validation, held boss results), SP_VERIFY
@@ -208,10 +256,14 @@
 //   bossRounds.js    FINAL_ASSAULT / HIDDEN_CORE: boss fields, the shared pool, plausibility budgets, the boss clock,
 //                    b.pool, the merged team LP, overtime, bounties after a boss field
 //   settle.js        SETTLE and RESULT
-//   common.js        what the modules share (FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS — re-exported here, OK,
-//                    fail, BOSS_CLOCK_MS)
+//   common.js        what the modules share (FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS, AFK_REMOVE_ROUNDS —
+//                    re-exported here, OK, fail, BOSS_CLOCK_MS, AFK_ACTIONS)
 
 import { PHASE, modeIdFor } from '../../shared/constants.js';
+import { experimentalOptions } from '../../shared/experimental.js';
+import { roomCapacity, isPlayerCapacity } from '../../shared/playerCapacity.js';
+import { createDamageBoard } from './damageBoard.js';
+import { MatchExtensions } from './match/extensions.js';
 import { isContentHash } from '../../shared/plugins/identity.js';
 import { DEFAULT_VERSION, versionById } from '../../shared/versions.js';
 import { Battle } from '../sim/Battle.js';
@@ -219,12 +271,13 @@ import { DataSource } from '../sim/simdata.js';
 import { createRng, deriveSeed } from '../sim/rng.js';
 import { GameData } from './gamedata.js';
 import { RealScheduler } from './scheduler.js';
-import { SharedPool, SharedItemPool, drawDisabledBonds } from './pool.js';
+import { FreezeScheduler } from './freezeScheduler.js';
+import { SharedPool, createPoolGroups, drawDisabledBonds } from './pool.js';
 import { PlayerState } from './PlayerState.js';
 import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
 import { setupMatchWaves } from './waves.js';
 import { getBotStrategy } from './botStrategies.js';
-import { GAME_SPEED, HEADLESS_SLICE_MS } from './fields.js';
+import { GAME_SPEED, HEADLESS_SLICE_MS, parseSnapshotHz } from './fields.js';
 import { MatchPlatform } from './match/platform.js';
 import { MatchInfra } from './match/infra.js';
 import { MatchMessaging } from './match/messaging.js';
@@ -233,29 +286,49 @@ import { MatchWatch } from './match/watch.js';
 import { MatchIntents } from './match/intents.js';
 import { MatchPause } from './match/pause.js';
 import { MatchPhases } from './match/phases.js';
+import { MatchEvent } from './match/event.js';
 import { MatchSetupVote } from './match/setupVote.js';
+import { MatchConfront } from './match/confront.js';
+import { MatchKickVote } from './match/kickVote.js';
+import { MatchControl } from './match/matchControl.js';
 import { MatchSpDraft } from './match/spDraft.js';
 import { MatchPrep } from './match/prep.js';
 import { MatchCombat } from './match/combat.js';
 import { MatchClientCombat } from './match/clientCombat.js';
+import { MatchLocalReplica } from './match/localReplica.js';
 import { MatchRehearsal, REHEARSAL_ANSWER_MS } from './match/rehearsal.js';
 import { MatchReports } from './match/reports.js';
 import { MatchUnite } from './match/unitePhase.js';
+import { MatchUniteWaves } from './match/unitePhaseWaves.js';
 import { MatchBoss } from './match/bossRounds.js';
 import { MatchSettle } from './match/settle.js';
+import { AFK_REMOVE_ROUNDS } from './match/common.js';
 import { installTestTrace } from './testTrace.js';
 import { MatchTestCommands } from './match/testCommands.js';
 import { MatchOffers } from './match/offers.js';
 import { createExternalAI } from './llmGate.js';
 
-export { FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS } from './match/common.js';
+export { FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS, REVIVAL_UNAVAILABLE_REASONS, AFK_REMOVE_ROUNDS, OFFLINE_TAKEOVER_ROUNDS } from './match/common.js';
 
-const BOT_REHEARSAL_DEFAULT = 3;
+/** Layouts a bot rehearses per prep with the real simulation (the engine default; 0 = heuristic placement only). */
+export const BOT_REHEARSAL_DEFAULT = 3;
 /** Wall-clock ms of bot layout rehearsal per scheduler callback (real time; virtual time runs it in one go). */
 const BOT_SLICE_MS = 8;
 const env = (k) => (typeof process !== 'undefined' && process.env ? process.env[k] : undefined);
+/**
+ * SP_BOT_REHEARSAL → 0..8 (the engine default 3 when unset or unusable). Operators' single biggest CPU knob: bot prep
+ * rehearses each candidate layout with the real simulation, ~70 % of one co-op match's CPU (docs/DEPLOY.md §3.4).
+ */
+export function parseBotRehearsal(v, fallback = BOT_REHEARSAL_DEFAULT) {
+  const s = String(v ?? '').trim();
+  if (!s) return fallback;
+  const n = Number(s);
+  return Number.isInteger(n) && n >= 0 ? Math.min(n, 8) : fallback;
+}
 /** Default combat mode: client-side unless SP_COMBAT=server. */
-const envClientCombat = () => String(env('SP_COMBAT') || '').toLowerCase() !== 'server';
+export function parseCombat(v) {
+  return String(v ?? '').trim().toLowerCase() === 'server' ? 'server' : 'client';
+}
 /** SP_VERIFY → 'off' | 'sample' | 'all'. */
 export function parseVerify(v) {
   const s = String(v ?? '').trim().toLowerCase();
@@ -326,18 +399,39 @@ export class Match {
     this.gd = new GameData(this.data, this.modeId);
     if (!this.difficulty) this.difficulty = this.gd.difficulty;
     this.isSolo = this.mode === 'solo' || this.gd.isSolo;
+    /** 2V2 对抗局 (T1113047): team-scoped scouting / boss fields until the opponent reveal (infra.js opponentRevealed) */
+    this.isVersus = this.mode === 'versus';
+    // Only a room created by the lobby can opt in. Public matchmaking passes false and has no room console.
+    this.consoleEnabled = opts.consoleEnabled === true;
     /** 「AI 队友最后选择」 (opts.aiPicksLast, GitHub #338): humans draft before AI seats (MatchPhases.humansFirst) */
     this.aiPicksLast = !this.isSolo && opts.aiPicksLast === true;
+    /** 挂机移出 (opts.afkRemoveRounds): idle rounds in a row that remove a human seat; 0 = off (MatchPlatform._checkIdle) */
+    this.afkRemoveRounds = Number.isInteger(opts.afkRemoveRounds) && opts.afkRemoveRounds >= 0 ? Math.min(opts.afkRemoveRounds, 100) : AFK_REMOVE_ROUNDS;
     this.ownsScheduler = !opts.scheduler;
-    this.sched = opts.scheduler || new RealScheduler({ now: opts.now || Date.now, onError: (e) => this.reportError('timer', e) });
+    // The match's scheduler is always a FreezeScheduler facade: it forwards the injectable clock/timer API but adds the
+    // D030 game clock (`gameNow`) and the emergency hold (`freeze`/`resume`) that setDeadline / pause use.
+    this.sched = new FreezeScheduler(opts.scheduler || new RealScheduler({ now: opts.now || Date.now, onError: (e) => this.reportError('timer', e) }), { ownsSource: this.ownsScheduler });
     this.registry = opts.registry || getDefaultRegistry();
     this.dispatcher = new EffectDispatcher(this, this.registry);
     this.BattleClass = typeof opts.BattleClass === 'function' ? opts.BattleClass : Battle;
+    // The pool is owned by startServer. Virtual clocks / custom engines keep their synchronous contract.
+    this.workerPool = !this.sched.virtual && this.BattleClass === Battle ? opts.workerPool || null : null;
+    this._workerTasks = new Set();
     this.battleContent = opts.battleContent || 'full';
     this.timerScale = Number.isFinite(opts.timerScale) && opts.timerScale >= 0 ? opts.timerScale : 1;
     this.gameSpeed = Number.isFinite(opts.combatSpeed) && opts.combatSpeed > 0 ? Math.min(opts.combatSpeed, 200) : GAME_SPEED;
+    /**
+     * The room rule's speed (opts.combatSpeed, 1× or 2×): every round starts at it. A 快进 / 60× skip that a vote won
+     * only covers the battle it was voted in — it is never carried into the next round (phases.js startRound resets).
+     */
+    this.defaultSpeed = this.gameSpeed;
+    this.snapshotHz = parseSnapshotHz(opts.snapshotHz ?? env('SP_SNAPSHOT_HZ'));
+    /** server-run combat: own fields as local display replicas for browsers that declared g.sim (localReplica.js) */
+    this.localReplica = opts.localReplica != null ? !!opts.localReplica : String(env('SP_LOCAL_REPLICA') ?? '').trim() !== '0';
     /** layouts a bot rehearses per prep with the real simulation (bot.js; 0 = heuristic placement only) */
-    this.botRehearsal = Number.isInteger(opts.botRehearsal) && opts.botRehearsal >= 0 ? Math.min(opts.botRehearsal, 8) : BOT_REHEARSAL_DEFAULT;
+    this.botRehearsal = Number.isInteger(opts.botRehearsal) && opts.botRehearsal >= 0
+      ? Math.min(opts.botRehearsal, 8)
+      : parseBotRehearsal(env('SP_BOT_REHEARSAL'));
     this.bot = getBotStrategy(opts.botStrategy ?? env('SP_BOT_STRATEGY'));
     /** wall-clock budget of one rehearsal slice (scheduleBotPrep) */
     this.botSliceMs = Number.isFinite(opts.botSliceMs) && opts.botSliceMs > 0 ? opts.botSliceMs : this.sched.virtual ? Infinity : BOT_SLICE_MS;
@@ -392,8 +486,14 @@ export class Match {
     this.rehearsalPoolStats = { pooled: 0, accepted: 0, fallbacks: 0 };
     this.ds = dataSourceFor(this.data);
     /** client-side combat (DESIGN §14) — see the header */
-    this.clientCombat = opts.clientCombat != null ? !!opts.clientCombat : envClientCombat();
+    this.clientCombat = opts.clientCombat != null ? !!opts.clientCombat : parseCombat(env('SP_COMBAT')) === 'client';
     this.verifyMode = parseVerify(opts.verify ?? env('SP_VERIFY'));
+    // Workers are opt-in at server startup; virtual/custom simulators and client-authoritative combat stay inline.
+    this.combatPool = opts.combatPool && !this.clientCombat && !this.sched.virtual && this.BattleClass === Battle
+      ? opts.combatPool : null;
+    // Both pools are process-owned loans. A Match only closes its jobs, never either shared pool.
+    this.trialPool = opts.trialPool && !this.clientCombat && !this.sched.virtual && this.BattleClass === Battle
+      ? opts.trialPool : null;
     /** wall-clock ms per slice of a server-run normal / 联防 field (virtual time: at once) */
     this.headlessSliceMs = Number.isFinite(opts.headlessSliceMs) && opts.headlessSliceMs > 0 ? opts.headlessSliceMs : this.sched.virtual ? Infinity : HEADLESS_SLICE_MS;
     this.verifyStats = { checked: 0, mismatches: 0, rejected: 0, takeovers: 0 };
@@ -412,6 +512,37 @@ export class Match {
      * next match of the room (the same socket, the same field ids) never names a battle of this match.
      */
     this.battlePrefix = `${this.seed.toString(36)}${Number.isInteger(opts.matchNo) && opts.matchNo > 0 ? `-${opts.matchNo.toString(36)}` : ''}`;
+    this.damageBoard = createDamageBoard(this.battlePrefix);
+    this._damageDirty = false;
+    this._damageTimer = null;
+    this._damageAt = -Infinity;
+    this._damageSampleAt = -Infinity;
+    this._damageSent = new Map();
+    /** Locked room-owned rules; direct engine fixtures retain the legacy option names. */
+    this.experimental = experimentalOptions(opts.experimental ?? {
+      revivalEnabled: opts.revivalEnabled === true, disableSharedPool: opts.disableSharedPool === true,
+    });
+    this.revivalEnabled = !this.isSolo && this.experimental.revivalEnabled;
+    this.disableSharedPool = this.experimental.disableSharedPool;
+    // The fixed-table co-op room (SiderLock 分组卡池): the lobby hands the room's seat cap as a plain `playerCapacity`
+    // option (a validated shared/playerCapacity.js value). The capacity experiment's concurrent drafts stay the explicit
+    // 「扩展同盟人数」 opt-in only — experimentalOptions keeps playerCapacity when (and only when) a capacity above
+    // MAX_SEATS was asked for, so its presence is exactly that switch.
+    this.playerCapacity = Number.isInteger(opts.playerCapacity) && isPlayerCapacity(opts.playerCapacity)
+      ? opts.playerCapacity : roomCapacity(this.isSolo ? 'solo' : this.mode, this.experimental);
+    this.capacityExperiment = !this.isSolo && this.experimental.playerCapacity != null;
+    this.twentyPlayerMode = this.capacityExperiment && this.playerCapacity === 20;
+    // Boss pool room rule: the ordinary ≤4-seat room keeps the mainline clamped pool (aliveFull) and never resizes it
+    // mid-fight; the SiderLock fixed-table rooms (8–20 seats) and the capacity experiment run one bloodPoint per alive
+    // player (finalAssault.bossPoolHp enlarged path). A plain fixed-table room also rescales the shared pool when a
+    // seat leaves; the capacity experiment keeps the 0.2.2 local no-rescale rule (experimental-capacity-workers).
+    this.bossPoolLinear = !this.isSolo && (this.capacityExperiment || opts.seats.length > 7);
+    this.bossPoolRescale = !this.isSolo && !this.capacityExperiment && opts.seats.length > 4;
+    this.disableDuckLord = this.capacityExperiment && this.experimental.disableDuckLord === true;
+    this.gd.disableDuckLord = this.disableDuckLord;
+    if (opts.seats.length > this.playerCapacity) throw new RangeError('Match: seats exceed room capacity');
+    /** SETTLE-only rescue state: { round, eligible: Set<playerId>, windowOpen, deadline }. */
+    this._revival = null;
     this._progressTimer = null;
     this._bossClock = null;
     this._lastPoolAt = -Infinity;
@@ -429,10 +560,14 @@ export class Match {
 
     /** @type {Map<string, PlayerState>} */
     this.players = new Map();
-    const seen = new Set();
+    const seen = new Set(), seatIndexes = new Set();
     for (const s of opts.seats) {
       if (!s || typeof s.playerId !== 'string' || seen.has(s.playerId)) continue;
+      if (!Number.isInteger(s.seat) || s.seat < 0 || s.seat >= this.playerCapacity || seatIndexes.has(s.seat)) {
+        throw new TypeError('Match: unique seat index within room capacity required');
+      }
       seen.add(s.playerId);
+      seatIndexes.add(s.seat);
       this.players.set(s.playerId, new PlayerState(this, s));
     }
     if (!this.players.size) throw new TypeError('Match: seats required');
@@ -450,6 +585,23 @@ export class Match {
      * (draft order and skip, 6 机变 cards, 联防 …) stay.
      */
     this.loneHuman = this.order.filter((p) => !p.isBot).length === 1;
+    /**
+     * Strategies the host designated for AI seats (opts.seats[].band, room.setBotBand): AI playerId → bandId, in seat
+     * order, co-op only, a band the mode offers, one seat per band. Empty: the draft is exactly as without the option.
+     * @type {Map<string, string>}
+     */
+    this.botBands = new Map();
+    if (!this.isSolo) {
+      const wanted = new Map();
+      for (const s of opts.seats) if (s && typeof s.band === 'string' && !wanted.has(s.playerId)) wanted.set(s.playerId, s.band);
+      const held = new Set();
+      for (const ps of this.order) {
+        const band = wanted.get(ps.playerId);
+        if (!ps.isBot || !band || held.has(band) || !this.gd.bandAllowed(band)) continue;
+        held.add(band);
+        this.botBands.set(ps.playerId, band);
+      }
+    }
 
     // per-match setup (DESIGN §6.5)
     const setup = setupMatchWaves(this.gd, this.rngSetup);
@@ -462,8 +614,16 @@ export class Match {
     this.disabledBonds = bans.drawn;
     this.staticInactiveBonds = bans.staticOff;
     this.bannedChess = bans.banned;
-    this.pool = new SharedPool(this.gd, { banned: bans.banned });
-    this.itemPool = new SharedItemPool(this.gd, () => this.order);
+    this.poolGroups = createPoolGroups(this.gd, this.order, { banned: bans.banned, independent: this.disableSharedPool });
+    // `pool` remains the ordinary diagnostic/bond-availability view; transactions always route via poolFor/ps.pool.
+    this.pool = this.disableSharedPool ? new SharedPool(this.gd, { banned: bans.banned }) : this.poolGroups[0].pool;
+    this.playerPools = this.disableSharedPool || this.capacityExperiment || this.poolGroups.length > 1
+      ? new Map(this.poolGroups.flatMap(g => g.playerIds.map(id => [id, g.pool]))) : null;
+    // equipment stock follows the same fixed groups (pool.js createPoolGroups attaches each group's itemPool);
+    // `itemPool` is the first group's — the only one in an ordinary ≤5-seat match — and every transaction routes via
+    // itemPoolFor / ps.itemPool
+    this.playerItemPools = new Map(this.poolGroups.flatMap(g => g.playerIds.map(id => [id, g.itemPool])));
+    this.itemPool = this.playerItemPools.get(this.poolGroups[0].playerIds[0]);
     // 自选编队 (0.2.0): each human's slotted DIY pieces get their own stock — none for one whose bonds are all off this
     // match (player/diy.js initDiyStock); no randomness is drawn here
     const off = new Set([...bans.drawn, ...bans.staticOff]);
@@ -475,6 +635,7 @@ export class Match {
     /** Final Assault / Hidden Core: ms epoch when the overtime drain starts (m.public.overtimeAt) */
     this.overtimeAt = 0;
     this.uidSeq = 0;
+    this.draftSeq = 0; // stage identities (MatchPhases.nextDraftId) never touch the uid stream
     this.ended = false;
     this.disposed = false;
     this.startedAt = this.sched.now();
@@ -485,8 +646,20 @@ export class Match {
     this.setupRevision = 0;
     this.setupVote = null;
     this._setupVoteSeq = 0;
+    this._lastSetupVoteAt = -Infinity;
+    /** playerId → the setup revision it last proposed a reroll for (one proposal per player per revision; setupVote.js) */
+    this._setupProposals = new Map();
     /** @type {Map<string, number>} last accepted 重刷本局 start per seat (30 s cooldown; DESIGN §28.21) */
     this._rerollStartAt = new Map();
+    // 投票移出 (kickVote.js): the open vote, its id sequence, targetId → the round a vote on it failed, playerId → last proposal ms
+    this.kickVote = null;
+    this._kickVoteSeq = 0;
+    this._kickFailed = new Map();
+    this._kickVoteAt = new Map();
+    // 比赛控制 (matchControl.js): the open control request, its id sequence, playerId → last request ms
+    this.matchControl = null;
+    this._matchControlSeq = 0;
+    this._matchControlAt = new Map();
     this._turnTimer = null;
     this._pubDirty = false;
     this._pubTimer = null;
@@ -512,6 +685,13 @@ export class Match {
     /** playerId → fieldId */
     this.watchers = new Map();
     /**
+     * playerId → { field }: the field record that player's browser shows as a local display replica now (localReplica.js;
+     * a field's `localRuns` keeps every seat that ran it, for its finished view)
+     */
+    this.localViews = new Map();
+    /** local replicas switched back to the stream, by reason (diagnostics) */
+    this.localStats = { diverged: 0, requested: 0, off: 0 };
+    /**
      * Watch preference (community report of 2026-10-06, item 56; the idea of PR #189): viewer playerId → the player it
      * last chose to watch with a manual g.watch. Every phase reset starts an eliminated human or a spectator seat on that
      * player again (its prep board, its battle field) — else the first player still in — instead of its own empty board.
@@ -519,6 +699,8 @@ export class Match {
     this.watchPref = new Map();
     this.lastResults = new Map();
     this.unitePlan = null;
+    this._normalAliveCount = 0;
+    this._uniteRelay = null;
     /** 联防 outcome for the SETTLE view: { through, helpers, leakers, losses } (settle()), null when no 联防 resolved */
     this.uniteResultView = null;
     /** server-run 联防: the leakers' counts last published (_uniteTick) */
@@ -528,9 +710,11 @@ export class Match {
     this.teamLp = null;
     this.bossPool = null;
     this.hiddenLayerSum = 0;
+    this.finalAliveCount = 0;
     this.hiddenReached = false;
     this.outcome = null;
     this._turnToken = 0;
+    this._testDraftHolds = new Map(); // testCommands' per-group draft timer holds (MatchPhases draft groups)
     // [ASSUMED] A real scheduler keeps the 8 ms bot and headless slices, including a test match,
     // so one callback cannot run to HARD_CAP_SECONDS. Virtual time stays unbounded (the defaults
     // above). The input journal records the steps that callback took; replay stops there.
@@ -540,10 +724,21 @@ export class Match {
 }
 
 // the method modules, in this order (a name defined twice is an error, never a silent override)
-for (const part of [MatchPlatform, MatchInfra, MatchMessaging, MatchViews, MatchWatch, MatchIntents, MatchPause, MatchPhases, MatchSetupVote, MatchSpDraft, MatchPrep, MatchCombat, MatchClientCombat, MatchRehearsal, MatchReports, MatchUnite, MatchBoss, MatchSettle, MatchTestCommands, MatchOffers]) {
+for (const part of [MatchPlatform, MatchInfra, MatchMessaging, MatchViews, MatchWatch, MatchIntents, MatchPause, MatchPhases, MatchEvent, MatchSetupVote, MatchConfront, MatchKickVote, MatchControl, MatchSpDraft, MatchPrep, MatchCombat, MatchClientCombat, MatchLocalReplica, MatchRehearsal, MatchReports, MatchUnite, MatchUniteWaves, MatchBoss, MatchSettle, MatchExtensions, MatchTestCommands, MatchOffers]) {
   for (const key of Reflect.ownKeys(part.prototype)) {
     if (key === 'constructor') continue;
     if (Object.prototype.hasOwnProperty.call(Match.prototype, key)) throw new Error(`Match.${String(key)} is defined twice`);
     Object.defineProperty(Match.prototype, key, Object.getOwnPropertyDescriptor(part.prototype, key));
   }
+}
+
+/**
+ * The public-view sync mode a client negotiated (hello.stateDelta): 'delta' for DELTA, 'full' otherwise (also the
+ * default for a missing/empty value). Parsed once at hello (server/net.js); [ASSUMED] minimal merged-repo helper — no
+ * fork carries it.
+ * @param {string|undefined} v negotiated value
+ * @returns {'full'|'delta'}
+ */
+export function parsePubSync(v) {
+  return v === 'DELTA' ? 'delta' : 'full';
 }

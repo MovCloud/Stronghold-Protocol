@@ -1,0 +1,494 @@
+// test/resources/manifest.test.js — /data/resource-manifest.json (server/resources.js, docs/development/ASSETS.md「Preload」): the
+// file list the client may preload, its two tiers, the sizes of the files this install has, the CDN rewrite and the
+// HTTP shape (no-cache + ETag/304 + gzip + HEAD).
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { listResourceFiles, collectHashes } from '../../tools/asset-hashes.mjs';
+
+import { createStaticHandler } from '../../server/index.js';
+import {
+  pathKey, RESOURCE_MANIFEST_FILE, RESOURCES_FORMAT, TIER_ESSENTIAL, TIER_REST, buildResourceManifest, collectResourceFiles,
+  createResourceIndex, isResourcePath, localPathFor, resourceType, skinKeyForPath, tierForPath, validateResourceUrl,
+} from '../../server/resources.js';
+
+const rewriteAssetPaths = (v, base) => {
+  if (typeof v === 'string') return /^\/(?:assets|fonts)\//.test(v) ? base + v : v;
+  if (Array.isArray(v)) return v.map((x) => rewriteAssetPaths(x, base));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rewriteAssetPaths(x, base)]));
+  return v;
+};
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** The shapes of data/assets.json the preload reads (docs/development/ASSETS.md). */
+function manifest(over = {}) {
+  return {
+    version: 1,
+    hash: 'deadbeefcafe',
+    stats: { files: 12, bytes: 999 },
+    chars: {
+      char_002_amiya: {
+        avatar: '/assets/char/avatar/char_002_amiya.png',
+        avatarE2: '/assets/char/avatar/char_002_amiya_2.png',
+        portrait: '/assets/char/portrait/char_002_amiya_1.png',
+        spine: { front: { skel: '/assets/spine/op/char_002_amiya/front/char_002_amiya.skel', atlas: '/assets/spine/op/char_002_amiya/front/char_002_amiya.atlas', textures: ['/assets/spine/op/char_002_amiya/front/char_002_amiya.png'] } },
+      },
+    },
+    enemies: { enemy_1007_slime: { icon: '/assets/enemy/icon/enemy_1007_slime.png', spine: { skel: '/assets/spine/enemy/enemy_1007_slime/enemy_1007_slime.skel' } }, enemy_alias: { spineAliasOf: 'enemy_1007_slime' } },
+    tokens: { token_a: { owner: 'char_002_amiya', avatar: '/assets/token/avatar/token_a.png' } },
+    ui: { 'battle/sprite_shadow': '/assets/ui/battle/sprite_shadow.png' },
+    bonds: { yanShip: '/assets/bond/yan.png' },
+    items: { trap_1: '/assets/item/1041.png' },
+    bands: { band_bldsk: '/assets/band/bldsk.png' },
+    skills: { skchr_x: '/assets/skill/x.png' },
+    skillsById: { skill_y: 'skchr_x' },
+    prof: { icon: { sniper: '/assets/prof/sniper.png' }, sub: { fastshot: '/assets/prof/sub/fastshot.png' } },
+    audio: { bgm: { lobby: { intro: '/assets/audio/bgm/lobby_intro.mp3', loop: '/assets/audio/bgm/lobby_loop.mp3' } }, sfx: { battle: { deploy: '/assets/audio/sfx/deploy.mp3' }, units: { char_002_amiya: { attack: '/assets/audio/sfx/amiya_atk.mp3', skills: { 2: '/assets/audio/sfx/amiya_s3.mp3' } } } } },
+    fonts: { css: '/fonts/fonts.css', faces: { bender: { family: 'Bender', weight: 400, woff2: '/fonts/bender-regular.woff2', original: '/fonts/bender-regular.otf' } } },
+    notAFile: 'char_002_amiya',
+    elsewhere: 'https://example.com/elsewhere.png',
+    relative: 'assets/not-mine.png',
+    ...over,
+  };
+}
+
+const local = () => ({
+  version: 1,
+  groups: {
+    map: { TX_autochessi_D: { path: '/assets/local/map/autochess/TX_D.png', hash: 'aaaabbbbcccc' } },
+    emoticon: { e1: { path: '/assets/local/emoticon/e1.png' } },
+  },
+});
+
+/** A temp install: the two manifests (plus optional asset hashes) and the files that actually exist on disk. */
+function install({ assets = manifest(), localDoc = local(), hashesDoc = null, files = [
+  'assets/char/avatar/char_002_amiya.png', 'assets/ui/battle/sprite_shadow.png', 'assets/audio/bgm/lobby_loop.mp3',
+  'assets/spine/op/char_002_amiya/front/char_002_amiya.skel', 'assets/local/map/autochess/TX_D.png', 'fonts/bender-regular.woff2',
+] } = {}) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-res-data-'));
+  const publicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-res-pub-'));
+  if (assets) fs.writeFileSync(path.join(dataDir, 'assets.json'), JSON.stringify(assets));
+  if (localDoc) fs.writeFileSync(path.join(dataDir, 'local-assets.json'), JSON.stringify(localDoc));
+  if (hashesDoc) fs.writeFileSync(path.join(dataDir, 'asset-hashes.json'), JSON.stringify(hashesDoc));
+  for (const rel of files) {
+    const abs = path.join(publicDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.alloc(rel.length, 1));
+  }
+  return { dataDir, publicDir, cleanup: () => { fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(publicDir, { recursive: true, force: true }); } };
+}
+
+function serve(inst, cdnBase = '') {
+  const handler = createStaticHandler({
+    publicDir: inst.publicDir, dataDir: inst.dataDir, sharedDir: path.join(ROOT, 'shared'), assetsCdn: cdnBase,
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+  });
+  const srv = http.createServer((req, res) => {
+    const [p, q] = (req.url || '/').split('?');
+    handler(req, res, p, q || '');
+  });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve(srv)));
+}
+
+describe('resource manifest building', () => {
+  test('URL rules mirror the client (only asset trees, no query/fragment/protocol-relative)', () => {
+    assert.equal(validateResourceUrl('/assets/x.png'), true);
+    assert.equal(validateResourceUrl('/fonts/x.woff2'), true);
+    assert.equal(validateResourceUrl('https://cdn.example.com/assets/spine/x/front/x.skel'), true);
+    for (const bad of ['', '/data/assets.json', 'assets/x.png', '//cdn.example.com/assets/x.png', '/assets/x.png?v=1',
+      '/assets/x.png#a', '/assets/x', '/assets/x.txt', 'javascript:alert(1).png', '/assets/a b.png', null, 42]) {
+      assert.equal(validateResourceUrl(bad), false, String(bad));
+    }
+    assert.equal(validateResourceUrl('/assets/x.png?v=0123456789abcdef'), true, 'the per-file bust query is the one allowed query');
+    assert.equal(validateResourceUrl('https://cdn.example.com/assets/x.png?v=0123456789abcdef'), true);
+    assert.equal(validateResourceUrl('/assets/x.png?v=0123456789abcdef&x=1'), false, 'nothing may follow the bust query');
+    assert.equal(isResourcePath('/assets/x.png'), true);
+    assert.equal(isResourcePath('/data/x.json'), false);
+    assert.equal(validateResourceUrl('/media/bgm/act1.mp3'), false, 'the manifest never lists the /media route (a CDN cannot resolve it)');
+    assert.equal(resourceType('/assets/x.atlas'), 'text/plain; charset=utf-8');
+    assert.equal(localPathFor('/assets/x.png', '/srv/public'), path.join(path.resolve('/srv/public'), 'assets/x.png'));
+    assert.equal(localPathFor('https://cdn.example.com/base/assets/x.png', '/srv/public', 'https://cdn.example.com/base'), path.join(path.resolve('/srv/public'), 'assets/x.png'));
+    assert.equal(localPathFor('https://cdn.example.com/base/assets/x.png?v=0123456789abcdef', '/srv/public', 'https://cdn.example.com/base'), path.join(path.resolve('/srv/public'), 'assets/x.png'), 'the bust query never reaches the disk path');
+    assert.equal(localPathFor('https://cdn.example.com/base/assets/x.png', '/srv/public'), null, 'outside the CDN prefix');
+    assert.equal(localPathFor('/assets/../../etc/passwd', '/srv/public'), null, 'no traversal');
+    assert.equal(localPathFor('/data/x.json', '/srv/public'), path.join(path.resolve('/srv/public'), 'data/x.json'), 'only the URL shape is refused here');
+    assert.equal(pathKey('https://cdn.example.com/assets/x.png?v=0123456789abcdef'), '/assets/x.png', 'hash lookups key on the bare path');
+    assert.equal(pathKey('/assets/x.png?v=0123456789abcdef'), '/assets/x.png');
+  });
+
+  test('tiers: images, Spine and maps are required; audio and guides are optional', () => {
+    assert.equal(tierForPath('fonts.faces.bender.woff2'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('ui.battle/sprite_shadow'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('audio.sfx.units.char_002_amiya.skills.2'), TIER_REST);
+    assert.equal(tierForPath('chars.char_002_amiya.avatar'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('enemies.enemy_1007_slime.icon'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('chars.char_002_amiya.portrait'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('chars.char_002_amiya.spine.front.skel'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('tokens.token_a.spine.skel'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('local.groups.map.TX_autochessi_D.path'), TIER_ESSENTIAL);
+    for (const group of ['map/autochess', 'mesh/map_autochess_bkg', 'spine/enemy/x', 'projectiles']) {
+      assert.equal(tierForPath(`local.groups.${group}.x.path`), TIER_ESSENTIAL);
+    }
+    assert.equal(tierForPath('chars.c.voice.attack'), TIER_REST);
+    assert.equal(tierForPath('audio.voice.c.1'), TIER_REST);
+    const nested = collectResourceFiles({ chars: { c: { sound: '/assets/audio/unknown.mp3' } } }, null);
+    assert.equal(nested[0].tier, TIER_REST);
+    assert.equal(tierForPath('local.groups.emoticon.e1.path'), TIER_ESSENTIAL);
+    // 0.1.2 moved the battle emotes and the 19 玩法说明 pages into the mirror download: the emotes are match UI, the
+    // tutorial pages are full screenshots behind their own screen and wait for the background pass.
+    assert.equal(tierForPath('ui.emoticon/basic/pic_happy_battle'), TIER_ESSENTIAL);
+    assert.equal(tierForPath('ui.guide/autochess_home_1'), TIER_REST);
+    assert.equal(tierForPath('ui.guide'), TIER_REST);
+    assert.equal(tierForPath('somethingNew.a/b.png'), TIER_REST, 'unknown sections stay out of the fast path');
+  });
+
+  test('干员皮肤: optional by design and marked with the key the client scopes by', () => {
+    // A full install is ~328 MiB (docs/SKINS.md) — never part of the required set the panel starts with.
+    assert.equal(tierForPath('chars.char_003_kalts.skins.char_003_kalts@boc#6.spine.front.skel'), TIER_REST);
+    assert.equal(tierForPath('chars.char_003_kalts.skins.char_003_kalts@boc#6.avatar'), TIER_REST);
+    assert.equal(skinKeyForPath('chars.char_003_kalts.skins.char_003_kalts@boc#6.spine.front.textures.0'), 'char_003_kalts/char_003_kalts@boc#6');
+    assert.equal(skinKeyForPath('chars.char_003_kalts.skins.char_003_kalts@boc#6'), 'char_003_kalts/char_003_kalts@boc#6');
+    assert.equal(skinKeyForPath('chars.char_003_kalts.spine.front.skel'), null, 'the default model is not a skin');
+    assert.equal(skinKeyForPath('local.groups.spine/enemy/enemy_1.path'), null);
+    assert.equal(skinKeyForPath(''), null);
+    const files = collectResourceFiles({ chars: { char_003_kalts: {
+      avatar: '/assets/char/avatar/char_003_kalts_1.png',
+      spine: { front: { skel: '/assets/spine/op/char_003_kalts/front/char_003_kalts.skel' } },
+      skins: {
+        'char_003_kalts@boc#6': {
+          spine: { front: { skel: '/assets/spine/op/char_003_kalts/char_003_kalts_boc_6/front/char_003_kalts_boc_6.skel', textures: ['/assets/spine/op/char_003_kalts/char_003_kalts_boc_6/front/char_003_kalts_boc_6.png'] } },
+          avatar: '/assets/char/avatar/skin/char_003_kalts_boc_6.png',
+          name: '珊瑚海岸',
+        },
+      },
+    } } }, null);
+    const own = files.find((f) => f.url === '/assets/char/avatar/char_003_kalts_1.png');
+    assert.equal(own.tier, TIER_ESSENTIAL);
+    assert.equal(own.skin, undefined);
+    const model = files.find((f) => f.url.endsWith('char_003_kalts_boc_6.skel'));
+    assert.equal(model.tier, TIER_REST);
+    assert.equal(model.skin, 'char_003_kalts/char_003_kalts@boc#6');
+    assert.equal(files.find((f) => f.url === '/assets/char/avatar/skin/char_003_kalts_boc_6.png').skin, 'char_003_kalts/char_003_kalts@boc#6');
+    // The built manifest carries it, which is what the client groups and scopes by.
+    const built = buildResourceManifest({ files, version: 'v' });
+    assert.equal(built.files.find((f) => f.url.endsWith('char_003_kalts_boc_6.skel')).skin, 'char_003_kalts/char_003_kalts@boc#6');
+    assert.equal(built.files.find((f) => f.url.endsWith('/front/char_003_kalts.skel')).skin, undefined);
+    assert.equal(built.tier1, 2, 'only the operator’s own avatar and model stay required');
+  });
+
+  test('collect: every resource file, deduplicated, essential first, ids/aliases skipped', () => {    const files = collectResourceFiles(manifest(), local());
+    const urls = files.map((f) => f.url);
+    assert.equal(new Set(urls).size, urls.length, 'no duplicates');
+    assert.deepEqual([...files].sort((a, b) => a.tier - b.tier), files, 'sorted essential first');
+    assert.ok(urls.includes('/assets/char/avatar/char_002_amiya.png'));
+    assert.ok(urls.includes('/assets/spine/op/char_002_amiya/front/char_002_amiya.atlas'));
+    assert.ok(urls.includes('/assets/local/emoticon/e1.png'));
+    assert.ok(urls.includes('/fonts/fonts.css'));
+    for (const notAFile of ['char_002_amiya', 'skchr_x', 'skill_y', 'enemy_1007_slime', 'https://example.com/elsewhere.png', 'assets/not-mine.png']) {
+      assert.ok(!urls.includes(notAFile), notAFile);
+    }
+    assert.equal(files.find((f) => pathKey(f.url) === '/assets/char/avatar/char_002_amiya.png').tier, TIER_ESSENTIAL);
+    assert.equal(files.find((f) => f.url === '/fonts/bender-regular.otf').tier, TIER_ESSENTIAL);
+    assert.equal(files.find((f) => f.url === '/assets/char/portrait/char_002_amiya_1.png').tier, TIER_ESSENTIAL);
+    assert.equal(collectResourceFiles(null, null).length, 0);
+  });
+
+  test('a shared file keeps its essential tier (the lowest one wins)', () => {
+    const assets = manifest({ chars: { c: { avatar: '/assets/shared.png', portrait: '/assets/shared.png' } } });
+    const shared = collectResourceFiles(assets, null).filter((f) => f.url === '/assets/shared.png');
+    assert.equal(shared.length, 1, 'listed once');
+    assert.equal(shared[0].tier, TIER_ESSENTIAL);
+  });
+
+  test('build: sizes are optional per file, counters add up', () => {
+    const files = [{ url: '/assets/a.png', tier: TIER_ESSENTIAL }, { url: '/assets/b.png', tier: TIER_REST }, { url: '/assets/c.png', tier: TIER_REST }];
+    const sizes = new Map([['/assets/a.png', 10], ['/assets/c.png', 5]]);
+    const m = buildResourceManifest({ files, sizes, version: 'v1' });
+    assert.equal(m.format, RESOURCES_FORMAT);
+    assert.equal(m.version, 'v1');
+    assert.equal(m.count, 3);
+    assert.equal(m.tier1, 1);
+    assert.equal(m.sized, 2);
+    assert.equal(m.totalBytes, 15);
+    assert.deepEqual(m.files[0], { url: '/assets/a.png', tier: 1, size: 10 });
+    assert.deepEqual(m.files[1], { url: '/assets/b.png', tier: 2 }, 'an unknown size is simply absent');
+    assert.equal(buildResourceManifest({ files, version: 'v' }).totalBytes, null, 'no sizes at all ⇒ count progress instead');
+    assert.equal(buildResourceManifest({ files: [], version: 'v' }).count, 0);
+  });
+});
+
+describe('the served resource manifest', () => {
+  test('versioned board JSON keeps raw bytes and content hashes, including crops beside a WebP atlas', async (t) => {
+    const atlas = '/assets/local/map/autochess/TX_autochessi_D.webp';
+    const sidecars = ['/assets/local/map/autochess/tiles.json', '/assets/local/map/autochess/materials.json',
+      '/assets/local/map/fx/materials.json', '/assets/local/map/fx/prefab.json'];
+    const localDoc = { groups: { 'map/autochess': { atlas: { path: atlas } },
+      'map/fx': Object.fromEntries(sidecars.slice(1).map((url, i) => [i, { path: url }])) } };
+    const inst = install({ assets: {}, localDoc, files: [atlas, ...sidecars].map((url) => url.slice(1)) });
+    const body = JSON.stringify({ source: { D: { path: '/assets/local/map/autochess/TX_autochessi_D.png' } } }, null, 2) + '\n';
+    for (const url of sidecars) fs.writeFileSync(path.join(inst.publicDir, url), body);
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const manifest = await (await fetch(base + '/data/resource-manifest.json')).json();
+    for (const url of sidecars) {
+      const file = manifest.files.find((f) => f.url.endsWith(url));
+      assert.ok(file, url);
+      assert.equal(file.tier, TIER_ESSENTIAL);
+      assert.equal(file.hash, createHash('sha1').update(body).digest('hex').slice(0, 12));
+      const response = await fetch(base + file.url);
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), body, 'versioned response agrees with preload/ZIP digest');
+    }
+  });
+
+  test('a CDN-only install lists the inferred crop table when its content hash is known', async (t) => {
+    const atlas = '/assets/local/map/autochess/TX_autochessi_D.webp';
+    const tiles = '/assets/local/map/autochess/tiles.json';
+    const inst = install({ assets: {}, localDoc: { groups: { 'map/autochess': { atlas: { path: atlas } } } },
+      hashesDoc: { files: { [tiles]: '123456abcdef' } }, files: [] });
+    t.after(inst.cleanup);
+    const base = 'https://cdn.example/game';
+    const index = createResourceIndex({ ...inst, cdnBase: base, rewrite: (doc) => rewriteAssetPaths(doc, base) });
+    const manifest = (await index.get()).manifest;
+    assert.deepEqual(manifest.files.find((f) => f.url === base + tiles),
+      { url: base + tiles, tier: TIER_ESSENTIAL, hash: '123456abcdef' });
+  });
+
+  test('optional board OBJ and JSON are included with the same namespace used by the renderer', async (t) => {
+    const inst = install({ assets: { ui: { mesh: '/assets/map/board.obj', material: '/assets/map/material.json' } },
+      localDoc: null, files: ['assets/map/board.obj'] });
+    fs.writeFileSync(path.join(inst.publicDir, 'assets/map/material.json'), JSON.stringify({ texture: '/assets/map/texture.png' }));
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const m = await (await fetch(base + '/data/resource-manifest.json')).json();
+    assert.equal(m.count, 2);
+    const material = m.files.find((f) => f.url.endsWith('material.json'));
+    assert.match(material.hash, /^syn-/);
+    assert.match(material.url, /^\/_v\/[a-f0-9]{16}\/assets\//);
+    const res = await fetch(base + material.url);
+    assert.equal(res.status, 200);
+    assert.match((await res.json()).texture, /^\/_v\/[a-f0-9]{16}\/assets\/map\/texture.png$/);
+  });
+
+  test('lists the files, marks the ones on disk with their size and reports the manifest version', async (t) => {
+    const inst = install();
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/data/${RESOURCE_MANIFEST_FILE}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'no-cache', 'the client revalidates: a new build must be seen');
+    assert.match(res.headers.get('content-type'), /application\/json/);
+    const m = await res.json();
+    assert.equal(m.format, RESOURCES_FORMAT);
+    assert.match(m.version, /^[0-9a-f]{12}$/, 'the version is a digest of every url|hash');
+    assert.ok(m.count > 20);
+    assert.ok(m.tier1 > 0 && m.tier1 < m.count);
+    const byUrl = new Map(m.files.map((f) => [pathKey(f.url), f]));
+    assert.equal(byUrl.get('/assets/char/avatar/char_002_amiya.png').size, 'assets/char/avatar/char_002_amiya.png'.length);
+    assert.equal(byUrl.get('/assets/spine/op/char_002_amiya/front/char_002_amiya.skel').tier, TIER_ESSENTIAL);
+    assert.equal(byUrl.has('/assets/char/avatar/char_002_amiya.png') && 'size' in byUrl.get('/assets/spine/enemy/enemy_1007_slime/enemy_1007_slime.skel'), false, 'a file this install does not have carries no size');
+    assert.equal(m.sized < m.count, true);
+    assert.ok(m.totalBytes > 0);
+    assert.deepEqual(m.files.map((f) => f.tier), [...m.files.map((f) => f.tier)].sort((a, b) => a - b), 'essential first');
+  });
+
+  test('the CDN rewrites the entries (the client preloads from the CDN without knowing it)', async (t) => {
+    const inst = install();
+    const srv = await serve(inst, 'https://cdn.example.com/static');
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const m = await (await fetch(`http://127.0.0.1:${srv.address().port}/data/${RESOURCE_MANIFEST_FILE}`)).json();
+    const other = install();
+    const srvOther = await serve(other);
+    t.after(() => { srvOther.close(); other.cleanup(); });
+    const plain = await (await fetch(`http://127.0.0.1:${srvOther.address().port}/data/${RESOURCE_MANIFEST_FILE}`)).json();
+    assert.notEqual(m.version, plain.version, 'a different CDN is a different version');
+    assert.ok(m.files.every((f) => f.url.startsWith('https://cdn.example.com/static/') || f.url.startsWith('/fonts/')));
+    assert.ok(m.files.some((f) => f.url === 'https://cdn.example.com/static/assets/char/avatar/char_002_amiya.png' && f.size === 'assets/char/avatar/char_002_amiya.png'.length), 'a CDN URL still maps back to the local file for its size');
+  });
+
+  test('HTTP shape: gzip when accepted, 304 on the ETag, HEAD without a body', async (t) => {
+    const inst = install();
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const url = `http://127.0.0.1:${srv.address().port}/data/${RESOURCE_MANIFEST_FILE}`;
+    const gz = await fetch(url, { headers: { 'accept-encoding': 'gzip' } });
+    assert.equal(gz.headers.get('content-encoding'), 'gzip');
+    assert.equal(gz.headers.get('vary'), 'Accept-Encoding');
+    const body = await gz.json();
+    assert.ok(body.count > 0);
+    const head = await fetch(url, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    const notModified = await fetch(url, { headers: { 'if-none-match': head.headers.get('etag') } });
+    assert.equal(notModified.status, 304);
+    assert.equal(await notModified.text(), '');
+    assert.equal(notModified.headers.get('etag'), head.headers.get('etag'), 'the validator stays the same');
+    const lastModified = head.headers.get('last-modified');
+    assert.ok(lastModified, 'the manifest carries Last-Modified');
+    const viaDate = await fetch(url, { headers: { 'if-modified-since': lastModified } });
+    assert.equal(viaDate.status, 304, 'If-Modified-Since revalidates the cached body too');
+  });
+
+  test('every entry carries a hash: the recorded one when known, a synthetic one otherwise', async (t) => {
+    const inst = install({
+      files: [],
+      hashesDoc: { version: 1, generator: 'tools/asset-hashes.mjs', count: 1, bytes: 10, files: { '/assets/ui/battle/sprite_shadow.png': 'fedcba987654' } },
+    });
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const m = await (await fetch(`http://127.0.0.1:${srv.address().port}/data/${RESOURCE_MANIFEST_FILE}`)).json();
+    const byUrl = new Map(m.files.map((f) => [pathKey(f.url), f]));
+    assert.equal(byUrl.get('/assets/local/map/autochess/TX_D.png').hash, 'aaaabbbbcccc', 'data/local-assets.json gives the local art its hash');
+    assert.equal(byUrl.get('/assets/ui/battle/sprite_shadow.png').hash, 'fedcba987654', 'data/asset-hashes.json covers the fetched assets');
+    assert.match(byUrl.get('/assets/char/avatar/char_002_amiya.png').hash, /^syn-[0-9a-f]{12}$/, 'a file without a known hash falls back to its source stamp');
+    assert.match(byUrl.get('/assets/local/emoticon/e1.png').hash, /^syn-[0-9a-f]{12}$/);
+    assert.ok(m.files.every((f) => typeof f.hash === 'string' && f.hash.length > 0), 'the client can always compare something');
+    // the fallback keeps the old rule: a regenerated asset manifest invalidates the fetched files it does not hash
+    const other = install({ files: [], assets: manifest({ hash: 'otherhash000' }), hashesDoc: { version: 1, files: { '/assets/ui/battle/sprite_shadow.png': 'fedcba987654' } } });
+    const srv2 = await serve(other);
+    t.after(() => { srv2.close(); other.cleanup(); });
+    const m2 = await (await fetch(`http://127.0.0.1:${srv2.address().port}/data/${RESOURCE_MANIFEST_FILE}`)).json();
+    assert.notEqual(m2.files.find((f) => pathKey(f.url) === '/assets/char/avatar/char_002_amiya.png').hash, byUrl.get('/assets/char/avatar/char_002_amiya.png').hash);
+    assert.equal(m2.files.find((f) => pathKey(f.url) === '/assets/ui/battle/sprite_shadow.png').hash, 'fedcba987654', 'a hashed file does not depend on the asset manifest hash any more');
+  });
+
+  test('an install without data/assets.json answers an empty manifest (never a 404 loop)', async (t) => {
+    const inst = install({ assets: null, localDoc: null });
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/data/${RESOURCE_MANIFEST_FILE}`);
+    assert.equal(res.status, 200);
+    const m = await res.json();
+    assert.deepEqual({ format: m.format, count: m.count, files: m.files }, { format: RESOURCES_FORMAT, count: 0, files: [] });
+  });
+
+  test('other /data/ paths are untouched (the manifest name is the only generated one)', async (t) => {
+    const inst = install();
+    const srv = await serve(inst);
+    t.after(() => { srv.close(); inst.cleanup(); });
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/data/assets.json`);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).hash, 'deadbeefcafe');
+  });
+});
+
+describe('the resource index cache', () => {
+  test('the version follows the hashes, not the file times', async () => {
+    const localDoc = { version: 1, groups: { map: { TX: { path: '/assets/local/map/autochess/TX_D.png', hash: 'aaaaaaaaaaaa' } } } };
+    const inst = install({ localDoc });
+    try {
+      const index = createResourceIndex({ dataDir: inst.dataDir, publicDir: inst.publicDir });
+      const a = await index.get();
+      await new Promise((r) => setTimeout(r, 20));
+      fs.writeFileSync(path.join(inst.dataDir, 'local-assets.json'), JSON.stringify(localDoc)); // same art, new mtime
+      const b = await index.get();
+      assert.equal(b.manifest.version, a.manifest.version, 'a re-extraction that changed nothing is the same version');
+      fs.writeFileSync(path.join(inst.dataDir, 'local-assets.json'), JSON.stringify({ version: 1, groups: { map: { TX: { path: '/assets/local/map/autochess/TX_D.png', hash: 'bbbbbbbbbbbb' } } } }));
+      const c = await index.get();
+      assert.notEqual(c.manifest.version, a.manifest.version, 'changed art is a new version');
+      assert.equal(c.manifest.files.find((f) => f.url === '/assets/local/map/autochess/TX_D.png').hash, 'bbbbbbbbbbbb');
+    } finally { inst.cleanup(); }
+  });
+  test('rebuilds only when a source manifest changes', async () => {
+    const inst = install();
+    const index = createResourceIndex({ dataDir: inst.dataDir, publicDir: inst.publicDir, rewrite: (v) => rewriteAssetPaths(v, 'https://cdn.example.com'), cdnBase: 'https://cdn.example.com' });
+    const a = await index.get();
+    const b = await index.get();
+    assert.equal(a.body, b.body, 'the same buffers while nothing changed');
+    assert.ok(a.manifest.files.some((f) => /^https:\/\/cdn\.example\.com\/assets\//.test(f.url)), 'asset entries point at the CDN');
+    assert.ok(a.manifest.files.every((f) => f.url.startsWith('https://cdn.example.com/') || f.url.startsWith('/fonts/')));
+    fs.writeFileSync(path.join(inst.dataDir, 'assets.json'), JSON.stringify(manifest({ hash: '0123456789ab' })));
+    const c = await index.get();
+    assert.notEqual(c.body, a.body);
+    assert.notEqual(c.manifest.version, a.manifest.version, 'a regenerated asset manifest is a new version');
+    assert.match(c.manifest.version, /^[0-9a-f]{12}$/);
+    assert.ok(c.gzip.length < c.body.length, 'the served copy is compressed too');
+    inst.cleanup();
+  });
+
+  test('a missing file simply has no size (a CDN-only install)', async () => {
+    const inst = install({ files: [] });
+    const index = createResourceIndex({ dataDir: inst.dataDir, publicDir: inst.publicDir });
+    const m = (await index.get()).manifest;
+    assert.equal(m.sized, 0);
+    assert.equal(m.totalBytes, null);
+    assert.ok(m.count > 0, 'the list is still complete: the client preloads from the CDN');
+    inst.cleanup();
+  });
+});
+  test('board metadata and bracket textures are required, with canonical URL deduplication and a tile companion', () => {
+    const localDoc = { groups: { 'map/fx': { materials: { path: '/assets/local/map/fx/materials.json' },
+      prefab: { path: '/assets/local/map/fx/prefab.json' }, texture: { path: '/assets/local/map/fx/[opt]merged_textures.png' } },
+    'map/water': { normal: { path: '/assets/local/map/water/[ucp]TX_water_normal.png' } },
+    'map/autochess': { atlas: { path: '/assets/local/map/autochess/TX_autochessi_D.png' }, materials: { path: '/assets/local/map/autochess/materials.json' } } } };
+    const files = collectResourceFiles({ ui: { alias: '/assets/local/map/fx/%5Bopt%5Dmerged_textures.png' } }, localDoc);
+    for (const url of ['/assets/local/map/fx/materials.json', '/assets/local/map/fx/prefab.json',
+      '/assets/local/map/fx/%5Bopt%5Dmerged_textures.png', '/assets/local/map/water/%5Bucp%5DTX_water_normal.png',
+      '/assets/local/map/autochess/materials.json', '/assets/local/map/autochess/tiles.json']) {
+      assert.equal(files.filter((f) => f.url === url).length, 1, url);
+      assert.equal(files.find((f) => f.url === url).tier, TIER_ESSENTIAL);
+    }
+    assert.equal(localPathFor('/assets/local/map/fx/%5Bopt%5Dmerged_textures.png', '/srv/public'),
+      path.join(path.resolve('/srv/public'), 'assets/local/map/fx/[opt]merged_textures.png'));
+    for (const url of ['/assets/%2e%2e/%2e%2e/outside.png', '/assets/%5c..%5coutside.png', '/assets/%00.png', '/assets/%ZZ.png']) {
+      assert.equal(localPathFor(url, '/srv/public'), null, url);
+    }
+  });
+
+  test('installed board sidecars have real hashes and sizes, tile changes invalidate the manifest, and CDN paths agree', async (t) => {
+    const atlas = '/assets/local/map/autochess/TX_autochessi_D.png';
+    const texture = '/assets/local/map/fx/[opt]merged_textures.png';
+    const materials = '/assets/local/map/fx/materials.json';
+    const prefab = '/assets/local/map/fx/prefab.json';
+    const tiles = '/assets/local/map/autochess/tiles.json';
+    const localDoc = { groups: { 'map/autochess': { atlas: { path: atlas, hash: 'aaaabbbbcccc' } },
+      'map/fx': { texture: { path: texture, hash: 'ddddaaaabbbb' }, materials: { path: materials, hash: 'bbbbccccdddd' },
+        prefab: { path: prefab, hash: 'ccccddddeeee' } } } };
+    const inst = install({ localDoc, files: [atlas, texture, materials, prefab, tiles].map((s) => s.slice(1)) });
+    t.after(inst.cleanup);
+    const index = createResourceIndex({ ...inst, cdnBase: 'https://cdn.example/game',
+      rewrite: (doc) => rewriteAssetPaths(doc, 'https://cdn.example/game') });
+    const a = await index.get();
+    assert.equal(a.manifest.files.find((f) => f.url === 'https://cdn.example/game' + encodeURI(texture)).size, texture.length - 1);
+    const tilePath = path.join(inst.publicDir, tiles);
+    const tileBody = fs.readFileSync(tilePath);
+    const expected = createHash('sha1').update(tileBody).digest('hex').slice(0, 12);
+    assert.equal(a.manifest.files.find((f) => f.url.endsWith('/tiles.json')).hash, expected);
+    fs.writeFileSync(tilePath, '{"version":2,"board3d":{}}');
+    const b = await index.get();
+    assert.notEqual(b.etag, a.etag);
+    assert.notEqual(b.manifest.version, a.manifest.version);
+    fs.unlinkSync(tilePath);
+    const c = await index.get();
+    assert.equal(c.manifest.files.some((f) => f.url.endsWith('/tiles.json')), false, 'no endless download when optional local crops are absent');
+  });
+
+  test('hash tooling includes board JSON metadata and encodes bracket filenames', async (t) => {
+    const names = ['assets/local/map/fx/materials.json', 'assets/local/map/fx/prefab.json',
+      'assets/local/map/autochess/tiles.json', 'assets/local/map/autochess/materials.json',
+      'assets/local/map/fx/[opt]merged_textures.png', 'assets/local/map/fx/other.json', 'assets/game-data.json'];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-res-hashes-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    for (const name of names) {
+      const file = path.join(root, 'public', name);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, name);
+    }
+    const listed = await listResourceFiles('public/assets', { root });
+    assert.ok(listed.includes('/assets/local/map/fx/%5Bopt%5Dmerged_textures.png'));
+    assert.equal(listed.filter((f) => f.endsWith('.json')).length, 6);
+    const hashes = await collectHashes({ root, trees: ['public/assets'] });
+    assert.equal(hashes.count, 7);
+    assert.deepEqual(hashes.missing, []);
+    for (const name of names.slice(0, 5)) assert.equal(hashes.files[encodeURI('/' + name)],
+      createHash('sha1').update(name).digest('hex').slice(0, 12));
+  });

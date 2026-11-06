@@ -203,7 +203,8 @@ export function createContentSets({ registry, vanillaData, log = noopLog, maxSet
     // the same plugins, in the same state, with the same (normalized) settings: the set built before (a build takes a few
     // hundred ms of this process — every rooms: fixed room, every 「重新应用」 and every cosmetic switch beside them asks again)
     const norm = normalized(ids, settings);
-    const mk = memoKey(ids, norm);
+    const keyParts = memoKey(ids, norm);
+    const mk = keyParts;
     const remembered = mk && memo.has(mk) ? sets.get(memo.get(mk)) || null : null;
     // the limit: one set more than the rooms hold now (a set already held, or the one the asking room gives up, is free)
     const limit = Math.max(0, Number(maxSets()) || 0);

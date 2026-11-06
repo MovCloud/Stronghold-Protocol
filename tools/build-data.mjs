@@ -4,7 +4,7 @@
 // Reads the official zh_CN client data (Kengxxiao/ArknightsGameData) plus the research JSON in
 // docs/research/ and emits compact, game-ready JSON into data/:
 //   config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions, waves,
-//   stages, bosses, tokens, backups (every field is documented in docs/DATA.md).
+//   stages, bosses, tokens, backups (every field is documented in docs/development/DATA.md).
 //
 // Usage:  node tools/build-data.mjs [--version <id>] [--refresh | --offline] [--out <dir>] [--cache <dir>]
 //                                   [--report <file>] [--quiet] [--no-research] [--force]
@@ -21,6 +21,9 @@
 //   --no-research  ignore docs/research (research-only fields fall back to defaults; for testing)
 //   --force        write the output even when integrity checks fail (default: keep the old files)
 // Unknown options are errors (exit code 2).
+// Historical-cache fallback (only the pinned 0.2.2/fork/0.2.3 assets/config blobs):
+//   --merge-release-snapshots --base-snapshot <dir> --fork-snapshot <dir>
+//   --official-snapshot <dir> --out <new-dir>; records exact source/output hashes.
 //
 // Official files are cached under <repo>/.cache/gamedata/<repo path> (e.g. excel/activity_table.json)
 // and downloaded from https://raw.githubusercontent.com/Kengxxiao/ArknightsGameData/master/zh_CN/gamedata/
@@ -36,7 +39,7 @@
 // waves · stages · bosses · config · validation · main.
 
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -51,7 +54,27 @@ import { DEFAULT_VERSION, VERSIONS } from '../shared/versions.js';
 import { loadProfile, pinnedShaOf } from './versions/profiles.mjs';
 import { applyAdapters } from './versions/adapters.mjs';
 
+// The potential rank the shipped data is built at (潜能 6 = rank 5, FULL_RANK): exported for the roster-overlay
+// tools (rem-data) that build their own records on top of the same rank.
+const OPERATOR_POTENTIAL = FULL_RANK;
+
+// True only when run as a CLI entry (`node tools/build-data.mjs …`): the roster-overlay tools and several tests
+// import this module for its builders, and an import must not parse the host's argv, download anything or write data.
+const IS_MAIN = !!process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
 // ===== CLI & IO ==================================================================================
+
+// Dispatch before table loads or ordinary-generator output/cache handling.
+if (process.argv.includes('--merge-release-snapshots')) {
+  try {
+    const { mergeReleaseFromArgs } = await import('./merge-generated-release.mjs');
+    await mergeReleaseFromArgs(process.argv.slice(2));
+    process.exit(0);
+  } catch (error) {
+    console.error(`build-data snapshot merge failed: ${error.message}`);
+    process.exit(1);
+  }
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RESEARCH_DIR = join(ROOT, 'docs', 'research');
@@ -98,7 +121,7 @@ function parseArgs(argv) {
 
 let OPTS;
 try {
-  OPTS = parseArgs(process.argv.slice(2));
+  OPTS = parseArgs(IS_MAIN ? process.argv.slice(2) : []);
 } catch (e) {
   console.error(`build-data: ${e.message}`);
   process.exit(2);
@@ -285,7 +308,7 @@ async function loadContext() {
 }
 
 /**
- * The committed asset manifest data/assets.json (tools/fetch-assets.mjs; docs/ASSETS.md) — the enemies' attack clip
+ * The committed asset manifest data/assets.json (tools/fetch-assets.mjs; docs/development/ASSETS.md) — the enemies' attack clip
  * lengths (enemyAttackAnim); null when absent or unreadable (no `attackAnim` then, with a warning).
  */
 async function loadManifest() {
@@ -1689,7 +1712,7 @@ const MIRRORED_PREFABS = new Set(['enemy_1196_msfyin']);
  * its attack clip, server/sim/ai.js attackStand): the clip the client plays for its attacks (the asset manifest's
  * `anims.attack.loop` of the enemy's model — not an Idle stand-in, `via: 'idle'`), its length and its first strike
  * frame (`hits`: the clip's OnAttack event; absent when it has none — the sim then takes half the clip). Read from the
- * committed data/assets.json (written by tools/fetch-assets.mjs from the Spine skeletons; docs/ASSETS.md), so the sim
+ * committed data/assets.json (written by tools/fetch-assets.mjs from the Spine skeletons; docs/development/ASSETS.md), so the sim
  * never reads client files; an enemy whose model the manifest lacks gets none (the sim falls back to ATTACK_PAUSE).
  */
 function enemyAttackAnim(manifest, spineId) {
@@ -2970,8 +2993,6 @@ function buildConfig(ctx, waves, stages, bands, chess, items) {
       lastRound, bossRound, hiddenRound,
       rounds, spRounds: roundNums.filter((r) => rounds[r].isSpPrepare),
       combatTimeLimit, enemyScale,
-      // the pool rule's numbers live in the global bossHpScale below (one place restores the fixed pool); a key set here
-      // would override it for this mode (match/gamedata.js bossPoolShareOf)
       bossHpScale: { bloodPointKey: DIFF_KEYS[m.modeDifficulty] || null, unaffectedByEnemyScale: true },
       upgradePrices: levels.slice(0, -1).map((l) => shopLv[l].initialUpgradePrice),
       maxShopLevel: levels.length ? levels[levels.length - 1] : 6,
@@ -3049,11 +3070,13 @@ function buildConfig(ctx, waves, stages, bands, chess, items) {
     // (Bilibili 路标月报#2, cited on GitHub #645) matches — kept by the owner on 2026-10-15
     hiddenCore: { single: PROFILE.config.hiddenCore.single, multi: PROFILE.config.hiddenCore.multi, minTeamLpExclusive: 1, difficulties: ['NORMAL', 'HARD', 'ABYSS'], checkedAfterRound: 14 },
     dp: { init: 10, perSec: 1, max: 99 },
-    unite: { maxHelpers: 2, helperOrder: 'unitsOnField>activeBond>undownedUnits; pair: unitsOnField>activeBond>activeLayers>undownedUnits, first = right field (PRTS 帮助)', layerGainsEnabled: false, keepsHpSpPositions: true, leakedEnemyFullHp: true,
+    unite: { maxHelpers: 2, helperOrder: 'unitsOnField>activeBond>undownedUnits>activeBondCount>activeLayers; pair: unitsOnField>activeBond>activeLayers>undownedUnits>activeBondCount, first = right field (PRTS 帮助; bond count/layers before the seat: owner 2026-10-17)', layerGainsEnabled: false, keepsHpSpPositions: true, leakedEnemyFullHp: true,
       templates: { 1: templateIdOf(act.constData.escapedBattleTemplateMapSinglePlayer), 2: templateIdOf(act.constData.escapedBattleTemplateMapMultiPlayer) } },
     finalAssault: { pairing: 'seatOrderPairs', oddPlayerAlone: true, movableBossPerAlivePlayerSide: true, layerGainsEnabled: false },
     timers: {
-      infoCheck: step('INFO_CHECK')?.time ?? 25, infoCheckHint: step('INFO_CHECK')?.hintTime ?? 5,
+      // infoCheck: the co-op briefing (solo is untimed) = the official 25 s + 20 s to agree on the 核心盟约 call (fork,
+      // YuriRestia) — the same value as the DEFAULTS.timers fallback (server/match/gamedata.js)
+      infoCheck: (step('INFO_CHECK')?.time ?? 25) + 20, infoCheckHint: step('INFO_CHECK')?.hintTime ?? 5,
       // bandTurn: one turn of the co-op strategy draft = its only countdown (server/match/Match.js BAND_TURN_SECONDS,
       // owner official-play report 2026-10-10: 50 s per turn; the official whole-step value stays as reference)
       bandDraft: step('BAND_CHECK')?.time ?? 50, bandDraftHint: step('BAND_CHECK')?.hintTime ?? 15, bandTurn: 50,
@@ -3302,6 +3325,32 @@ function validateAll(f) {
 
 // ===== main =====================================================================================
 
+/**
+ * The owner's preserved owned picks (DATA.md §18). data/vanilla/backups.json is the exact upstream 0.3.0 snapshot and
+ * carries a collab pick (char_4182_oblvns 丰川祥子, picked by the owner on 2026-10-15) that the zh_CN cache this build
+ * reads no longer ships. Regenerating from the cache alone would silently drop a unit the product keeps, so the vanilla
+ * records are re-attached after the generated ones — the output stays complete and deterministic (same inputs, same
+ * bytes). A missing record is a warning, never a hard failure: a fresh cache may simply not need the overlay.
+ * @param {object} backups the generated backups.json object (mutated)
+ */
+function reattachPreservedPicks(backups) {
+  const file = join(ROOT, 'data', 'vanilla', 'backups.json');
+  if (!existsSync(file)) return backups;
+  const old = JSON.parse(readFileSync(file, 'utf8'));
+  for (const id of old.diy?.ownedPool ?? []) {
+    if (backups.diy.ownedPool.includes(id)) continue;
+    const unit = old.units?.[id];
+    const operator = old.diy?.operators?.[id];
+    if (!unit || !operator) { warn(`backups: preserved owned pick ${id} has no unit/operator record in data/vanilla`); continue; }
+    backups.diy.ownedPool.push(id);
+    backups.diy.excluded = backups.diy.excluded.filter((x) => x !== id);
+    backups.diy.operators[id] = operator;
+    backups.units[id] = unit;
+    warn(`backups: kept preserved owned pick ${id} (${operator.name}) from data/vanilla/backups.json`);
+  }
+  return backups;
+}
+
 async function main() {
   const t0 = Date.now();
   const ctx = await loadContext();
@@ -3337,6 +3386,7 @@ async function main() {
   // the unit forms rebuild every PRESET chess at every rank (before the annotation: each pass as built)
   const errors = [...validateAll(files), ...passes.flatMap((p) => checkUnitFormParity(p.ctx, p.chess).map((e) => `${e} (potential rank ${p.ctx.potRank})`))];
   errors.push(...attachPotential(passes));
+  reattachPreservedPicks(files.backups);
   let total = 0;
   const sizes = {};
   const texts = {};
@@ -3399,7 +3449,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+// Builders shared with the roster-overlay tools (rem-data / extension-potential): the same names the
+// official-unit builders expose, plus the locally defined token variant, the full-rank marker and the potential annotator.
+export { buildSkill, statsFrom, interpolateAttrs, baseTalentList, traitRecord, rangeGrid, immunitiesOf,
+  unlocked, bestCandidate, moduleAttr, moduleTalentChanges, splitModuleParts, tokenVariant, OPERATOR_POTENTIAL, withPotential, attachPotential };
+
+if (IS_MAIN) main().catch((e) => {
   console.error('build-data failed:', e && e.stack ? e.stack : e);
   process.exitCode = 1;
 });

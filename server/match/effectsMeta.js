@@ -47,9 +47,10 @@ import { charge } from '../sim/content/dsl/budget.js';
 import { registerExtensionMeta, extensionMetaOwner } from '../sim/content/extensions.js';
 import { registerAllMeta } from '../sim/content/index.js';
 import { registerBuiltins } from './builtinMeta.js';
-import { msg, dn } from '../../shared/i18n.js';
 import { onGiftTicker } from './botEmotes.js';
 import { previewContext } from './preview.js';
+import { LayerLedger } from './layerForecast.js';
+import { msg, dn } from '../../shared/i18n.js';
 import { deriveSeed } from '../sim/rng.js';
 
 export const HOOKS = Object.freeze([
@@ -79,6 +80,8 @@ export class MetaRegistry {
     this._h = new Map();
     /** registration problems that do not throw (unknown hook names — usually a typo) */
     this.warnings = [];
+    /** the engine's own handler objects (built-ins + content, createRegistry → markOfficial): the 预计叠层 preview runs only these */
+    this._official = new WeakSet();
   }
 
   /**
@@ -98,6 +101,11 @@ export class MetaRegistry {
     this._h.set(key, h);
     return this;
   }
+
+  /** Mark every handler registered so far as the engine's own (createRegistry, before any plugin registers). */
+  markOfficial() { for (const h of this._h.values()) this._official.add(h); return this; }
+  /** True for a handler markOfficial saw — a later register() of the same key (a plugin, a DSL spec, a test) is not. */
+  isOfficial(h) { return !!h && this._official.has(h); }
 
   unregister(key) { return this._h.delete(key); }
   get(key) { return this._h.get(key) ?? null; }
@@ -131,6 +139,7 @@ export function createRegistry({ builtins = true, content = true, log = console 
   if (content) {
     try { registerAllMeta(reg); } catch (e) { log.error?.('[meta] registerAllMeta failed', e); }
   }
+  reg.markOfficial(); // the 预计叠层 preview never calls what registers from here on (plugins, DSL specs: layerForecast.js)
   if (content) registerExtensionMeta(reg);
   if (reg.warnings.length) log.warn?.(`[meta] ${reg.warnings.length} handler method(s) are not hooks and will never run, e.g. ${reg.warnings.slice(0, 3).join('; ')}`);
   return reg;
@@ -164,7 +173,7 @@ export class EffectDispatcher {
   }
 
   _report(key, hook, e) {
-    if (this.preview) return;
+    if (this.preview) throw e; // discard a broken estimate; never choose a partially applied start
     this.errors++;
     const msg = `${key}.${hook}: ${e && e.message ? e.message : e}`;
     const rec = this.errorsByKey.get(msg);
@@ -189,15 +198,41 @@ export class EffectDispatcher {
   _call(ps, key, handler, hook, source, ev, repeat = 1) {
     const fn = typeof handler[hook] === 'function' ? handler[hook] : source.kind === 'garrison' && typeof handler.run === 'function' ? handler.run : null;
     if (!fn) return;
+    // 预计叠层 (layerForecast.js): only the engine's own handlers run in the forecast. A plugin's (a script or DSL plugin,
+    // any handler registered after createRegistry) is never called — it may keep state outside ctx — and makes it partial.
+    if (this.preview && this.preview.ledger && !this.registry.isOfficial(handler)) { this.preview.ledger.partial = true; return; }
     let ctx;
     if (this.preview) {
       try { ctx = makeCtx(this.m, ps, source, hook, ev, this.preview); }
       catch (e) { this._report(key, hook, e); return; }
     } else ctx = makeCtx(this.m, ps, source, hook, ev);
+    const ledger = this.preview && this.preview.ledger;
     for (let i = 0; i < repeat; i++) {
       if (!this._allowScript(handler,hook)) break;
+      // 预计叠层 (layerForecast.js): a call that draws the preview RNG and adds layers is a random source, not counted
+      const mark = ledger ? ledger.mark(this.preview.rng) : null;
       try { fn.call(handler, ctx, ev); } catch (e) { this._report(key, hook, e); }
+      if (mark) ledger.settle(mark, this.preview.rng, source);
     }
+  }
+
+  /**
+   * 预计叠层: the layers `ps`'s own `hook` (onPrepEnd) dispatch would add now, as a recording preview — a fresh isolated
+   * dispatcher, the preview context's no-op writes and a clone of rngMeta, with the player's addLayers / layers / bond /
+   * bonds / triggerGarrisons on a LayerLedger (server/match/layerForecast.js). Changes nothing and draws no match RNG.
+   * Only the engine's own handlers run (MetaRegistry.isOfficial); a plugin's is skipped and sets `partial`. The event
+   * carries `preview: true`.
+   * @returns {{ bonds: Record<string, { n: number, sources: { kind: string, id: string, n: number }[] }>, random: boolean, randomSources: { kind: string, id: string }[], partial: boolean }}
+   */
+  forecastLayers(ps, hook = 'onPrepEnd', ev = { round: this.m.round, preview: true }) {
+    const isolated = new EffectDispatcher(this.m, this.registry);
+    const ledger = new LayerLedger(ps.playerId);
+    // the detached game-data view (preview.js dataView) is kept for the match: copying the data again for every forecast
+    // took ~50 ms of the node's main thread per player action (rel20). Its records are copies, never the match's own.
+    this._forecastData ??= new Map();
+    isolated.preview = { rng: this.m.rngMeta.clone(), data: this._forecastData, players: new Map([[ps.playerId, ps]]), ledger, dispatcher: isolated };
+    isolated.dispatch(ps, hook, structuredClone(ev), { quiet: true });
+    return ledger.result();
   }
 
   /** 获得时 multiplier from 投资人 (investShip): ×2 while active, ×3 at ≥ 100 layers (research 02 §3.17). */
@@ -235,7 +270,7 @@ export class EffectDispatcher {
     // An item granted while 休整期结束 is on the stack (this hook, or onGain re-entering it — 维多利亚 pays the next
     // milestone from the grant's onGain) is stowed and not merged until the next prep start. [ASSUMED] every such
     // item, not only the 战栗维式重锤 (owner's decision 2026-10-04: "an item that arrives at 休整期结束").
-    const deferItems = hook === 'onPrepEnd';
+    const deferItems = hook === 'onPrepEnd' && !this.preview; // a preview grants nothing and leaves the player untouched
     if (deferItems) ps._deferItemMerge = (ps._deferItemMerge || 0) + 1;
     try {
       const reg = this.registry;
@@ -534,6 +569,7 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
     lp: () => ps.lp,
     alive: () => ps.alive,
     bandId: () => ps.bandId,
+    bandIds: () => (Array.isArray(ps.bandIds) && ps.bandIds.length ? ps.bandIds.slice() : (ps.bandId ? [ps.bandId] : [])),
     teamMedicGranted: () => m.teamMedicGranted(),
     shopLevel: () => ps.shop.level,
     bond: (id) => (ps.bonds[id] ? { ...ps.bonds[id] } : null),
@@ -607,7 +643,7 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
       const base = gd.baseIdOf(id);
       // "some effects fail when the cap is hit" (research 06 §7): by default a chess of the pool needs a free copy (a
       // 自选 piece: one of the player's own stock — player/diy.js poolOf)
-      const pool = typeof ps.poolOf === 'function' ? ps.poolOf(base) : m.pool;
+      const pool = typeof ps.poolOf === 'function' ? ps.poolOf(base) : ps.pool;
       if (opts.requirePool !== false && pool.has(base) && pool.left(base) < 1) return null;
       const p = ps.acquireChess(id, { source: opts.source || source.key || 'effect', toTemp: !!opts.toTemp, fromPool: opts.fromPool !== false });
       // 「歌蕾蒂娅：获得斯卡蒂」 — every silent grantChess (a 特质, 余 SERVER_MOST_BOND, a band, an item, a choice).
@@ -628,7 +664,7 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
         source: opts.source || source.key || 'effect',
         toTemp: !!opts.toTemp,
         deferMerge: ps._deferItemMerge > 0,
-        requirePool: opts.requirePool !== false,
+        requirePool: opts.ignoreCap ? false : opts.requirePool !== false,
       });
       return p ? view(p) : null;
     },
@@ -643,9 +679,11 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
         return typeof opts.filter === 'function' ? !!opts.filter(id) : true;
       };
       const extra = typeof ps.diyStockEntries === 'function' ? ps.diyStockEntries() : null;
-      return m.pool.roll(rng, { maxTier: Number.isInteger(opts.maxTier) ? opts.maxTier : 6, tier: Number.isInteger(opts.tier) ? opts.tier : null, filter: f, extra, ignoreCounts: opts.ignoreCounts === true });
+      return ps.pool.roll(rng, { maxTier: Number.isInteger(opts.maxTier) ? opts.maxTier : 6, tier: Number.isInteger(opts.tier) ? opts.tier : null, filter: f, extra, ignoreCounts: opts.ignoreCounts === true });
     },
-    rollItem: (opts = {}) => rolls.rollItemId(opts),
+    rollItem: (opts = {}) => rolls.rollItemId({ ...opts, player: ps }),
+    /** Whether the shared shop stock has room for one more `itemId` (always true for an uncapped item). */
+    itemInStock: (itemId) => !!gd.item(itemId) && ps.itemPool.canGain(itemId),
     /**
      * Roll a choices.json pool: equip pools → { kind: 'item', id }; chess pools (items / weighted / shopEligible with
      * tier, minTier, bond, golden) → { kind: 'chess', id, golden } (a pool chess needs a free copy). null when empty.
@@ -654,7 +692,7 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
       shopLevel: ps.shop.level,
       // a shared-pool draw also takes the player's 自选 stock, its bonds read through the player's view (rollChess)
       extra: typeof ps.diyStockEntries === 'function' ? ps.diyStockEntries() : null, chessOf: (id) => gd.chess(id),
-      ...opts,
+      ...opts, player: ps,
     }),
     /**
      * Run another owned chess's 特质 of `eventType` now (SERVER_GAIN / SERVER_PREP_START / SERVER_PREP_FIN /
@@ -743,9 +781,8 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
     offerBountyChoice: (cards, sourceItemId) => m.offerBountyChoice(ps, cards, sourceItemId),
 
     // ---- messaging
-    // a string or a shared/i18n.js msg(msgid, params)
-    toast: (text, kind = 'info') => m.toast(ps, kind, text && typeof text === 'object' ? text : String(text)),
-    ticker: (text) => m.tickerText(text && typeof text === 'object' ? text : String(text)),
+    toast: (text, kind = 'info') => m.toast(ps, kind, text),
+    ticker: (text) => m.tickerText(text),
     /**
      * CHAR_GIFT broadcast to this player: "{0}博士给你赠送了{1}" — named as this player sees the gift (a chess it fields as
      * its 补位 stand-in by the stand-in's name: 0.2.0, the owner's recall of the official mode, 2026-10-06).
@@ -764,8 +801,11 @@ export function makeCtx(m, ps, source, hook, ev = null, preview = null) {
   };
   if (!preview) return ctx;
   const forPlayer = (p) => makeCtx(m, preview.players.get(p.playerId) || p, source, hook, null, preview);
-  return previewContext(ctx, preview, {
+  const out = previewContext(ctx, preview, {
     teammates: () => m.alivePlayers().filter((p) => p.playerId !== ps.playerId).map(forPlayer),
     player: (id) => { const p = m.players.get(id); return p?.alive ? forPlayer(p) : null; },
   });
+  // 预计叠层: only the forecast player's layer functions record (layerForecast.js); a teammate's stay no-ops
+  if (preview.ledger && preview.ledger.playerId === ps.playerId) preview.ledger.bind(out, ps, source, preview);
+  return out;
 }

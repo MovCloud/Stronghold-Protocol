@@ -29,7 +29,7 @@
 // are reused across versions for other operators and items (第一期下半: 100 chess ids, 72 item ids; review fix).
 
 import { useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
-import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS } from '../../../shared/constants.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, PHASE } from '../../../shared/constants.js';
 import { html, Icon, MicroLabel, Spinner, Button, Modal, confirmDialog } from '../ui/components.js';
 import { useGameData, makeLookups, BandIcon, BondGlyph, Img } from '../ui/gameComponents.js';
 import { data, useData } from '../data.js';
@@ -47,6 +47,8 @@ import {
   trophyMedalOf, strategyBadgeIds, bondMemberChess, highestBondRecord, achievementRecords, recordVersion, recordsOfVersion, recordsOfSeason,
 } from '../ui/stats.js';
 import { t, N_ } from '../../../shared/i18n.js';
+import { loadAssetImage } from '../importedAssets.js';
+import { installAssetFonts } from '../assetFonts.js';
 import { scriptOf } from '../../../shared/i18nPacks.js';
 import { VersionTag } from '../ui/pluginTag.js';
 import { contentSet, retryContentSet } from '../content.js';
@@ -58,16 +60,26 @@ const cx = (...p) => p.flat().filter(Boolean).join(' ');
 /** Rows of 对局记录 shown at first and added by each 显示更多. */
 export const HISTORY_PAGE = 50;
 
+const TABS = [
+  { id: 'overview', name: N_('总览'), micro: 'OVERVIEW' },
+  { id: 'bands', name: N_('盟约&策略'), micro: 'ALLIANCES / STRATEGIES' },
+  { id: 'totals', name: N_('战斗累计'), micro: 'COMBAT TOTALS' },
+  { id: 'history', name: N_('对局记录'), micro: 'HISTORY' },
+];
+
 // `version`: the version filter (null: the version the page shows; 'all': every record — DESIGN §35.23)
 const statsStore = createStore({ open: false, tab: 'overview', withModded: false, version: null });
 
-/** Open the stats viewer (title screen / lobby / room entry points). */
-export function openStats() {
+/**
+ * Open the stats viewer (title screen / lobby / room entry points). `tab` is optional: an entry point wired as
+ * `onClick=${openStats}` passes the click event, so anything that is not a tab id lands on 总览.
+ */
+export function openStats(tab) {
   data.load('config');
   data.load('bands');
   data.load('bonds');
   data.load('assets');
-  statsStore.set({ open: true, tab: 'overview' });
+  statsStore.set({ open: true, tab: TABS.some((x) => x.id === tab) ? tab : 'overview' });
 }
 export const closeStats = () => statsStore.set({ open: false });
 /**
@@ -75,13 +87,6 @@ export const closeStats = () => statsStore.set({ open: false });
  * version vote above it, ui/versionVote.js CoveredVersionVote).
  */
 export const useStatsOpen = () => useStore((s) => s.open, Object.is, statsStore);
-
-const TABS = [
-  { id: 'overview', name: N_('总览'), micro: 'OVERVIEW' },
-  { id: 'bands', name: N_('盟约&策略'), micro: 'ALLIANCES / STRATEGIES' },
-  { id: 'totals', name: N_('战斗累计'), micro: 'COMBAT TOTALS' },
-  { id: 'history', name: N_('对局记录'), micro: 'HISTORY' },
-];
 
 const pct = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
 const dateTime = (ms) => {
@@ -159,14 +164,18 @@ function ModdedSwitch({ agg }) {
 }
 
 /** The doctor's line (name, trophies), the solo / co-op rows and the six titles: 总览 and the lobby's 成就统计. */
-function ProfileBlock({ agg, gd, nickname }) {
+function ProfileBlock({ agg, gd, nickname, records = [] }) {
   const titles = (Array.isArray(gd.config?.titles) ? gd.config.titles : []).map((x) => ({ ...x, count: agg.titles[x.id]?.count || 0 }));
   // records whose room mode is unknown (`roomMode` null) count in the total but in neither mode row
   const unknownMode = Math.max(0, agg.count - agg.byMode.solo.games - agg.byMode.coop.games);
+  const gems = records.filter((r) => r.altArt).length; // (fork) records with the alternate result background
   return html`<div class="st-overview-details">
       <div class="st-mode-summary">
         <div class="st-profile">
-          <b class="st-profile__name">Dr. ${nickname || t('未知')}</b>
+          <div class="st-profile__who">
+            <b class="st-profile__name">Dr. ${nickname || t('未知')}</b>
+            ${gems > 0 ? html`<span class="st-profile__gem" data-testid="stats-gem"><i class="st-gem"></i><b class="num">${fmtNum(gems)}</b></span>` : null}
+          </div>
           <div class="st-profile__trophies" title=${t('累计本机保留战绩中获得的奖杯')}>
             <${Img} src=${uiUrl(gd.m, `medalIcon/${trophyMedalOf(agg.trophies, gd.config?.trophies?.medals)?.iconId || ''}`)}
               class="st-profile__medal" fallback=${html`<${Icon} name="crown" />`} />
@@ -212,7 +221,7 @@ function Overview({ agg, gd, nickname, records }) {
     <${ModdedSwitch} agg=${agg} />
     ${agg.test > 0 ? html`<p class="t-dim" data-testid="stats-test-excluded">${t('测试对局不计入统计。')}</p>` : null}
     ${fonts ? html`<link rel="stylesheet" href=${fonts} />` : null}
-    <${ProfileBlock} agg=${agg} gd=${gd} nickname=${nickname} />
+    <${ProfileBlock} agg=${agg} gd=${gd} nickname=${nickname} records=${records} />
     <div class="st-cards">
       <${StatCard} micro="GAMES" value=${fmtNum(agg.count)} label=${t('总局数')} />
       <${StatCard} micro="WINS" value=${fmtNum(agg.wins)} label=${t('胜场')} tone="mint" />
@@ -316,13 +325,12 @@ function TitleHexagon({ titles, manifest }) {
   const [loadedArt, setLoadedArt] = useState([]);
   useEffect(() => {
     let active = true;
-    const images = [mask, glow].filter(Boolean).map((url) => {
-      const image = new Image();
-      image.onload = () => { if (active) setLoadedArt((loaded) => loaded.includes(url) ? loaded : [...loaded, url]); };
-      image.src = url;
-      return image;
-    });
-    return () => { active = false; for (const image of images) image.onload = null; };
+    for (const url of [mask, glow].filter(Boolean)) {
+      void loadAssetImage(url).then((image) => {
+        if (active && image) setLoadedArt((loaded) => loaded.includes(url) ? loaded : [...loaded, url]);
+      });
+    }
+    return () => { active = false; };
   }, [mask, glow]);
   return html`<div class=${cx('st-titlehex', mask && loadedArt.includes(mask) && 'has-reference-mask')} role="group" aria-label=${t('称号')}
     style=${{ '--st-title-mask': mask ? `url("${mask}")` : undefined, '--st-title-glow': glow && loadedArt.includes(glow) ? `url("${glow}")` : undefined }}>
@@ -466,7 +474,7 @@ function Bands({ agg, gd, records }) {
 
 const SUM_ROWS = [
   ['kills', N_('击倒敌人')], ['bossDamage', N_('领袖伤害')], ['dmgDealt', N_('造成伤害')], ['activatedLayers', N_('盟约层数')],
-  ['merges', N_('晋升次数')], ['itemsEquipped', N_('配发装备')], ['gold', N_('消耗资金')], ['perfectRounds', N_('完美作战')],
+  ['merges', N_('晋升次数')], ['itemsEquipped', N_('配发装备')], ['gold', N_('消耗金币')], ['perfectRounds', N_('完美作战')],
   ['refreshes', N_('刷新次数')], ['leaks', N_('未击倒')], ['lpLost', N_('损失生命')],
 ];
 
@@ -611,17 +619,28 @@ function clearReplayVersion() {
 function StatsScreen({ tab }) {
   const ready = useData('config', 'bands', 'bonds', 'assets');
   const gd = useMemo(() => makeLookups(ready), [ready, data.locale(), data.contentId()]);
+  const numberFont = uiUrl(gd.m, 'statistics/numberFont');
+  const labelFont = uiUrl(gd.m, 'statistics/labelFont');
   const [stats, setStats] = useState(() => loadStats());
   const [replay, setReplay] = useState(null);
   const boxRef = useRef(null);
   const fileRef = useRef(null);
   const replayRef = useRef(null);
   replayRef.current = replay;
-  const inMatch = useStore((s) => selectRoute(s) === 'game');
+  const inMatch = useStore((s) => selectRoute(s) === 'game' && s?.match?.public?.phase !== PHASE.RESULT);
   const nickname = useStore((s) => s.me.name);
   useDocClass('sp-stats-open');
 
+  useEffect(() => {
+    if (!numberFont && !labelFont) return;
+    void installAssetFonts({ fonts: { faces: {
+      number: { family: 'Official Stats Numerals', weight: 400, woff2: numberFont },
+      label: { family: 'Official Stats Labels', weight: 400, woff2: labelFont },
+    } } });
+  }, [numberFont, labelFont]);
+
   // a match starting (the host pressed 开始) takes the player to its briefing: the overlay must not sit on top of it
+  // (the result screen is exempt — the 对局记录 entry point opens the panel from there and the replay needs it)
   useEffect(() => { if (inMatch) closeStats(); }, [inMatch]);
   useEffect(() => {
     const onKey = (e) => {
@@ -777,7 +796,7 @@ export function AchievementDialog({ onClose }) {
     <div class="achv__scroll st-body" data-testid="achievement-dialog">
       ${fonts ? html`<link rel="stylesheet" href=${fonts} />` : null}
       ${!ready ? html`<div class="st-loading"><${Spinner} size="md" /></div>` : html`
-        <${ProfileBlock} agg=${agg} gd=${gd} nickname=${nickname} />
+        <${ProfileBlock} agg=${agg} gd=${gd} nickname=${nickname} records=${official} />
         <${RecordHeading} title=${t('卫戍成就')} manifest=${gd.m} class="st-record-heading--achievement" />
         <${BondAchievement} peak=${highestBondRecord(official)} gd=${gd} />
         <${MatchRecords} maxima=${agg.maxima} manifest=${gd.m} />
@@ -797,4 +816,3 @@ export function StatsHost() {
   if (!open) return null;
   return html`<${StatsScreen} tab=${tab} />`;
 }
-

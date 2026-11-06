@@ -172,6 +172,7 @@ export function ownerBoard(field, ownerId, extra = null) {
     if (isObj(u.diy) && typeof u.diy.charId === 'string') p.diy = u.diy;
     // 0.2.0 补位: a unit fighting as its stand-in says so (UnitInfo standInFor) — the popup draws that member as the stand-in
     if (typeof u.standInFor === 'string' && u.standInFor) p.standInFor = u.standInFor;
+    if (u.skin) p.skin = u.skin;
     out[u.area === 'hand' ? 'hand' : u.area === 'temp' ? 'temp' : 'board'].push(p);
   }
   return out;

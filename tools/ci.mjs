@@ -56,7 +56,7 @@ export const SMOKE_PATHS = ['/healthz', '/', '/vendor/pixi.min.js'];
  * test/ for a test file too: the helpers, the child-process entries and the Forge fixtures — untrusted bait that writes
  * files when it runs. test/ci.test.js checks this list against the tree.
  */
-export const TEST_FILES = ['test/**/*.test.js', 'test/e2e/coop.e2e.mjs', 'plugins/_template/**/*.test.js'];
+export const TEST_FILES = ['test/**/*.test.js', 'test/e2e/coop.e2e.mjs', 'plugins/_template/**/*.test.js', 'deploy/stardust/feedback/**/*.test.mjs'];
 
 /** Runner setup / install steps, and the full Golden check run separately (scoped to its job and command). */
 export const SKIPPED_CI_STEPS = [
@@ -64,6 +64,12 @@ export const SKIPPED_CI_STEPS = [
   { uses: 'actions/setup-node', why: 'GitHub runner: the Node.js of this machine is used' },
   { name: 'Install (npm ci → postinstall copies public/vendor)', why: 'run `npm ci` yourself; it is not a check' },
   { job: 'golden', name: 'Full Golden regression check', run: 'npm run golden', why: 'run `npm run golden` separately for the full corpus' },
+  // 2026-10-11: the PNG→WebP encoder ci.yml installs before the suite. Runner setup, not a check --
+  // locally the encoder either exists (cwebp / Pillow / ImageMagick / ffmpeg / sharp) or the real
+  // encoder cases skip themselves. Adding it to ci.yml WITHOUT this entry (and without PILLOW_PIN in
+  // CI_TEST_ENV above) is what turned every matrix leg red on 2026-10-11 (run 38107861726): the
+  // mirror test refuses a ci.yml step that tools/ci.mjs does not account for, on purpose.
+  { name: 'Ensure the pinned Pillow for the PNG→WebP asset transcode', why: 'runner setup: install the encoder yourself (or those cases self-skip)' },
 ];
 
 /**

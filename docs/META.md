@@ -200,13 +200,18 @@ A `choice:<effectId>` registry handler overrides the default application (§2.4)
   When no human is left at all the match ends immediately (`reason: 'abandoned'`); when only eliminated spectators are
   left it ends as `'eliminated'`.
 
-### 1.3a Solo pause
-`g.pause { on }` (`Match.setPause`, DESIGN §14 Solo pause): solo matches only (co-op → `WRONG_PHASE`), `on: true` only
-while a battle runs (COMBAT / 最终攻势 / 隐秘核心 with a live field, not while the Final Assault is ending); `on: false`
-always. While paused (`m.public.paused`) the field clocks, the authority deadlines / release timers, the boss clock
+### 1.3a Match control (比赛控制)
+`g.pause { on }` / `g.matchControl { action }` (`Match.setPause` + `matchControl.js`, DESIGN §14 Match control): 暂停 / 快进 / 跳过
+are requests the connected humans must all agree to (`need = voters.length`); a match with no other connected human applies
+the request at once. `on: true` opens the vote, `on: false` is the `resume` control, `g.matchControlBallot { voteId, agree }`
+answers it, the proposer's `agree: false` withdraws it, and a vote that reaches `MATCH_CONTROL_MS` (30 s × timerScale)
+without full agreement counts as a refusal. A request is accepted only in COMBAT / 最终攻势 / 隐秘核心 with a battle running.
+While paused (`m.public.paused`) the field clocks, the authority deadlines / release timers, the boss clock
 (overtime drain, silence watchdog) and the server pacers stand still; `_resume()` shifts `deadline`, `overtimeAt`, the
-fields' `startAt` / `lastProgressAt` and the boss start by the paused time and re-arms the timers. A disconnect or
-`onLeave` resumes; the battle phase ending clears it (`pausedMs` totals the paused time).
+fields' `startAt` / `lastProgressAt` and the boss start by the paused time and re-arms the timers. A speed change
+(`m.public.speed`, default 2×) re-arms the deadline equivalently from the game seconds already spent. A disconnect or
+`onLeave` resolves the vote and resumes; the battle phase ending clears the pause (`pausedMs` totals the paused time).
+The vote is transient: a checkpoint restore drops it and the speed returns to the default.
 
 ### 1.4 Watching fields
 Client-side combat (the default, DESIGN §14 Spectating; `Match._watchClient`): `g.watch` answers with the field's
@@ -935,7 +940,7 @@ The client's stored loadout and `m.private.loadout` / `ops` must agree after a s
 `m.public` (throttled ≤ 10/s, only sent when it changed) carries the DESIGN fields plus: `drawnDisabledBonds` (the 3+4
 drawn set; `disabledBonds` = drawn ∪ the mode's static list), `hiddenBossId`, `bossRound`, `hiddenRound`, `spRound`,
 `combatMode` (`'client'` | `'server'`), `fields[].progress { killed, total, done }` (teammates' progress UI), `paused`
-(solo pause, §1.3a),
+(比赛控制 pause, §1.3a), `speed` (the playback speed, default 2×), `matchControl` (the open vote or null),
 `players[].autoplay`, `players[].uniteLeft` (UNITE, leakers only: their enemies still standing, uncapped — §4),
 `players[].bonds` = `ps.alive ? bondList(gd, ps.bondsView(), { off: offBondCounts(gd, ps) }) : []` — every bond with members, layers or an active tier
 (and, last, every bond the mode never activates that the player has members of: `{ bondId, count, active: false, tier: 0, layers, off: true }`,
