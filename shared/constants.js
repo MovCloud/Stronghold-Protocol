@@ -12,11 +12,10 @@ export const APP_VERSION = '0.3.3';
  * tools/package.mjs refuses to build a release zip from it without --allow-dev. */
 export const DEV_BUILD = /-dev$/.test(APP_VERSION);
 
-// Fork identity (the merged-in Hunt Simulation layers, upstream T1113047): the fork number first, the upstream
-// baseline in parentheses; server/http/boot.js prints FORK_LABEL, test/diag.test.js keeps the pair.
-export const FORK_VERSION = 'V0.0.3';
-export const FORK_LABEL = `${FORK_VERSION}（${APP_VERSION}）`;
-export const FORK_NAME = N_('卫戍协议：狩猎模拟');
+// Banner identity of this aggregate build: the project's own name only. The version it shows is the upstream release
+// it is rebased onto (APP_VERSION above) — this repository keeps no separate fork counter. The merged-in hunt layers
+// (upstream T1113047) are credited in FORK.md, not in the banner.
+export const FORK_NAME = N_('卫戍协议');
 /**
  * The plugin API levels this build supports (DESIGN §32, shared/plugins/manifest.js): a manifest 2 states the level it
  * is written for (`api`); a level outside min…current keeps the plugin out. The level rises when the data shapes, the
@@ -66,6 +65,15 @@ export const modeIdFor = (roomMode, difficulty) =>
 // ---- 2V2 versus + event rounds (the merged-in Hunt Simulation layers, shared/constants.js upstream T1113047) ----
 /** Room modes: 'solo' (1 human, no AI), 'coop' (1–4 co-op, one shared team) and 'versus' (2V2: two teams of two). */
 export const ROOM_MODES = Object.freeze(['solo', 'coop', 'versus']);
+/**
+ * 娱乐模式 (arcade): the COMPLETED modes whose open state the admin panel switches at runtime
+ * (server/playerAdmin.js /admin/api/arcade). A mode still being developed is not listed — it stays a 敬请期待 card
+ * with no switch. The ids are the cards' `id`s in public/js/screens/arcade.js.
+ */
+export const ARCADE_ADMIN_MODES = Object.freeze([
+  Object.freeze({ id: 'hunt2v2', name: '狩猎模拟 2V2' }),
+  Object.freeze({ id: 'alliancehunt', name: '同盟狩猎' }),
+]);
 /** Players per team in a 'versus' room (2V2). */
 export const TEAM_SIZE = 2;
 /** How many teams a 'versus' room has. */
@@ -191,7 +199,8 @@ export const VERSUS_CONFRONT = Object.freeze({
  * itself). EVERY ALIVE PLAYER GETS THEIR OWN plan (每人一份: one official category per seat, the totals pairwise
  * distinct), and each plan is INSERTED into that player's OWN wave/波次 — not one shared batch. Killing one banks its
  * bounty at 坎诺特 (never gold), like a 2V2 placement. The 事件期 keeps its three periods with only `self` / `mate`
- * targets (no opponent in co-op). `enabled` is the one switch: false leaves co-op exactly as it was before.
+ * targets (no opponent in co-op). The room opts in per room (`room.create` hunt → Match `opts.coopHunt === true`, the
+ * 娱乐模式 entry); an ordinary co-op room never runs it, and `enabled` is the build-level master switch.
  */
 export const COOP_HUNT = Object.freeze({
   enabled: true,
@@ -620,6 +629,8 @@ export const ERR = Object.freeze({
   TEST_CONFIRM: 'TEST_CONFIRM',
   TEST_DISABLED: 'TEST_DISABLED',
   TEST_FORBIDDEN: 'TEST_FORBIDDEN',
+  // 2V2 ('versus', the fork's 娱乐模式): the operator turned the mode off (lobby option versus / SP_VERSUS=0)
+  MODE_DISABLED: 'MODE_DISABLED',
   // official versions (DESIGN §35.23, M1): a version this server does not enable (room.create, room.proposeVersion); a
   // version that cannot serve the room (its roomModes, or the room's gameplay plugins — they play 第二期下半 only); a room
   // action refused while the room's version vote is open (room.start, room.setPlugins, room.setMode, room.proposeVersion)
@@ -672,6 +683,7 @@ export const ERR_TEXT = {
   TEST_CONFIRM: N_('这是测试房间，不计入任何记录。确认加入？'),
   TEST_DISABLED: N_('测试模式未开启'),
   TEST_FORBIDDEN: N_('这不是测试房间'),
+  MODE_DISABLED: N_('本服务器未开启该玩法'),
   VERSION_UNKNOWN: N_('本服务器没有启用该版本'),
   VERSION_UNSUPPORTED: N_('该版本不能用于当前房间（例如房间开着改变玩法的插件）'),
   VERSION_VOTE: N_('切换版本投票进行中，请等投票结束'),

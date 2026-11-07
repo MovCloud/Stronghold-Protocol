@@ -17,8 +17,13 @@ export function updateManagementViewport(win) {
   const viewport = win.visualViewport;
   const style = win.getComputedStyle?.(root);
   const number = (name) => parseFloat(style?.getPropertyValue(name)) || 0;
-  const width = win.innerWidth || viewport?.width || 1920;
-  const height = win.innerHeight || viewport?.height || 1080;
+  // 显示方向 (ui/orientation.js): a turned page lays out with the physical height as its width and the physical width as
+  // its height (css/orientation.css) — the management screens inside it must take the same swapped box.
+  const turned = root.dataset?.rotate === '1';
+  const physicalW = win.innerWidth || viewport?.width || 1920;
+  const physicalH = win.innerHeight || viewport?.height || 1080;
+  const width = turned ? physicalH : physicalW;
+  const height = turned ? physicalW : physicalH;
   const rem = parseFloat(style?.fontSize) || Math.max(40, Math.min(width / 19.2, height / 10.8, 240));
   const { unit, factor } = managementScale({ width, height, rem,
     top: number('--sa-t'), right: number('--sa-r'), bottom: number('--sa-b'), left: number('--sa-l') });

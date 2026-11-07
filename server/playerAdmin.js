@@ -9,6 +9,7 @@ import { isIP } from 'node:net';
 import { clientAddress, isLocalIp, TokenBucket } from './net.js';
 import { parseAnnouncements, activeAnnouncement } from '../shared/announcements.js';
 import { ANNOUNCEMENT_MAX_BYTES } from './announcements.js';
+import { ARCADE_ADMIN_MODES } from '../shared/constants.js';
 import { t } from '../shared/i18n.js';
 
 const derive = promisify(scrypt);
@@ -162,6 +163,13 @@ export class PlayerAdmin {
           || !Array.isArray(b.scopes) || !Number.isFinite(b.createdAt) || !Number.isFinite(b.expiresAt))) throw new Error('invalid admin state');
     this.state = doc;
     this.reindex();
+    // 娱乐模式 (arcade): the admin panel's persisted per-mode switches apply before the server starts accepting rooms;
+    // a missing key keeps the lobby's default (open).
+    if (doc.arcade && typeof doc.arcade === 'object') {
+      for (const mode of ARCADE_ADMIN_MODES) {
+        if (typeof doc.arcade[mode.id] === 'boolean') this.lobby.setArcadeMode(mode.id, doc.arcade[mode.id]);
+      }
+    }
     for (const conn of this.network.conns.values()) if (conn.session) this.remember(conn.session, conn);
     await this.seedAnnouncements();
     if (this.network.moderation) throw new Error('moderation is already configured');
@@ -399,6 +407,20 @@ export class PlayerAdmin {
     await this.commit(this.state, { action: 'maintenance', maintenance: body.maintenance });
     return { ok: true, maintenance: !!this.lobby.maintenance?.(), changed: changed !== false };
   }
+  /**
+   * 娱乐模式 (arcade) per-mode open switch (server/lobby.js setArcadeMode): closing refuses that mode's NEW rooms and
+   * starts while its running matches finish naturally. Persisted in state.json, so it survives a restart.
+   * @param {{id?: string, open?: boolean}} body
+   */
+  async setArcade(body) {
+    const mode = body && typeof body.id === 'string' ? ARCADE_ADMIN_MODES.find((m) => m.id === body.id) : null;
+    if (!mode) throw fail(400, '未知的娱乐模式');
+    if (typeof body.open !== 'boolean') throw fail(400, 'open 需为布尔值');
+    const changed = this.lobby.setArcadeMode(mode.id, body.open);
+    await this.commit({ ...this.state, arcade: { ...(this.state.arcade || {}), [mode.id]: body.open } },
+      { action: 'arcade', mode: mode.id, name: mode.name, open: body.open });
+    return { ok: true, arcade: this.lobby.arcadeInfo(), changed };
+  }
   async password(body, req, res) {
     if (!await this.verifyPassword(body.currentPassword)) throw fail(403, '当前管理密码不正确');
     const secret = await credentials(body.newPassword);
@@ -444,6 +466,9 @@ export class PlayerAdmin {
         this.json(req, res, 200, { announcements: data.rows.map(({ ...n }) => n), current: data.current, popupCurrent: data.popupCurrent });
       } else if (pathname === '/admin/api/maintenance') {
         this.json(req, res, 200, { maintenance: !!this.lobby.maintenance?.() });
+      } else if (pathname === '/admin/api/arcade') {
+        // 娱乐模式 (arcade): the completed modes the panel switches, with their effective (build switch AND admin) state
+        this.json(req, res, 200, { modes: ARCADE_ADMIN_MODES.map((m) => ({ id: m.id, name: m.name, open: this.lobby.arcadeOpen(m.id) === true })) });
       } else {
         // A GET route has to be registered as one: the built-ins above are hardcoded, and a POST-only route cannot be
         // reached by the console's read requests.
@@ -459,6 +484,7 @@ export class PlayerAdmin {
     const handlers = { '/admin/api/kick': () => this.kick(body), '/admin/api/ban': () => this.ban(body), '/admin/api/unban': () => this.unban(body),
       '/admin/api/announcement': () => this.publish(body), '/admin/api/announcement/stop': () => this.stopNotice(body),
       '/admin/api/announcement/delete': () => this.deleteAnnouncement(body), '/admin/api/maintenance': () => this.setMaintenance(body),
+      '/admin/api/arcade': () => this.setArcade(body),
       '/admin/api/password': () => this.password(body, req, res),
       '/admin/api/logout': async () => { this.sessions.delete(hash(this.cookie(req))); this.setCookie(res, '', 0); return { ok: true }; } };
     // Plugin routes (registerAdminRoute) receive the parsed JSON body and the query; permission stays a reserved field.

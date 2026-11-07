@@ -23,7 +23,7 @@
 import { Session } from '../net.js';
 import { Room } from '../lobby.js';
 import { experimentalOptions, isExperimental } from '../../shared/experimental.js';
-import { DIFFICULTIES, ROOM_CODE_LEN } from '../../shared/constants.js';
+import { DIFFICULTIES, ROOM_CODE_LEN, ROOM_MODES } from '../../shared/constants.js';
 
 /** Document layout version; another version is not restored (logged). Raise it when the shape below changes. */
 export const LOBBY_DOC_VERSION = 1;
@@ -68,7 +68,7 @@ export function roomDoc(room, matchRef, sessionOf) {
     return out;
   };
   return {
-    code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: !!room.aiPicksLast, hostId: room.hostId,
+    code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: !!room.aiPicksLast, hunt: !!room.hunt, hostId: room.hostId,
     experimental: room.experimental, source: room.source, ownerKey: room.ownerKey, ownerKeys: room.ownerKeys ? [...room.ownerKeys] : null,
     matchKey: room.matchKey, matchKeys: room.matchKeys ? [...room.matchKeys] : null, matchCount: room.matchCount | 0, createdAt: room.createdAt,
     seats: room.seats.map(seat),
@@ -162,13 +162,15 @@ export function restoreLobby({ doc, registry, lobby, now = Date.now(), log = nul
 }
 
 function roomFrom(r, sessions, lobby, now) {
-  if (!plain(r) || !ROOM_RE.test(String(r.code)) || lobby.rooms.has(r.code) || !['solo', 'coop'].includes(r.mode)
+  if (!plain(r) || !ROOM_RE.test(String(r.code)) || lobby.rooms.has(r.code) || !ROOM_MODES.includes(r.mode)
     || !DIFFICULTIES.includes(r.difficulty) || !isExperimental(r.experimental) || !Array.isArray(r.seats)) return null;
   const room = new Room(r.code, r.mode, r.difficulty, Number.isFinite(r.createdAt) ? r.createdAt : now, experimentalOptions(r.experimental));
   if (r.seats.length !== room.seats.length) return null;
   const inMatch = !!r.match;
   room.content = lobby.vanilla;
   room.aiPicksLast = r.mode === 'coop' && r.aiPicksLast === true;
+  // 同盟狩猎 (COOP_HUNT): only a co-op room may carry the opt-in; a stray true on any other mode restores as official
+  room.hunt = r.mode === 'coop' && r.hunt === true;
   room.source = typeof r.source === 'string' ? r.source : 'private';
   room.ownerKey = typeof r.ownerKey === 'string' ? r.ownerKey : null;
   room.ownerKeys = Array.isArray(r.ownerKeys) ? new Set(r.ownerKeys.filter((k) => typeof k === 'string')) : null;

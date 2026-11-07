@@ -13,7 +13,7 @@ import { applyPendingUpdate } from '../update.js';
 import { ROOT } from './config.js';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { APP_VERSION, DEV_BUILD, FORK_NAME, FORK_VERSION } from '../../shared/constants.js';
+import { APP_VERSION, DEV_BUILD, FORK_NAME } from '../../shared/constants.js';
 import { limitKeyOf } from '../net.js';
 
 export function shutdownTimeoutMs(value = process.env.SP_SHUTDOWN_TIMEOUT_MS) {
@@ -67,19 +67,19 @@ export function isProcessEntry(metaUrl) {
 }
 
 /**
- * The version a player or a host reads: this fork's build label with the upstream release it is built on —
- * `V0.0.1（0.2.6）` (shared/constants.js FORK_VERSION + APP_VERSION; the fork number first, the upstream baseline in
- * parentheses). FORK_LABEL ('V0.0.1（0.2.6）') is the same pair in one token, used by the client screens.
+ * The version a player or a host reads: the upstream release this aggregate build is rebased onto
+ * (shared/constants.js APP_VERSION). This repository keeps no separate fork counter, so `0.3.3` means the same thing
+ * on the banner, in the About sheet and in /healthz.
  */
-const VERSION_LABEL = `${FORK_VERSION}（${APP_VERSION}）`;
+const VERSION_LABEL = `v${APP_VERSION}`;
 
 /**
  * Print the boot banner of a started server.
  * @param {{ url: string, host: string, port: number, studio?: { pageUrl: (base: string) => string | null } | null }} srv
  */
 export function printBanner(srv) {
-  console.log(`\n  ${FORK_NAME} · Hunt Simulation ${VERSION_LABEL}`);
-  console.log(`  a fork of 卫戍协议：盟约 · Stronghold Protocol: Alliance v${APP_VERSION} (upstream baseline)`);
+  console.log(`\n  ${FORK_NAME} · Stronghold Protocol: Alliance ${VERSION_LABEL}`);
+  console.log(`  upstream baseline: 卫戍协议：盟约 · Stronghold Protocol: Alliance v${APP_VERSION}`);
   if (DEV_BUILD) console.log('  ! 开发版（dev 分支）：不稳定，请勿用于公开服务器 · development build — unstable, not for public servers');
   console.log(`  Local:   ${srv.url}`);
   if (srv.host === '0.0.0.0' || srv.host === '::') {

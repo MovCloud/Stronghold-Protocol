@@ -51,6 +51,7 @@ import { ResumeMatchButton, resumeLocalMatch } from '../ui/resumeMatch.js';
 import { Emblem } from '../ui/emblem.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, NAME_MAX_LEN, PLAYBACK, modeIdFor, ERR } from '../../../shared/constants.js';
+import { ARCADE_CARD, openArcade } from './arcade.js';
 import { html, Fragment, confirmDialog, Button, Icon, MicroLabel, Modal, Spinner, DifficultyIcon, TextField, AvatarFrame, doctorNo, Tooltip } from '../ui/components.js';
 import { Sprite, Img } from '../ui/gameComponents.js';
 import { uiUrl, chessPortraitUrl } from '../ui/assetUrls.js';
@@ -1170,11 +1171,28 @@ export function LobbyScreen() {
   useEffect(() => { if (queue?.state === 'offered' && sheet !== 'match') { setAllyOpen(false); setSheetChained(false); setSheet('match'); } }, [queue?.state]);
   // 独立模拟: at the difficulty picked on 选择模拟协议; 创建同盟: at the remembered one, changed in the room by the host
   // (`version`: the lobby's, only when welcome.versions is present — protocol §4; omitted when the server offers 第二期下半 alone)
-  const create = (mode) => run('create', () => net.request('room.create', {
+  const create = (mode, extra = {}) => run('create', () => net.request('room.create', {
     mode, difficulty: mode === 'solo' ? shownSolo : shownCoop, ...(testMode && asTest ? { test: true } : {}), ...(versions ? { version } : {}),
-    ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}),
+    ...(mode === 'solo' && soloFree && soloTimed === true ? { soloUnlimited: true } : {}), ...extra,
   }));
   const queueMatch = () => run('queue', () => net.request('queue.join', { difficulty }));
+  // 娱乐模式 → 狩猎模拟 2V2 (screens/arcade.js requestVersus): the arcade page hands the ask back here so the versus room
+  // is created exactly like 创建同盟 — the lobby's version, the remembered 同盟 difficulty, the test flag — just in mode
+  // 'versus' (2V2: four seats, AI fills the empty ones at start). The flag is consumed before the request.
+  const versusLaunch = useStore((s) => s.ui?.versusLaunch === true);
+  useEffect(() => {
+    if (!versusLaunch) return;
+    store.patch('ui', { versusLaunch: false });
+    create('versus');
+  }, [versusLaunch]);
+  // 娱乐模式 → 同盟狩猎 (screens/arcade.js requestCoopHunt): a co-op room with the per-room hunt opt-in; the ordinary
+  // 创建同盟 button never carries `hunt`, so the mainline room stays on the official rules.
+  const huntLaunch = useStore((s) => s.ui?.huntLaunch === true);
+  useEffect(() => {
+    if (!huntLaunch) return;
+    store.patch('ui', { huntLaunch: false });
+    create('coop', { hunt: true });
+  }, [huntLaunch]);
   const join = (c = code) => {
     if (queued) { toast(t('请先取消多人匹配，再加入好友同盟'), 'warn'); return; }
     // Click callbacks may pass an event; only an explicit string overrides the typed key.
@@ -1257,6 +1275,7 @@ export function LobbyScreen() {
           </div>` : null}
         ${banner ? html`<div class="hub-maint" role="status">${banner}</div>` : null}
         ${MODE_CARDS.map((c) => html`<${HubEntry} key=${c.id} card=${c} onOpen=${openMode} />`)}
+        ${html`<${HubEntry} key=${ARCADE_CARD.id} card=${ARCADE_CARD} onOpen=${openArcade} />`}
       </section>
     </main>
 

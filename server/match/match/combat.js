@@ -255,8 +255,10 @@ export class MatchCombat {
     // Optional multi-wave 联防 (uniteWaves.js, SiderLock port): uniteWavesHook.planUnites is registered only when the
     // opt-in module has been imported; the mainline relay planner stays the default. One plan per team and the match
     // fields one 联防 at a time — coop always has exactly one.
-    const plans = uniteWavesHook.planUnites ? uniteWavesHook.planUnites(this, this.lastResults) : planUnites(this, this.lastResults);
-    if (plans.length) this.startUnite(plans[0]);
+    // 2V2 always uses the mainline per-team planner (the waves module plans a single co-op room): one field per team.
+    const plans = this.isVersus ? planUnites(this, this.lastResults)
+      : uniteWavesHook.planUnites ? uniteWavesHook.planUnites(this, this.lastResults) : planUnites(this, this.lastResults);
+    if (plans.length) this.startUnite(this.isVersus ? plans : plans[0]);
     else this.settle(null, null); // no unite: null (an empty array is truthy and would fool the audit's unite check)
   }
 }

@@ -51,7 +51,7 @@ async function safeImport(path, load) {
 }
 
 const KIT_REGISTRY = await safeImport('./kits/index.js', () => import('./kits/index.js'));
-const DOMAIN_NAMES = ['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices'];
+const DOMAIN_NAMES = ['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices', 'event'];
 const DOMAINS = await Promise.all([
   safeImport('./tokens.js', () => import('./tokens.js')),
   safeImport('./devices.js', () => import('./devices.js')),
@@ -62,6 +62,7 @@ const DOMAINS = await Promise.all([
   safeImport('./items.js', () => import('./items.js')),
   safeImport('./bands.js', () => import('./bands.js')),
   safeImport('./choices.js', () => import('./choices.js')),
+  safeImport('./event.js', () => import('./event.js')),
 ]);
 const tokens = DOMAINS[0];
 
@@ -71,7 +72,7 @@ const tokens = DOMAINS[0];
  */
 export const KITS = KIT_REGISTRY.KITS ?? Object.freeze({});
 
-/** Domain modules in install order: tokens, devices, enemies, bosses, bonds, garrisons, items, bands, choices. */
+/** Domain modules in install order: tokens, devices, enemies, bosses, bonds, garrisons, items, bands, choices, event. */
 export const MODULES = Object.freeze(DOMAIN_NAMES.map((n, i) => [n, DOMAINS[i]]));
 
 /**

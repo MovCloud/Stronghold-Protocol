@@ -112,7 +112,7 @@ lobby-matchmaking.test.js
 lobby-player-capacity.test.js
 lobby-social.test.js
 lobby-soloqueue.test.js
-lobby-versus.test.js
+lobby-versus.test.js # 已接回 test/（2026-11-07，2V2 房间层接通后实测通过；归档副本已移除）
 local-import.test.js
 maintenance.test.js
 match\afk.test.js
@@ -139,11 +139,11 @@ match\combat-shared-pace.test.js
 match\combat-terminal-transport.test.js
 match\combat-wire.test.js
 match\combat-workers.test.js
-match\confront-roster.test.js
+match\confront-roster.test.js # 已接回 test/match/（2026-11-07，同盟狩猎接通后实测通过）
 match\confront-traits.test.js
 match\console-diy.test.js
 match\console-item-stock.test.js
-match\coop-hunt.test.js
+match\coop-hunt.test.js # 已接回 test/match/（2026-11-07，同盟狩猎接通后实测通过）
 match\damage-board.test.js
 match\damage-board-transport.test.js
 match\damage-match-workers.test.js
@@ -152,7 +152,7 @@ match\draft-capacity.test.js
 match\draft-repeat-drive.test.js
 match\eight-player.test.js
 match\emergency-freeze.test.js
-match\event.test.js
+match\event.test.js # 已接回 test/match/（2026-11-07，同盟狩猎接通后实测通过）
 match\experimental-capacity-workers.test.js
 match\experimental-player-capacity.test.js
 match\experimental-unite-relay.test.js
@@ -217,6 +217,7 @@ match\unite-vote.test.js
 match\upstream-v022-capacity.test.js
 match\upstream-v023-capacity.test.js
 match\upstream-v026-capacity.test.js
+match\versus.test.js # 已接回 test/match/（2026-11-07，2V2 匹配层接通后实测 50/50 通过；归档副本已移除）
 match\ws-public-compact.test.js
 match-chat.browser.test.js # 已删除：文字聊天整分支移出（2026-10-26）
 match-chat.test.js # 已删除：文字聊天整分支移出（2026-10-26）
@@ -420,7 +421,7 @@ ui\data-recovery.test.js
 ui\dev-sandbox.e2e.test.js
 ui\difficulty-details.test.js
 ui\emergency-state.test.js
-ui\event-ui.test.js
+ui\event-ui.test.js # 已接回 test/ui/（2026-11-07，事件期/投放公示覆盖层接通后实测通过）
 ui\experimental-ducklord.test.js
 ui\final-plate.test.js
 ui\five-player.test.js
@@ -478,7 +479,7 @@ ui\room-cues.test.js
 ui\room-entry.test.js
 ui\room-share.test.js
 ui\root-paths.test.js
-ui\roster-ui.test.js
+ui\roster-ui.test.js # 已接回 test/ui/（2026-11-07，公示组件与覆盖层挂载实测通过）
 ui\round-buffs.test.js
 ui\selection-shortcuts.test.js
 ui\server-load.test.js

@@ -1,5 +1,8 @@
-// test/lobby-versus.test.js — 2V2 ('versus') foundation: the room mode, the seat→team mapping and the `team` field the
-// lobby hands to the match. The competition mechanic itself (对抗期 / 胜负判定) is not implemented yet.
+// test/lobby-versus.test.js — the 娱乐模式 room layer: 2V2 ('versus') — the room mode, the seat→team mapping, the AI fill
+// at start, room.swapSeats and the `team` fields the lobby hands to the match — plus 同盟狩猎 (COOP_HUNT), which is a
+// co-op ROOM OPTION (`room.create hunt: true`), never a mode: an ordinary co-op room keeps the official shape. The
+// match-side mechanics (EVENT / CONFRONT, team HP pools, bounty) live in test/match/versus.test.js and
+// test/match/coop-hunt.test.js.
 import { describe, test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -135,7 +138,8 @@ describe('lobby: 2V2 (versus) rooms', () => {
     assert.equal(r.code, ERR.BAD_MSG);
   });
 
-  test('room.swapSeats moves a player between the teams (the host only)', async () => {    const c = await pool.player('Host');
+  test('room.swapSeats moves a player between the teams (the host only)', async () => {
+    const c = await pool.player('Host');
     await c.request({ t: 'room.create', mode: 'versus', difficulty: 'NORMAL' });
     await c.waitFor('room.state', (s) => s.mode === 'versus');
     await c.request({ t: 'room.addBot' }); // seat 1, team 0
@@ -165,5 +169,57 @@ describe('lobby: 2V2 (versus) rooms', () => {
     const bad = await coop.request({ t: 'room.swapSeats', a: 0, b: 1 });
     assert.equal(bad.t, 'error');
     assert.equal(bad.code, ERR.BAD_TARGET);
+  });
+
+  test('同盟狩猎: room.create hunt on a co-op room carries the state key and hands opts.coopHunt to the match', async () => {
+    const c = await pool.player('Hunter');
+    assert.deepEqual(c.welcome.arcade, { hunt2v2: true, alliancehunt: true }, 'the completed modes start open');
+    assert.equal((await c.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL', hunt: true })).t, 'ok');
+    const state = await c.waitFor('room.state', (s) => s.mode === 'coop' && s.hunt === true);
+    assert.equal(seatOf(state, c.id).playerId, c.id, 'the host takes seat 0');
+    assert.equal((await c.request({ t: 'room.start' })).t, 'ok');
+    const opts = RecordingMatch.last.opts;
+    assert.equal(opts.mode, 'coop');
+    assert.equal(opts.coopHunt, true, 'only the opt-in room runs the system 狩猎期');
+  });
+
+  test('同盟狩猎: an ordinary co-op room carries neither the state key nor opts.coopHunt', async () => {
+    const c = await pool.player('Official');
+    assert.equal((await c.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL' })).t, 'ok');
+    const state = await c.waitFor('room.state', (s) => s.mode === 'coop');
+    assert.equal('hunt' in state, false, 'the mainline room shape is untouched');
+    assert.equal((await c.request({ t: 'room.start' })).t, 'ok');
+    const opts = RecordingMatch.last.opts;
+    assert.equal('coopHunt' in opts, false);
+  });
+
+  test('同盟狩猎: hunt is refused outside co-op (solo / versus)', async () => {
+    const c = await pool.player('Nope');
+    for (const mode of ['solo', 'versus']) {
+      const r = await c.request({ t: 'room.create', mode, difficulty: 'NORMAL', hunt: true });
+      assert.equal(r.t, 'error', mode);
+      assert.equal(r.code, ERR.BAD_MSG, mode);
+    }
+  });
+});
+
+describe('lobby: the 2V2 switch is off (SP_VERSUS=0 / the `versus` option)', () => {
+  let srv;
+  let pool;
+
+  before(async () => {
+    srv = await startServer({ port: 0, host: '127.0.0.1', versus: false, log: captureLog().log, MatchClass: RecordingMatch });
+    pool = clientPool(() => `ws://127.0.0.1:${srv.port}/ws`);
+  });
+  afterEach(async () => { await pool.closeAll(); });
+  after(async () => { await srv?.close(); });
+
+  test('welcome omits versus and room.create mode versus is refused', async () => {
+    const c = await pool.player('Host');
+    assert.equal(c.welcome.versus, undefined, 'the client keeps its 2V2 card locked when the server omits the key');
+    assert.deepEqual(c.welcome.arcade, { hunt2v2: false, alliancehunt: true }, 'the build switch also closes the admin mode');
+    const r = await c.request({ t: 'room.create', mode: 'versus', difficulty: 'NORMAL' });
+    assert.equal(r.t, 'error');
+    assert.equal(r.code, ERR.MODE_DISABLED);
   });
 });

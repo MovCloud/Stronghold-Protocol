@@ -5,6 +5,13 @@
 @media(max-width:760px){.console{display:block}.sidebar{height:auto;position:static;padding:14px 16px;border-right:0;border-bottom:1px solid var(--line)}.brand{margin:0 0 13px}.nav-label,.sidebar-foot{display:none}.sidebar nav{display:flex;gap:5px;overflow-x:auto}.nav-item{padding:8px 10px;font-size:12px;white-space:nowrap}.nav-item>span:first-child{font-size:14px}main{padding:21px 15px}.page-header{gap:12px;flex-wrap:wrap;margin-bottom:20px}h1{font-size:24px}.header-actions{margin-left:auto}.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:20px}.stat strong{font-size:29px}.stat small{font-size:10px}.panel-heading{padding:17px 15px}.toolbar{padding:0 15px 17px;gap:8px}.toolbar select{width:125px}.table-footer{flex-direction:column;align-items:flex-start;padding:13px 15px}.announcement-layout{grid-template-columns:1fr;padding:20px 16px;gap:32px}.login-card{padding:29px}.panel-note{margin:16px}.table-footer>div{width:100%;justify-content:space-between}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}dialog::backdrop{backdrop-filter:none}}
 
+/* 娱乐模式 (arcade): the per-mode open switches (admin.js renderArcade) */
+.arcade-mode-list{display:flex;flex-direction:column;gap:10px;padding:0 22px 18px}
+.arcade-mode-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:13px 16px}
+.arcade-mode-row strong{flex:1 1 8em;min-width:0;font-size:13px;font-weight:600}
+.arcade-mode-row button{min-width:74px}
+@media(max-width:760px){.arcade-mode-list{padding:0 15px 16px}}
+
 #audit-body td:nth-child(4),#bans-body td:nth-child(2){white-space:normal;overflow-wrap:anywhere;min-width:180px;max-width:420px}
 #feedback-body td:nth-child(2),#feedback-body td:nth-child(3),#feedback-body td:nth-child(6){white-space:normal;overflow-wrap:anywhere;min-width:150px;max-width:420px}
 .pill.planned{color:var(--amber);border-color:#675332;background:#493b2455}

@@ -29,7 +29,9 @@ import { morphSlotPolicy, ruleOption } from '../../shared/plugins/rules.js';
 import { FIELD, canPlace, placeClass, positionClass, parseKey } from './board.js';
 import { computeBonds } from './bondsMeta.js';
 
-const PHASES = new Set(Object.values(PHASE));
+// PHASE.EVENT / PHASE.CONFRONT are non-enumerable on the v1 wire PHASE object (see shared/constants.js), so spell them
+// out — the versus/co-op runtime still reaches those phases and the audit must accept them.
+const PHASES = new Set([...Object.values(PHASE), PHASE.EVENT, PHASE.CONFRONT]);
 
 /**
  * @param {import('./Match.js').Match} m

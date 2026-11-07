@@ -547,12 +547,9 @@ h1, h2, h3, h4, p { margin: 0; }
   100% { transform: rotate(0deg); }
 }
 
-/* The battlefield requires landscape on rotatable touch devices. Keep the lobby, announcements and
-   fullscreen/help controls usable in portrait; narrow desktop windows and split-view iPads stay unblocked. */
-
-@media (orientation: portrait) and (max-width: 1024px) {
-  .sp-rotatable.sp-in-match .rotate-hint { display: grid; }
-}
+/* 设置 →「显示方向」 replaced the covering hint (ui/orientation.js, css/orientation.css): 自动适应 turns the whole page
+   90° while the viewport is taller than wide and 锁定横屏 turns it always, so the game no longer asks the player to turn
+   the device — the .rotate-hint markup stays behind the boot HTML (tests) and never shows. */
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

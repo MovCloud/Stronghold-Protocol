@@ -4,7 +4,7 @@ const state = { csrf: null, tab: 'players', offset: 0, snapshot: null, action: n
 const statusNames = { playing: '正在对局', disconnected: '离线留席', matching: '等待匹配', spectating: '观战中', waiting: '房间等待', lobby: '大厅' };
 const difficultyNames = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 const phaseNames = { INFO_CHECK: '开局确认', BAND_DRAFT: '策略选择', PREP: '整备', COMBAT: '作战', UNITE: '联防', SETTLE: '结算', CHOICE: '机变', RESULT: '结束', LOBBY: '等待' };
-const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', passwordChanged: '修改管理密码', feedback: '处理反馈' };
+const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', arcade: '娱乐模式', passwordChanged: '修改管理密码', feedback: '处理反馈' };
 const modeNames = { solo: '单人对局', coop: '多人对局' };
 const roomStatusNames = { disposed: '已解散', match: '对局中', matching: '等待匹配', waiting: '等待开局' };
 const maintenanceNames = { running: '运行中', maintenance: '维护中', pending: '切换中…', unreachable: '停机中' };
@@ -12,8 +12,10 @@ const scopeNames = { session: '会话', browser: '同一浏览器', ip: '公网 
 // Maintenance is a toggle, so the same action name covers two opposite operations; the record carries the
 // direction as a boolean, which is the only way to tell "enabled" from "disabled" apart.
 const actionLabel = item => item.action === 'maintenance' ? (item.maintenance ? '启用维护模式' : '停用维护模式')
-  : item.action === 'feedback' ? (item.op === 'delete' ? '删除反馈' : '处理反馈') : (actionNames[item.action] || item.action);
-const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', feedback: '玩家反馈', audit: '操作记录' };
+  : item.action === 'feedback' ? (item.op === 'delete' ? '删除反馈' : '处理反馈')
+  : item.action === 'arcade' ? `${item.open ? '开放' : '停用'}娱乐模式 · ${item.name || item.mode || ''}`
+  : (actionNames[item.action] || item.action);
+const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', arcade: '娱乐模式', feedback: '玩家反馈', audit: '操作记录' };
 // The feedback board's own vocabulary (deploy/stardust/feedback/policy.mjs); the pill classes reuse the player table's.
 const feedbackCategoryNames = { bug: '缺陷', gameplay: '玩法', ui: '界面', other: '其他' };
 const feedbackStatusNames = { unassigned: '待处理', unplanned: '暂不规划', planned: '已规划', updated: '已更新' };
@@ -72,7 +74,38 @@ function applyTab(tab, title) {
   for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== 'tab-' + tab;
   $('#page-title').textContent = title;
   if (tab === 'announcements') renderAnnouncements().catch(e => notice(e.message, true));
+  if (tab === 'arcade') renderArcade().catch(e => notice(e.message, true));
   if (tab === 'feedback') renderFeedback().catch(e => notice(e.message, true));
+}
+
+/**
+ * 娱乐模式 (arcade): one row per COMPLETED mode. The pill is the server's effective state (build switch AND admin
+ * switch), the button proposes the opposite; a closed mode refuses its new rooms and starts while its running matches
+ * finish naturally — the same drain idea as 维护, but per mode (maintenance covers every mode).
+ */
+async function renderArcade() {
+  const data = await api('arcade');
+  const box = $('#arcade-modes');
+  box.replaceChildren();
+  for (const mode of data.modes) {
+    const row = elem('div', null, 'arcade-mode-row');
+    row.append(elem('strong', mode.name), elem('span', mode.open ? '开放中' : '暂未开放', 'status-pill ' + (mode.open ? 'ok' : 'bad')));
+    const button = elem('button', mode.open ? '停用' : '开放', mode.open ? 'danger' : 'primary');
+    button.addEventListener('click', async () => {
+      const ask = mode.open
+        ? `停用「${mode.name}」？该玩法的新房间与新对局将被拒绝，进行中的对局自然打完。`
+        : `开放「${mode.name}」？开放后玩家可以进入该玩法。`;
+      if (!confirm(ask)) return;
+      button.disabled = true;
+      try {
+        await api('arcade', { id: mode.id, open: !mode.open });
+        notice(`「${mode.name}」已${mode.open ? '停用' : '开放'}。`);
+        await renderArcade();
+      } catch (e) { notice(e.message, true); button.disabled = false; }
+    });
+    row.append(button);
+    box.append(row);
+  }
 }
 /**
  * The maintenance switch is a drain state, not a label: the status line carries the confirmed state (green running /
@@ -264,6 +297,7 @@ async function refresh() {
     renderPlayers(data); renderMatches(data); renderBans(data); renderAudit(data);
     refreshMaintenance().catch(() => { /* maintenance state is advisory; the next tick retries */ });
     if (state.tab === 'announcements') await renderAnnouncements();
+    if (state.tab === 'arcade') await renderArcade();
     if (state.tab === 'feedback') await renderFeedback();
     if ($('#notice').classList.contains('error')) notice('');
   } catch (e) { if (e.status === 401) showLogin('管理会话已过期，请重新登录'); else notice('刷新失败，当前显示上次成功获取的数据：' + e.message, true); }

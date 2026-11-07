@@ -11,7 +11,8 @@
 //                           the rem scale re-layout; keeps --sp-vh (the real visible height) for the CSS.
 //   fullscreen              { supported(), active(), toggle(), exit() }: Fullscreen API with the webkit-prefixed
 //                           variant (iPadOS / older Safari); iPhone Safari has no element fullscreen → unsupported and the
-//                           button hides. Android: after entering, the orientation is locked to landscape when allowed.
+//                           button hides. The screen's direction is 设置 →「显示方向」's turn (ui/orientation.js), never
+//                           screen.orientation.lock — an OS lock would turn a turned page a second time.
 //   FullscreenButton        HUD / title button (hidden where unsupported), follows fullscreenchange.
 //   useScreenWakeLock(active) screen wake lock while active and visible, restored on foreground and released on cleanup.
 //   long-press              a still touch of LONG_PRESS_MS on a DOM control → a synthetic `contextmenu` (= detail) when
@@ -240,8 +241,8 @@ export const fullscreen = {
       } else return false;
     } catch { return false; }
     if (!this.active(win)) return false;
-    // Android Chrome: a landscape game may lock the orientation while fullscreen (refused elsewhere — ignored)
-    try { await win.screen?.orientation?.lock?.('landscape'); } catch { /* not allowed here */ }
+    // 显示方向 is the page's own turn (ui/orientation.js + css/orientation.css): no screen.orientation lock here — an
+    // OS lock would turn the page a second time, and most browsers refuse it outside fullscreen anyway.
     return true;
   },
   async exit(win = globalThis) {
@@ -347,9 +348,12 @@ export function installDeviceSupport(win = globalThis) {
     else if (typeof m.addListener === 'function') { m.addListener(apply); offs.push(() => m.removeListener(apply)); }  // Safari < 14
   }
 
-  // visible height (the URL bar of mobile browsers comes and goes): --sp-vh = 1 % of the real visible height
+  // visible height (the URL bar of mobile browsers comes and goes): --sp-vh = 1 % of the real visible height.
+  // 显示方向 (ui/orientation.js): a turned page (html[data-rotate="1"], css/orientation.css) lays out with the physical
+  // width as its height — --sp-vh must follow the logical height, or every height: 100 * var(--sp-vh) box overshoots.
   const setVh = () => {
-    const h = win.visualViewport?.height || win.innerHeight || 0;
+    const turned = root.dataset?.rotate === '1';
+    const h = turned ? (win.visualViewport?.width || win.innerWidth || 0) : (win.visualViewport?.height || win.innerHeight || 0);
     if (h > 0) root.style.setProperty('--sp-vh', `${h / 100}px`);
     updateManagementViewport(win);
   };

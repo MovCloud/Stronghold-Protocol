@@ -259,7 +259,7 @@
 //   common.js        what the modules share (FLOW_TICKER_PRIORITY, DELAYS, BAND_TURN_SECONDS, AFK_REMOVE_ROUNDS —
 //                    re-exported here, OK, fail, BOSS_CLOCK_MS, AFK_ACTIONS)
 
-import { PHASE, modeIdFor } from '../../shared/constants.js';
+import { PHASE, COOP_HUNT, modeIdFor, eventRoundsFor } from '../../shared/constants.js';
 import { experimentalOptions } from '../../shared/experimental.js';
 import { roomCapacity, isPlayerCapacity } from '../../shared/playerCapacity.js';
 import { createDamageBoard } from './damageBoard.js';
@@ -272,7 +272,7 @@ import { createRng, deriveSeed } from '../sim/rng.js';
 import { GameData } from './gamedata.js';
 import { RealScheduler } from './scheduler.js';
 import { FreezeScheduler } from './freezeScheduler.js';
-import { SharedPool, createPoolGroups, drawDisabledBonds } from './pool.js';
+import { SharedPool, SharedItemPool, createPoolGroups, drawDisabledBonds } from './pool.js';
 import { PlayerState } from './PlayerState.js';
 import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
 import { setupMatchWaves } from './waves.js';
@@ -355,7 +355,7 @@ export class Match {
     }
     this.opts = opts;
     this.roomCode = opts.roomCode ?? '----';
-    this.mode = opts.mode === 'solo' ? 'solo' : 'coop';
+    this.mode = opts.mode === 'solo' ? 'solo' : opts.mode === 'versus' ? 'versus' : 'coop';
     this.difficulty = opts.difficulty;
     this.modeId = opts.modeId || modeIdFor(this.mode, opts.difficulty);
     this.seed = (Number(opts.seed) >>> 0) || 1;
@@ -401,6 +401,12 @@ export class Match {
     this.isSolo = this.mode === 'solo' || this.gd.isSolo;
     /** 2V2 对抗局 (T1113047): team-scoped scouting / boss fields until the opponent reveal (infra.js opponentRevealed) */
     this.isVersus = this.mode === 'versus';
+    /**
+     * 同盟狩猎 (COOP_HUNT): an 娱乐模式 co-op room's 狩猎期 are run by the SYSTEM. Opt-in only — the room passes
+     * `opts.coopHunt === true` (room.create hunt); an ordinary co-op room keeps the official rules, and solo / versus
+     * never run it (versus has its own 对抗期). COOP_HUNT.enabled is the build-level master switch.
+     */
+    this.coopHuntOn = this.mode === 'coop' && COOP_HUNT.enabled !== false && opts.coopHunt === true;
     // Only a room created by the lobby can opt in. Public matchmaking passes false and has no room console.
     this.consoleEnabled = opts.consoleEnabled === true;
     /** 「AI 队友最后选择」 (opts.aiPicksLast, GitHub #338): humans draft before AI seats (MatchPhases.humansFirst) */
@@ -557,6 +563,27 @@ export class Match {
     this.rngDraft = rng('draft');
     this.rngBots = rng('bots');
     this.rngMeta = rng('meta');
+    // 2V2 对抗期: the random drop of the opponent's originals (its own stream, so no other draw shifts)
+    this.rngConfront = rng('confront');
+    // 同盟狩猎: the system's prey picks (one stream of its own; a co-op match is the only consumer)
+    this.rngCoopHunt = rng('coop-hunt');
+    // 2V2 事件期: the type / entry draws (its own stream too)
+    this.rngEvent = rng('event');
+    // the monster entry's own stream: independent of the players' target choices (EVENT_FOE_CARDS)
+    this.rngFoeEvent = rng('event-foe');
+    // the 强力属性 subset's stream: share / attribute / which units (EVENT_FOE_ELITES)
+    this.rngFoeElite = rng('event-elite');
+
+    /**
+     * 狩猎期 start round: 2V2 draws R4/R5/R6 for its 对抗期; a co-op hunt draws the same way for its system-run 狩猎期
+     * (COOP_HUNT.startRounds). null in solo (no hunt at all). Exposed as m.public.contestStartRound.
+     */
+    const huntStarts = this.coopHuntOn ? COOP_HUNT.startRounds : [4, 5, 6];
+    this.contestStartRound = this.isVersus || this.coopHuntOn
+      ? huntStarts[Math.floor(rng('contest-start')() * huntStarts.length)]
+      : null;
+    /** 事件期 rounds: E1 = the hunt start, E2 = +4, E3 = R13 (eventRoundsFor; [] when the mode has no hunt). */
+    this.eventRounds = this.huntMode && this.contestStartRound ? eventRoundsFor(this.contestStartRound) : [];
 
     /** @type {Map<string, PlayerState>} */
     this.players = new Map();
@@ -610,15 +637,42 @@ export class Match {
     this.factions = setup.factions;
     this.bossId = setup.bossId;
     this.hiddenBossId = setup.hiddenBossId;
-    const bans = drawDisabledBonds(this.gd, this.rngSetup);
-    this.disabledBonds = bans.drawn;
-    this.staticInactiveBonds = bans.staticOff;
-    this.bannedChess = bans.banned;
-    this.poolGroups = createPoolGroups(this.gd, this.order, { banned: bans.banned, independent: this.disableSharedPool });
-    // `pool` remains the ordinary diagnostic/bond-availability view; transactions always route via poolFor/ps.pool.
-    this.pool = this.disableSharedPool ? new SharedPool(this.gd, { banned: bans.banned }) : this.poolGroups[0].pool;
-    this.playerPools = this.disableSharedPool || this.capacityExperiment || this.poolGroups.length > 1
-      ? new Map(this.poolGroups.flatMap(g => g.playerIds.map(id => [id, g.pool]))) : null;
+    const bans = this.isVersus ? null : drawDisabledBonds(this.gd, this.rngSetup);
+    this.disabledBonds = bans ? bans.drawn : [];
+    this.staticInactiveBonds = bans ? bans.staticOff : [];
+    this.bannedChess = bans ? bans.banned : [];
+    if (this.isVersus) {
+      // 2V2: each team owns a complete ordinary pool and its own disabled-bond draw (5 cores + the difficulty addon);
+      // a team's bans never affect the opponent. poolGroups mirrors the teams so every existing per-group path
+      // (draft / item stock / diagnostics) stays team-scoped.
+      this.teamBans = new Map();
+      this.pools = new Map();
+      const groups = [];
+      for (const t of this.matchTeamIds()) {
+        const tb = drawDisabledBonds(this.gd, this.rngSetup, { core: 5 });
+        this.teamBans.set(t, tb);
+        const members = this.order.filter((p) => this.teamIdOf(p) === t);
+        const pool = new SharedPool(this.gd, { banned: tb.banned });
+        this.pools.set(t, pool);
+        groups.push({ id: t + 1, playerIds: members.map((p) => p.playerId), scale: 1, pool,
+          itemPool: new SharedItemPool(this.gd, () => members) });
+        this.disabledBonds.push(...tb.drawn);
+        this.staticInactiveBonds.push(...tb.staticOff);
+        this.bannedChess.push(...tb.banned);
+      }
+      this.poolGroups = groups;
+      this.pool = groups[0].pool;
+      this.playerPools = new Map(groups.flatMap((g) => g.playerIds.map((id) => [id, g.pool])));
+    } else {
+      this.poolGroups = createPoolGroups(this.gd, this.order, { banned: bans.banned, independent: this.disableSharedPool });
+      // `pool` remains the ordinary diagnostic/bond-availability view; transactions always route via poolFor/ps.pool.
+      this.pool = this.disableSharedPool ? new SharedPool(this.gd, { banned: bans.banned }) : this.poolGroups[0].pool;
+      this.playerPools = this.disableSharedPool || this.capacityExperiment || this.poolGroups.length > 1
+        ? new Map(this.poolGroups.flatMap(g => g.playerIds.map(id => [id, g.pool]))) : null;
+    }
+    this.disabledBonds = [...new Set(this.disabledBonds)];
+    this.staticInactiveBonds = [...new Set(this.staticInactiveBonds)];
+    this.bannedChess = [...new Set(this.bannedChess)];
     // equipment stock follows the same fixed groups (pool.js createPoolGroups attaches each group's itemPool);
     // `itemPool` is the first group's — the only one in an ordinary ≤5-seat match — and every transaction routes via
     // itemPoolFor / ps.itemPool
@@ -626,7 +680,7 @@ export class Match {
     this.itemPool = this.playerItemPools.get(this.poolGroups[0].playerIds[0]);
     // 自选编队 (0.2.0): each human's slotted DIY pieces get their own stock — none for one whose bonds are all off this
     // match (player/diy.js initDiyStock); no randomness is drawn here
-    const off = new Set([...bans.drawn, ...bans.staticOff]);
+    const off = new Set([...this.disabledBonds, ...this.staticInactiveBonds]);
     for (const ps of this.order) ps.initDiyStock(off);
 
     this.phase = PHASE.LOBBY;
@@ -645,6 +699,31 @@ export class Match {
     this._infoAdvanceTimer = null;
     this.setupRevision = 0;
     this.setupVote = null;
+    /** 2V2: the 对抗期 submissions of the current round (Map<attacker playerId, sub>); `confrontSubs` collects, `confront` is applied. */
+    this.confrontSubs = null;
+    this.confront = null;
+    /** 'target' | 'monster' | 'roster' while a 狩猎期 is open (2V2 对抗期 or the coop 投放公示); null otherwise. */
+    this.confrontStage = null;
+    /** 同盟狩猎: true while a co-op 狩猎期's 5 s 投放公示 holds the round between PREP and COMBAT (m.public.confront). */
+    this.coopRoster = false;
+    /** 2V2 事件期 (server/match/match/event.js): the current ally period { round, index, picks: Map, done } and the archive. */
+    this.event = null;
+    this.eventHistory = [];
+    this.eventIndex = 0;
+    /** 'roster' while the 5 s 词条公示 holds the period; null otherwise. */
+    this.eventStage = null;
+    /** the match's used ally / monster entries (no card repeats while its kind has an unused one) */
+    this.eventUsedAlly = new Set();
+    this.eventUsedFoe = new Set();
+    /** this event period's monster entry { round, index, card } and the match's monster archive */
+    this.foeEvent = null;
+    this.eventFoeHistory = [];
+    /** the round whose event period already resolved (eventDue) */
+    this._eventDoneRound = 0;
+    /** 2V2: one pending setup-reroll vote per team (Map<teamId, vote>); null in solo/coop (the scalar setupVote). */
+    this.setupVotes = this.isVersus ? new Map() : null;
+    /** 2V2: per-team reroll counter for the seeded draw (Map<teamId, n>); null in solo/coop. */
+    this.teamRerolls = this.isVersus ? new Map() : null;
     this._setupVoteSeq = 0;
     this._lastSetupVoteAt = -Infinity;
     /** playerId → the setup revision it last proposed a reroll for (one proposal per player per revision; setupVote.js) */
@@ -699,6 +778,8 @@ export class Match {
     this.watchPref = new Map();
     this.lastResults = new Map();
     this.unitePlan = null;
+    /** 2V2: the round's 联防 plans, one per team (2V2 'versus') / at most one (coop); stale after settle() */
+    this.unitePlans = null;
     this._normalAliveCount = 0;
     this._uniteRelay = null;
     /** 联防 outcome for the SETTLE view: { through, helpers, leakers, losses } (settle()), null when no 联防 resolved */
@@ -708,7 +789,13 @@ export class Match {
     /** 联防: { plan, bounds } — per leaker the most survivors settlement can bill (_uniteLeft's clamp) */
     this._uniteBounds = null;
     this.teamLp = null;
+    /** 2V2 ('versus'): the merged LP per team (Map<teamId, number>); null in solo/coop (the scalar teamLp). */
+    this.teamLps = null;
     this.bossPool = null;
+    /** 2V2 ('versus'): the shared boss HP pool per team (Map<teamId, SharedBossPool>); null in solo/coop (scalar bossPool). */
+    this.bossPools = null;
+    /** 2V2 ('versus'): each team's boss-round ending ('cleared' | 'forced'), Map<teamId, reason>; null in solo/coop. */
+    this._finalEndings = null;
     this.hiddenLayerSum = 0;
     this.finalAliveCount = 0;
     this.hiddenReached = false;

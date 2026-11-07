@@ -33,7 +33,7 @@
 | 12 | jingjiangze/rel2025 | APK / 热更新线 | **已整条移除** | 登记曾写“仅文档”，实际是完整运行时（`android/`、`tools/apk/`、`capacitor.config.ts`、`apk*.yml`、`hotupdate.yml`） | 上游无该线 → 按根项目为准整条移除：1,201 个跟踪文件（`android/` 939、`tools/apk/` 251、6 个 workflow、`docs/ANDROID.md`、`docs/APK.md`、7 个 `scripts/*android*`、1 个归档测试） |
 | 13 | Rosmontis220/master | 安卓/桌面 + 联机增强 | 部分 | `server/playerAdmin.js`（旧 `/api/admin/*` 已被其 session+CSRF 方案取代） | 安卓/桌面交付物不在仓库 |
 | 14 | NekoTC/master | COS / 离线模式 | **正式移出** | `docs/COS_DEPLOYMENT.md`：离线模式 = COS + Service Worker 预缓存，服务器离线时已缓存用户可进单人 | 整分支不再维护；本轮已删除 COS 上传/调试工具与配置，`public/sw.js`、`asset-cache-sw.js` 等通用缓存保留；COS 文档留作追溯 |
-| 15 | T1113047/master | 狩猎模拟（**2V2 对抗 + 同盟狩猎**两个玩法） | 仅残留（待恢复） | `shared/constants.js` 的 versus/COOP_HUNT 常量、`server/match/match/confront.js`、`event.js` | `room.create` 只接受 solo/coop；`phases.js` 无 EVENT/CONFRONT；`COOP_HUNT` 无引用；`generateVersusDrafts` 缺失 → **两者均不可玩**，已列入恢复待办 |
+| 15 | T1113047/master | 狩猎模拟（**2V2 对抗 + 同盟狩猎**两个玩法） | 2V2 已接通；同盟狩猎未并入 | `shared/constants.js` 的 versus 常量、`server/match/match/confront.js`、`event.js`、`phases.js` 的 EVENT/CONFRONT、`choices.js` 的 versus 机变、`Match.js` / `PlayerState.js` 的 versus 模型、大厅/房间/对局 UI（`screens/arcade.js`、`room.js` 的 `seats--versus`、`ui/confrontOverlay.js`、`ui/eventOverlay.js`） | 2V2 已可建房与开局（`room.create mode 'versus'`、固定 4 座两队、开局补 AI），由 `SP_VERSUS` 开关隔离，测试见 `test/match/versus.test.js` 与 `test/lobby-versus.test.js`；`COOP_HUNT` 仍无引用，**同盟狩猎（1–4 人合作狩猎）未并入** |
 
 > `docs/from-forks/` 只归档“文档冲突时被主线覆盖”的下游文档，**不代表该 fork 的代码未融合**。
 
@@ -54,7 +54,8 @@
 
 **建议恢复（大，需专项）**
 
-- T1113047 的 2V2 + 同盟狩猎：需按上游 v0.3.2/v0.3.3 重接 `room.create`、大厅/UI、队伍分池、`generateVersusDrafts`、EVENT/CONFRONT 阶段；现有测试可作规格参考。**顺序约束：先做 rebase/上游合并，再恢复狩猎。**
+- T1113047 的 **2V2**：已按上游 v0.3.3 重接完成——`room.create mode 'versus'`（4 座两队、开局补 AI）、队伍分池、`generateVersusDrafts`、EVENT/CONFRONT 阶段、大厅「娱乐模式」页与房间/对局覆盖层；规格与回归见 `test/match/versus.test.js`（50 项全通过），服务端开关 `SP_VERSUS`。
+- T1113047 的**同盟狩猎**（1–4 人合作狩猎，`COOP_HUNT`）：已按上游 v0.3.3 重接完成——**只在娱乐模式的同盟狩猎房间生效**（`room.create hunt: true` → `Match opts.coopHunt`），房间在抽出狩猎回合后进入 EVENT/CONFRONT 分支（`coopHuntActive()` / `enterCoopHuntRoster()` / 本回合投放公示），沿用同一套 `HUNT_RHYTHM` 比例、赏金与事件词条，奖励进 `bountyBank`；普通「创建同盟」与快速匹配的房间不带该键，主线上游规则与 golden 均不变。规格与回归见 `test/match/coop-hunt.test.js`、`test/match/event.test.js`、`test/match/confront-roster.test.js`、`test/lobby-versus.test.js`。
 
 **建议正式放弃**
 

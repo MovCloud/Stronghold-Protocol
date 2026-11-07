@@ -1,7 +1,7 @@
 // Normative message catalogue (DESIGN §8). Used by server (validation) and client (building requests).
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
-import { DIFFICULTIES, MAX_DRAFT_CARDS, MAX_SEATS, NAME_MAX_LEN, ROOM_CAPACITIES, ROOM_CODE_LEN, EMOTES, GEO, MATCH_CONTROL_ACTIONS, PLAYBACK } from './constants.js';
+import { DIFFICULTIES, MAX_DRAFT_CARDS, MAX_SEATS, NAME_MAX_LEN, ROOM_CAPACITIES, ROOM_CODE_LEN, ROOM_MODES, EMOTES, GEO, MATCH_CONTROL_ACTIONS, PLAYBACK, EVENT_TARGETS } from './constants.js';
 import { isAssetCacheReadiness } from './assetCache.js';
 import { MAX_PLAYER_CAPACITY } from './playerCapacity.js';
 import { isExperimental } from './experimental.js';
@@ -585,9 +585,11 @@ export const C2S = {
   // soloUnlimited: the timed-solo opt-out 「不限时」 (DESIGN §35.23.10). Optional, and only the literal boolean —
   // the server applies `true` solely to a solo room of a version whose solo is timed, and ignores it otherwise, so a
   // default create stays the message it was.
-  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), capacity: (v) => ROOM_CAPACITIES.includes(v),
-    test: (v) => v === true, version: isVersionId, soloUnlimited: isBool, assetCache: isAssetCacheReadiness,
-    $optional: ['capacity', 'assetCache', 'test', 'difficulty', 'version', 'soloUnlimited'] },
+  // hunt: 同盟狩猎 (COOP_HUNT) — the 娱乐模式 co-op room opts in; the lobby refuses it on any other mode (server/lobby.js
+  // create), and an ordinary co-op room never carries it
+  'room.create': { mode: (v) => ROOM_MODES.includes(v), difficulty: (v) => DIFFICULTIES.includes(v), capacity: (v) => ROOM_CAPACITIES.includes(v),
+    test: (v) => v === true, version: isVersionId, soloUnlimited: isBool, hunt: (v) => v === true, assetCache: isAssetCacheReadiness,
+    $optional: ['capacity', 'assetCache', 'test', 'difficulty', 'version', 'soloUnlimited', 'hunt'] },
   'room.join': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), assetCache: isAssetCacheReadiness,
     testAck: (v) => v === true, $optional: ['assetCache', 'testAck'] },
   'room.leave': {},
@@ -610,6 +612,9 @@ export const C2S = {
   'room.aiVote': { voteId: (v) => typeof v === 'string' && v.length <= 16, approve: isBool },
   'room.addBot': {},
   'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1), playerId: isId, $optional: ['playerId'] },
+  // 2V2 ('versus', host, before the match): swap the occupants of two seats — a player dragged between the two teams
+  // changes team (the team follows the seat index, teamOfSeat); either seat may be empty (a move)
+  'room.swapSeats': { a: (v) => isInt(v, 0, MAX_SEATS - 1), b: (v) => isInt(v, 0, MAX_SEATS - 1) },
   // Waiting-room host handover to a connected human (SiderLock port, server/lobby.js transferHost): the target is
   // re-checked server-side, so the wire carries only its playerId
   'room.transferHost': { playerId: isId },
@@ -686,7 +691,21 @@ export const C2S = {
   // unequip (DESIGN §34.15): one equipped item back to the hand, else the visible temp window. Official rooms refuse it.
   'g.unequip': { itemUid: isUid },
   'g.reward': { idx: (v) => isInt(v, 0, 5) },
-  'g.choice': { idx: (v) => isInt(v, 0, MAX_DRAFT_CARDS - 1), choiceId: isId, $optional: ['choiceId'] },
+  // 2V2 draws 8 cards (both teams' boards, global indexes 0–7); solo/co-op keep 6 — the wider bound only lets the
+  // server reject by card / turn, it grants nothing.
+  'g.choice': { idx: (v) => isInt(v, 0, Math.max(MAX_DRAFT_CARDS - 1, 7)), choiceId: isId, $optional: ['choiceId'] },
+  // 2V2 狩猎期 (confront.js): the team's intervention — ONE 特训敌人 type tab (`group`, 1-based; the official types are
+  // 特异 / 飞行 / 频次 / 元素 / 持续 / 隐匿 / 折射 and the 最终狩猎's merged tab), a LOWER / MID / UPPER lane and its
+  // monster list (≤ VERSUS_CONFRONT.maxPicks entries, keyed by the tab's own enemyKey in that order).
+  'g.confront': { group: nullable((v) => isInt(v, 1, 16)), position: (v) => typeof v === 'string' && ['front', 'mid', 'back'].includes(v), picks: (v) => isList(v, 64, (p) => isPlain(p) && isId(p.enemyKey) && (p.gate === undefined || p.gate === 'upper' || p.gate === 'lower')) },
+  // 事件期 (event.js): one entry to one target — solo has `self`, versus has `self` / `oppA` / `oppB`, coop has `self` /
+  // `mate`; the server rejects a target its mode does not own.
+  'g.event.pick': { target: (v) => EVENT_TARGETS.includes(v) },
+  // 2V2 狩猎期 targeting: the OPPONENT player this player aims their intervention at (owner => the enemy team)
+  'g.confrontTarget': { targetPlayerId: isId },
+  // 商人「坎诺特」取款 (confront.js withdrawBounty): the gold the player wants out of their 赏金 account during prep.
+  // `cost` is the 赏金 the server will charge (gold / the round's rate); a cost the bank cannot cover is MERCHANT_FUNDS.
+  'g.confront.withdraw': { gold: (v) => isInt(v, 1, 100000) },
   // a plugin interaction window (PLUGIN API v2, docs/PLUGINS.md §10b): offerId is the window's declared id, idx the
   // slot picked; g.offerRefresh redraws one slot (the window's own `refresh.perSlot` bounds how often). The host
   // applies the window's declared effect primitive — a plugin never receives these messages itself.

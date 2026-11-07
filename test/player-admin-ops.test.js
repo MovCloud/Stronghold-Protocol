@@ -27,6 +27,14 @@ function fakes() {
     lobby: {
       maintenance: () => override,
       setMaintenanceOverride(on) { const before = override; override = on === true; return before !== override; },
+      // 娱乐模式 (arcade): the admin panel's per-mode switches (server/lobby.js arcadeOpen / setArcadeMode)
+      arcade: { hunt2v2: true, alliancehunt: true },
+      arcadeOpen(id) { return this.arcade[id] === true; },
+      arcadeInfo() { return { ...this.arcade }; },
+      setArcadeMode(id, open) {
+        if (!Object.hasOwn(this.arcade, id) || typeof open !== 'boolean') return false;
+        const before = this.arcade[id]; this.arcade[id] = open; return before !== open;
+      },
       onExpire() {}, roomOf: () => null, rooms, queue, queueByPlayer,
       roomQueued: (room) => room.activeHumans().some((seat) => queue.entries.has(seat.playerId)),
       stats: () => ({ rooms: rooms.size, matches: 0, humans: 0, bots: 0, spectators: 0, online: 0, queued: queue.size }),
@@ -200,4 +208,57 @@ test('the runtime maintenance override drains: new rooms and starts refuse, pres
   srv.lobby.setMaintenanceOverride(true);
   assert.equal((await a.request({ t: 'room.start' })).code, 'MAINTENANCE', 'a created room survives but cannot start');
   await b.waitFor('presence.state', (m) => m.maintenance === true);
+});
+
+test('the 娱乐模式 switches: GET lists the completed modes, POST flips one, audits it and persists', async (t) => {
+  const { origin, mount } = await fixture(t);
+  const admin = await mount();
+  let { cookie, csrf } = await login(origin);
+  assert.deepEqual((await (await call(origin, '/admin/api/arcade', { cookie })).json()).modes, [
+    { id: 'hunt2v2', name: '狩猎模拟 2V2', open: true },
+    { id: 'alliancehunt', name: '同盟狩猎', open: true },
+  ], 'both completed modes start open; 危机合约 is still a 敬请期待 card with no switch');
+
+  assert.equal((await call(origin, '/admin/api/arcade', { method: 'POST', cookie, csrf,
+    body: { id: 'alliancehunt', open: false } })).status, 200);
+  const after = await (await call(origin, '/admin/api/arcade', { cookie })).json();
+  assert.deepEqual(after.modes.map((m) => [m.id, m.open]), [['hunt2v2', true], ['alliancehunt', false]]);
+  assert.equal(admin.admin.state.audit[0].action, 'arcade');
+  assert.equal(admin.admin.state.arcade.alliancehunt, false);
+  assert.equal((await call(origin, '/admin/api/arcade', { method: 'POST', cookie, csrf,
+    body: { id: 'contract', open: false } })).status, 400, 'a 敬请期待 mode cannot be switched');
+  assert.equal((await call(origin, '/admin/api/arcade', { method: 'POST', cookie, csrf,
+    body: { id: 'alliancehunt', open: 'no' } })).status, 400);
+
+  // the switch lives in state.json: a restart applies it before the lobby accepts rooms
+  await admin.unmount();
+  await mount();
+  cookie = (await login(origin)).cookie;
+  assert.equal((await (await call(origin, '/admin/api/arcade', { cookie })).json()).modes[1].open, false);
+});
+
+test('the 娱乐模式 switches drain per mode: new rooms and starts of that mode refuse, running matches are untouched', async (t) => {
+  const srv = await startServer({ host: '127.0.0.1', port: 0, quiet: true, workers: 0, store: null,
+    adminConfigFile: null, announcementsFile: null });
+  t.after(() => srv.close());
+  const url = `ws://127.0.0.1:${srv.port}/ws`;
+  const a = await TestClient.connect(url); t.after(() => a.close());
+  const b = await TestClient.connect(url); t.after(() => b.close());
+  await a.hello('arcade-a');
+  await b.hello('arcade-b');
+  assert.equal(srv.lobby.arcadeOpen('hunt2v2'), true);
+  assert.equal(srv.lobby.arcadeOpen('alliancehunt'), true);
+
+  // a room built while the mode was open survives the switch; only a NEW match is refused
+  assert.equal((await a.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL', hunt: true })).t, 'ok');
+  assert.equal(srv.lobby.setArcadeMode('alliancehunt', false), true);
+  await b.waitFor('presence.state', (m) => m.arcade && m.arcade.alliancehunt === false);
+  assert.equal((await a.request({ t: 'room.start' })).code, 'MODE_DISABLED');
+  assert.equal((await b.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL', hunt: true })).code, 'MODE_DISABLED');
+
+  // 2V2 uses the same per-mode switch
+  assert.equal(srv.lobby.setArcadeMode('alliancehunt', true), true);
+  assert.equal(srv.lobby.setArcadeMode('hunt2v2', false), true);
+  assert.equal((await b.request({ t: 'room.create', mode: 'versus', difficulty: 'NORMAL' })).code, 'MODE_DISABLED');
+  assert.equal(srv.lobby.setArcadeMode('hunt2v2', true), true);
 });

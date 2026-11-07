@@ -202,7 +202,7 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
           if (t > ps.shop.level) fail(`${ps.playerId}: rolled tier ${t} at shop level ${ps.shop.level}`);
           // (a slotted 自选 piece comes from the player's own stock, 0.2.0 player/diy.js — once the 调度中心 is at its level)
           const diy = ps.diyStock && ps.diyStock.has(base) ? ps.diyStock.entries.get(base) : null;
-          if (!m.pool.has(base) && !diy) fail(`${ps.playerId}: rolled ${s.id} outside the match pool (banned/hidden)`);
+          if (!m.poolOf(ps.team).has(base) && !diy) fail(`${ps.playerId}: rolled ${s.id} outside the match pool (banned/hidden)`);
           if (diy && ps.shop.level < diy.shopLevel) fail(`${ps.playerId}: rolled 自选 ${s.id} at shop level ${ps.shop.level} < ${diy.shopLevel}`);
           if (s.basePrice !== gd.chessPrice(s.id)) fail(`${ps.playerId}: ${s.id} basePrice ${s.basePrice} != ${gd.chessPrice(s.id)}`);
         });
@@ -221,8 +221,12 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
       check('round start', () => {
         const id = ps.playerId;
         const inc = incomeEv.get(ps);
-        const want = gd.income(r);
-        if (want !== Math.min(3 + r, 12) && !gd.economy.income) fail(`income(${r}) ${want}`);
+        const base = gd.income(r);
+        // 2V2 / 同盟狩猎 事件期: an economy entry (猎人佣金 +3 / 空手而归 −3 per round, self ×2) moves the income
+        // before the onIncome handlers see it (PlayerState.startRound), so the auditor reads the same field.
+        const eventGold = Math.trunc(Number(ps.eventMods && ps.eventMods.goldPerRound) || 0);
+        const want = Math.max(0, base + eventGold);
+        if (base !== Math.min(3 + r, 12) && !gd.economy.income) fail(`income(${r}) ${base}`);
         if (!inc) fail(`${id}: no onIncome dispatch`);
         else {
           if (inc.initial.income !== want || inc.initial.pending !== p0) fail(`${id}: onIncome started with ${inc.initial.income}+${inc.initial.pending}, expected ${want}+${p0}`);

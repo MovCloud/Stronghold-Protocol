@@ -405,6 +405,20 @@
   scrollbar-width: thin;
 }
 
+/* ---- 2V2 (狩猎模拟): the four seats read as two teams, each pair under its own label ------------------------------- */
+
+.rs-seats--versus { gap: max(.5rem, 3vw); }
+
+.rs-tgroup { flex: none; display: flex; flex-direction: column; gap: .08rem; min-width: 0; }
+
+.rs-tgroup__head { display: flex; align-items: center; gap: .08rem; font-size: calc(.13 * var(--t)); letter-spacing: .08em; color: #9aa19e; white-space: nowrap; }
+
+.rs-tgroup__dot { width: max(.1rem, 7px); height: max(.1rem, 7px); border-radius: 50%; background: #6ea8ff; box-shadow: 0 0 .12rem #6ea8ff; }
+
+.rs-tgroup--1 .rs-tgroup__dot { background: #ff6b6b; box-shadow: 0 0 .12rem #ff6b6b; }
+
+.rs-tgroup__seats { flex: 1 1 auto; min-height: 0; display: flex; gap: max(.3rem, 2.2vw); }
+
 .rseat {
   --w: min(18vw, 3.4rem, calc((100vw - 1.6rem) / var(--n, 4) - .3rem));
   position: relative;
@@ -495,6 +509,20 @@
 .rseat.is-lit .rseat__strip { background: #4fe8c0; }
 
 .rseat.is-lit .rseat__strip span { color: #08221b; }
+
+/* the 2V2 team badge on the strip (seats[].team, sent only by a versus room) */
+
+.rseat__strip .rseat__team { margin-left: .08rem; padding: 0 .04rem; color: #a9c3ff; border: 1px solid rgba(169, 195, 255, .35); border-radius: .03rem; }
+
+.rseat.is-lit .rseat__strip .rseat__team { color: #08221b; border-color: rgba(8, 34, 27, .25); }
+
+/* 2V2 seat swap: the host drags an occupied card and drops it on another seat */
+
+.rseat[draggable='true'] { cursor: grab; }
+
+.rseat[draggable='true']:active { cursor: grabbing; }
+
+.rseat.is-dragover { outline: 2px dashed rgba(79, 232, 192, .8); outline-offset: 2px; }
 
 .rseat__art {
   position: relative;

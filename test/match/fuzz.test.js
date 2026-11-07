@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateC2S, C2S } from '../../shared/protocol.js';
-import { ERR, EMOTES, MAX_SEATS, MATCH_CONTROL_ACTIONS } from '../../shared/constants.js';
+import { ERR, EMOTES, EVENT_TARGETS, MAX_SEATS, MATCH_CONTROL_ACTIONS } from '../../shared/constants.js';
 import { createRng } from '../../server/sim/rng.js';
 import { DATA, makeMatch, checkInvariants } from './harness.js';
 
@@ -43,6 +43,17 @@ function randomIntent(rng, m, ps) {
     case 'g.art': return { t, itemUid: uid(), row: rng.int(19), col: rng.int(21) };
     case 'g.reward': case 'g.choice': return { t, idx: rng.int(6) };
     case 'g.ready': return { t, ready: rng() < 0.4 };
+    // 2V2 对抗期: a valid SHAPE (the server may still refuse membership with a legal error)
+    case 'g.confront': {
+      const keys = Object.keys(DATA.enemies || {});
+      const ek = keys.length ? rng.pick(keys) : 'enemy_1000_gopro_2';
+      return { t, group: 1 + rng.int(6), position: rng.pick(['front', 'mid', 'back']), picks: Array.from({ length: rng.int(4) }, () => ({ enemyKey: ek, gate: rng() < 0.5 ? 'upper' : 'lower' })) };
+    }
+    case 'g.confrontTarget': return { t, targetPlayerId: rng() < 0.8 ? rng.pick([...m.players.keys()]) : `p_${'a'.repeat(8)}` };
+    // 商人「坎诺特」: a legal gold amount (the server refuses by rate / cap / balance with a legal error)
+    case 'g.confront.withdraw': return { t, gold: 1 + rng.int(8) };
+    // 2V2 事件期: a valid target key (the server refuses out of phase / already used with a legal error)
+    case 'g.event.pick': return { t, target: rng.pick(EVENT_TARGETS) };
     case 'g.revive': return {
       t, playerId: rng.pick([...m.players.keys(), 'unknown']), round: Math.max(1, m.round + (rng() < 0.3 ? 1 : 0)),
       matchId: rng() < 0.8 ? m.battlePrefix : 'stale-match',

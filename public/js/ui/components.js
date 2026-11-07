@@ -23,6 +23,7 @@ import { data, useData, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
 import { PixBot } from './pixbots.js';
 import { managementLength } from './managementScale.js';
+import { layoutBox, layoutViewport, turnedBox } from './turnedLayout.js';
 import { MaterialImage } from './materialImage.js';
 
 /**
@@ -758,9 +759,14 @@ export function TooltipLayer() {
   useLayoutEffect(() => {
     const el = boxRef.current;
     if (!tipState || !el) { if (pos) setPos(null); return; }
+    // 显示方向 (ui/turnedLayout.js): a turned page places this fixed box in layout px — map the anchor, the box and the
+    // viewport back through the turn (tipState.rect / bounds / avoid were measured in screen px).
+    const ar = turnedBox();
+    const vp = layoutViewport(ar);
     const b = el.getBoundingClientRect();
-    const next = { ...placeTooltip(tipState.rect, b, { placement: tipState.placement, vw: window.innerWidth, vh: window.innerHeight,
-      bounds: tipState.bounds, avoid: tipState.avoid || [] }), id: tipState.id };
+    const next = { ...placeTooltip(ar ? layoutBox(tipState.rect, ar) : tipState.rect, ar ? layoutBox(b, ar) : b,
+      { placement: tipState.placement, vw: vp.width, vh: vp.height,
+        bounds: ar ? layoutBox(tipState.bounds, ar) : tipState.bounds, avoid: ar ? (tipState.avoid || []).map((x) => layoutBox(x, ar)) : (tipState.avoid || []) }), id: tipState.id };
     if (!pos || pos.top !== next.top || pos.left !== next.left || pos.id !== next.id || pos.place !== next.place) setPos(next);
   });
   if (!tipState) return null;

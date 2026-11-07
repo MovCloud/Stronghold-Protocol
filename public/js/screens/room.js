@@ -291,16 +291,31 @@ function BotBandPicker({ seat, room, gd, busy, onClose, onPick }) {
  * (given when an outfit is worn): a picture that fails to load gives way to the next, the last to the avatar frame.
  */
 function SeatCard({ seat, index, room, facts, myId, myCard, busy, gd, queued, onKick, onInvite, onAddBot, onRemoveBot, onBotBand, portraits,
-  portrait = null, portraitDefault = null, operator = null, fresh = false }) {
+  portrait = null, portraitDefault = null, operator = null, fresh = false, drag = false, onDrop = null }) {
   const [badArt, setBadArt] = useState([]);
+  const [over, setOver] = useState(false);
   const coop = room.mode !== 'solo';
+  // 2V2: the host drags an occupied seat onto another seat to swap them (room.swapSeats); any seat is a drop target.
+  // Without `drag` no handler is attached at all, so other rooms' cards render exactly as before.
+  const dragProps = !drag ? {} : {
+    draggable: !!seat,
+    onDragStart: (e) => { try { e.dataTransfer.setData('text/plain', String(index)); e.dataTransfer.effectAllowed = 'move'; } catch { /* ignore */ } },
+    onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
+    onDragLeave: () => { if (over) setOver(false); },
+    onDrop: (e) => {
+      e.preventDefault(); setOver(false);
+      let from = NaN;
+      try { const raw = e.dataTransfer.getData('text/plain'); if (raw) from = Number(raw); } catch { /* ignore */ }
+      if (Number.isInteger(from) && from !== index && onDrop) onDrop(from, index);
+    },
+  };
   // the 转场 flash: a seat that turns ready (or becomes the host's), and an AI teammate added while the room is open
   // (`fresh`: this card mounted after the room was already on screen)
   const flash = useRise(!!seat && (seat.ready || seat.isBot || seat.playerId === room.hostId), 700, fresh);
   if (!seat) {
     const canAdd = coop && facts.isHost && !queued;
     const invitable = coop && !facts.spectating;
-    return html`<article class=${`seat seat--empty rseat rseat--empty${queued ? ' is-searching' : ''}`} style=${`--i:${index}`}>
+    return html`<article class=${`seat seat--empty rseat rseat--empty${queued ? ' is-searching' : ''}${over ? ' is-dragover' : ''}`} style=${`--i:${index}`} ...${dragProps}>
       <span class="rseat__clip" aria-hidden="true"></span>
       <header class="rseat__strip"><span class="num">P${index + 1}</span></header>
       <div class="rseat__art">
@@ -328,10 +343,10 @@ function SeatCard({ seat, index, room, facts, myId, myCard, busy, gd, queued, on
   const owner = isOwnerSeat(seat);
   // an AI teammate's name without its 「AI·」 prefix on a phone (room.css; botNameParts)
   const botPrefix = botNameParts(seat);
-  return html`<article class=${`seat rseat${isMe ? ' is-me' : ''}${isHostSeat ? ' is-host' : ''}${seat.isBot ? ' is-bot' : ''}${art ? ' has-art' : ''}${lit ? ' is-lit' : ''}${flash ? ' is-flash' : ''}${offline ? ' is-offline' : ''}${owner ? ' is-owner' : ''} is-${state}`}
-      style=${`--i:${index}`}>
+  return html`<article class=${`seat rseat${isMe ? ' is-me' : ''}${isHostSeat ? ' is-host' : ''}${seat.isBot ? ' is-bot' : ''}${art ? ' has-art' : ''}${lit ? ' is-lit' : ''}${flash ? ' is-flash' : ''}${offline ? ' is-offline' : ''}${owner ? ' is-owner' : ''}${seat.team != null ? ` seat--team-${seat.team}` : ''}${over ? ' is-dragover' : ''} is-${state}`}
+      style=${`--i:${index}`} ...${dragProps}>
     <span class="rseat__clip" aria-hidden="true"></span>
-    <header class="rseat__strip"><span class="num">P${index + 1}</span></header>
+    <header class="rseat__strip"><span class="num">P${index + 1}</span>${seat.team != null ? html`<span class="rseat__team num">${t('队伍 {n}', { n: seat.team + 1 })}</span>` : null}</header>
     <div class="seat__art rseat__art">
       ${art
         ? html`<img key=${art} class="seat__portrait" src=${art} alt="" draggable=${false} onError=${() => setBadArt((b) => (b.includes(art) ? b : [...b, art]))} />`
@@ -618,11 +633,13 @@ export function RoomScreen() {
   // the card itself is edited in the lobby's 个人名片 (ui/profileCard.js)
   const [optsShown, optsLeaving] = usePresence(opts, 160);
   const [exiting, setExiting] = useState(false);
-  const dragScroll = useDragScroll();
+  // a draggable 2V2 seat keeps its own native drag (the row's sideways scroll must not take the press)
+  const dragScroll = useDragScroll({ skip: 'select, input, textarea, [draggable=true]' });
 
   if (!room) return null;
   const online = conn.status === 'online';
   const coop = room.mode !== 'solo';
+  const versus = room.mode === 'versus';
   const facts = roomFacts(room, me.playerId);
   const myReady = !!facts.mine?.ready;
   const info = difficultyInfo(room.mode, room.difficulty);
@@ -677,6 +694,11 @@ export function RoomScreen() {
     if (sent && room.mode === 'solo') savePref('lobby.soloSpeed', next);
   };
   const setBotBand = (seat, bandId) => run(`band${seat}`, async () => { await net.request('room.setBotBand', { seat, bandId }); setBandSeat(null); });
+  // 2V2: the host swaps two seats (a dragged occupied card; the team follows the seat index — server: room.swapSeats)
+  const swapSeats = (a, b) => {
+    if (!facts.seats[a]) return false;
+    return run('swap', () => net.request('room.swapSeats', { a, b }));
+  };
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code, ...(room.test ? { testAck: true } : {}) }));
@@ -718,12 +740,12 @@ export function RoomScreen() {
       ? html`<span class="t-lo">${t('等待所有博士载入房间的插件内容')}</span>`
     : facts.isHost
       ? facts.canStart
-        ? html`<span class="t-mint">${t('*同盟人数达标，准许进入模拟')}</span>`
+        ? html`<span class="t-mint">${versus ? t('*狩猎人数达标，准许进入模拟') : t('*同盟人数达标，准许进入模拟')}</span>`
         : html`<span class="t-lo">${t('等待所有博士准备就绪')}</span>`
       : myReady
         ? html`<span class="t-mint">${t('已就绪 · 等待创建者开始模拟')}</span>`
         : html`<span class="t-lo">${t('准备就绪后，创建者即可开始模拟')}</span>`;
-  const modeName = coop ? t('同盟模拟') : t('独立模拟');
+  const modeName = versus ? t('狩猎模拟 2V2') : coop ? t('同盟模拟') : t('独立模拟');
 
   const copy = async (what) => {
     // the copied link carries an invitation line (#103): 「{name}邀请你加入卫戍协议：盟约【{difficulty}】」 — with the
@@ -793,6 +815,19 @@ export function RoomScreen() {
     });
     if (sent && alive.current) setVersionOpen(false);
   };
+  // one seat card; the 2V2 layout reuses it inside its two team groups (a versus host may drag a seat onto another)
+  const seatCard = (s, i) => {
+    const op = seatOperator(s, cards, { myId: me.playerId, myCard: myCard.charId });
+    // the player's outfit for that operator (header "Outfits"); null = the default art
+    const skin = op ? seatCardSkin(s, op.chess.charId, { myId: me.playerId, localSkins, players: facts.occupied, otherSkins }) : null;
+    return html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
+      myId=${me.playerId} myCard=${myCard} busy=${busy} gd=${gd} queued=${queued} onKick=${kick} onInvite=${() => copy('code')}
+      onAddBot=${addBot} onRemoveBot=${removeBot} onBotBand=${setBandSeat} portraits=${portraits}
+      portrait=${op ? chessPortraitUrl(data.get('assets'), op.chess, { skin }) : null}
+      portraitDefault=${op && skin ? chessPortraitUrl(data.get('assets'), op.chess) : null} operator=${op?.chess}
+      drag=${versus && facts.isHost && !room.inMatch} onDrop=${swapSeats}
+      fresh=${shownRoom.current === room.code} />`;
+  };
 
   return html`<div class=${`screen room-screen rs${coop ? '' : ' rs--solo'}${big ? ' rs--big' : ''}${exiting ? ' is-leaving' : ''}`} style=${`--d-color:${DIFFICULTY_COLORS[room.difficulty] || 'var(--amber)'}; --n:${facts.seats.length}`}>
     <div class="rs__bg" aria-hidden="true"></div>
@@ -802,6 +837,7 @@ export function RoomScreen() {
           <button type="button" class="rs-exit" disabled=${busy === 'leave'} onClick=${leave} aria-label=${t('离开同盟')}><${Icon} name="exit" /></button>
         <//>
         <div class="rs-clock">
+          ${versus ? html`<${MicroLabel} tone="mint">VERSUS LOBBY<//>` : null}
           <b>${modeName}${room.test ? html` <${TestMark} />` : null}<${VersionTag} room=${room} class="rs-clock__ver" />
             ${pluginMode ? html`<span class="rs-clock__sep"></span><span class="room-mode" data-testid="room-mode">${pluginMode}</span>` : null}
             <span class="rs-clock__sep"></span>${t('同盟已等待')} <span class="num">${clock((Date.now() - since) / 1000)}</span></b>
@@ -818,7 +854,7 @@ export function RoomScreen() {
       <div class="rs-top__right">
         <${LoadoutButton} from="room" size="md" class="hub-plate hub-plate--loadout rs-loadout room-loadout" label=${t('干员调配')} />
         ${coop ? html`<div class="rs-key">
-          <span class="rs-key__k">${t('同盟密钥')}</span>
+          <span class="rs-key__k">${versus ? t('房间密钥') : t('同盟密钥')}</span>
           <b class="rs-key__code num selectable" aria-label=${t('同盟密钥 {code}', { code: room.code })}>${room.code}</b>
           <button type="button" class="rs-key__copy" onClick=${() => copy('code')} title=${t('复制密钥')}>${t('复制')}</button>
           <button type="button" class="rs-key__link" onClick=${() => copy('link')} title=${t('复制链接')} aria-label=${t('复制链接')}><${Icon} name="link" /></button>
@@ -826,18 +862,15 @@ export function RoomScreen() {
       </div>
     </header>
 
-    <main class=${`seats rs-seats${coop ? '' : ' seats--solo'}`} ...${dragScroll}>
-      ${facts.seats.map((s, i) => {
-        const op = seatOperator(s, cards, { myId: me.playerId, myCard: myCard.charId });
-        // the player's outfit for that operator (header "Outfits"); null = the default art
-        const skin = op ? seatCardSkin(s, op.chess.charId, { myId: me.playerId, localSkins, players: facts.occupied, otherSkins }) : null;
-        return html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
-          myId=${me.playerId} myCard=${myCard} busy=${busy} gd=${gd} queued=${queued} onKick=${kick} onInvite=${() => copy('code')}
-          onAddBot=${addBot} onRemoveBot=${removeBot} onBotBand=${setBandSeat} portraits=${portraits}
-          portrait=${op ? chessPortraitUrl(data.get('assets'), op.chess, { skin }) : null}
-          portraitDefault=${op && skin ? chessPortraitUrl(data.get('assets'), op.chess) : null} operator=${op?.chess}
-          fresh=${shownRoom.current === room.code} />`;
-      })}
+    <main class=${`seats rs-seats${coop ? '' : ' seats--solo'}${versus ? ' seats--versus' : ''}`} ...${dragScroll}>
+      ${versus
+        ? [0, 1].map((tm) => html`<section key=${tm} class=${`rs-tgroup rs-tgroup--${tm}`} aria-label=${t('队伍 {n}', { n: tm + 1 })}>
+            <header class="rs-tgroup__head"><span class="rs-tgroup__dot" aria-hidden="true"></span>${t('队伍 {n}', { n: tm + 1 })}</header>
+            <div class="rs-tgroup__seats">
+              ${facts.seats.slice(tm * 2, tm * 2 + 2).map((s, k) => seatCard(s, tm * 2 + k))}
+            </div>
+          </section>`)
+        : facts.seats.map((s, i) => seatCard(s, i))}
       ${coop ? null : html`<aside class="solo-brief rs-brief brackets">
         <${MicroLabel} tone="mint">BRIEFING<//>
         <h2>${DIFFICULTY_NAMES[room.difficulty] ? t(DIFFICULTY_NAMES[room.difficulty]) : ''} <span class="num t-dim">${info.code}</span></h2>

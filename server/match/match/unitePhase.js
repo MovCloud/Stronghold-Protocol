@@ -16,6 +16,8 @@ import { uniteWavesHook } from '../uniteWavesHook.js';
 
 export class MatchUnite {
   startUnite(plan) {
+    // 2V2: one plan per team (planUnites) — run one field per team; an opponent never shares a 联防
+    if (Array.isArray(plan)) return this._startVersusUnite(plan);
     // Optional multi-wave 联防 (uniteWaves.js, SiderLock port): a waves plan (round/roundsMax, no uniteRound) runs the
     // opt-in flow; the mainline plans below keep the relay path unchanged.
     if (plan && plan.roundsMax != null && !plan.uniteRound) { this._startUniteWaves(plan); return; }
@@ -90,10 +92,10 @@ export class MatchUnite {
    * escaped-level map is withdrawn). The field meta and the client-run spec carry the match stageId, so every viewer
    * draws the battlefield the boards stand on.
    */
-  _uniteOpts(plan, limit) {
+  _uniteOpts(plan, limit, i = 0, multi = false) {
     const { wave, players } = uniteBattleOpts(this, plan, limit);
     return {
-      seed: deriveSeed(this.seed, plan.uniteRound === 2 ? `u:${this.round}:2` : `u:${this.round}`),
+      seed: deriveSeed(this.seed, multi ? `u:${this.round}:${i}` : plan.uniteRound === 2 ? `u:${this.round}:2` : `u:${this.round}`),
       ...(plan.uniteRound ? { battleId: plan.battleId } : {}),
       kind: 'unite',
       modeId: this.modeId,
@@ -106,14 +108,106 @@ export class MatchUnite {
       routes: wave.routes,
       sharedBoss: null,
       flags: { layerGainsEnabled: false, ...this.gd.dp },
-      fieldId: plan.uniteRound === 2 ? 'u:2' : 'u',
+      fieldId: multi ? `u${i}` : plan.uniteRound === 2 ? 'u:2' : 'u',
       // leaked enemies re-enter with the stats they had: the round template's stat overrides apply again
       enemyOverrides: this.wave && this.wave.overrides ? this.wave.overrides : {},
       waveId: wave.templateId,
     };
   }
 
+  /** The merged view of the teams' plans (m.public.unite hints); `unitePlans` keeps the per-team plans themselves. */
+  _mergedUnitePlan(plans) {
+    const notReentered = new Map();
+    for (const p of plans) for (const [pid, n] of p.notReentered || []) notReentered.set(pid, (notReentered.get(pid) || 0) + n);
+    return { helpers: plans.flatMap((p) => p.helpers), leakers: plans.flatMap((p) => p.leakers),
+      leaked: plans.flatMap((p) => p.leaked || []), notReentered, team: null };
+  }
+
+  /** One 联防 field per team (server-run). Leakers of one team are healed by that team's helpers only. */
+  _startVersusUnite(plans) {
+    if (!plans.length) { this.settle(null, null); return; }
+    if (this.clientCombat) { this._startVersusUniteClient(plans); return; }
+    this.phase = PHASE.UNITE;
+    this.unitePlans = plans;
+    this.unitePlan = this._mergedUnitePlan(plans);
+    const limit = this.wave ? this.wave.timeLimit : 60;
+    this.fields = plans.map((plan, i) => ({
+      fieldId: `u${i}`, kind: 'unite', team: plan.team, players: plan.helpers.map((p) => p.playerId),
+      battle: this.newBattle(this._uniteOpts(plan, limit, i, true)), live: true,
+    }));
+    this._beginDamage('unite');
+    this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
+    this._defaultWatch();
+    this.markPublic();
+    this._uniteTicker(plans);
+    for (const plan of plans) onStartUnite(this, plan);
+    this._uniteLeftKey = null;
+    this.runner = new FieldRunner(this, this.fields, {
+      onTick: (runner) => this._uniteTick(runner),
+      onDone: (runner) => {
+        if (this.phase !== PHASE.UNITE || this.runner !== runner || this.unitePlans !== plans) return;
+        this._sampleDamage(true, true);
+        this._flushDamage(true);
+        const merged = { perPlayer: {}, unspawned: [] };
+        for (const f of this.fields) {
+          const res = runner.resultOf(f);
+          this._collectSimErrors(f, res);
+          f.live = false;
+          Object.assign(merged.perPlayer, (res && res.perPlayer) || {});
+          if (res && Array.isArray(res.unspawned)) merged.unspawned.push(...res.unspawned);
+        }
+        this.deadline = 0;
+        this.markPublic();
+        const plan = this._mergedUnitePlan(plans);
+        this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, merged));
+      },
+    });
+    this.runner.start();
+  }
+
+  _startVersusUniteClient(plans) {
+    this.phase = PHASE.UNITE;
+    this.unitePlans = plans;
+    this.unitePlan = this._mergedUnitePlan(plans);
+    const limit = this.wave ? this.wave.timeLimit : 60;
+    const fields = plans.map((plan, i) => this._ccField({ fieldId: `u${i}`, kind: 'unite', team: plan.team,
+      players: plan.helpers.map((p) => p.playerId), opts: this._uniteOpts(plan, limit, i, true) }));
+    this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
+    this.watchers.clear();
+    this._launch(fields);
+    this._beginDamage('unite');
+    this._flushDamage(true);
+    // a viewer watches/plays its OWN team's field (a viewer with no team on a field falls back to the first)
+    for (const ps of this._viewers()) {
+      const f = this._uniteFieldFor(ps) || fields[0];
+      if (!f) continue;
+      this.watchers.set(ps.playerId, f.fieldId);
+      this._sendStart(ps.playerId, f, { watch: !f.players.includes(ps.playerId) });
+    }
+    this.markPublic();
+    this._uniteTicker(plans);
+  }
+
+  /** The 联防 opening line: in 2V2 each team hears only its OWN battle's helpers (the two teams are separate games). */
+  _uniteTicker(plans) {
+    const text = (list) => msg('联防阶段：{names} 迎战突破防线的敌人', { names: list.map((p) => p.name) });
+    if (!this.isVersus) { this.tickerText(text(plans.flatMap((p) => p.helpers)), FLOW_TICKER_PRIORITY); return; }
+    for (const plan of plans) {
+      if (!plan.helpers.length) continue;
+      this.tickerText(text(plan.helpers), FLOW_TICKER_PRIORITY, this.teamIdOf(plan.helpers[0]));
+    }
+  }
+
+  /** The running 联防 field of ps's own team, or null (coop: the single field). */
+  _uniteFieldFor(ps) {
+    const plans = this.unitePlans || [];
+    const t = this.teamIdOf(ps);
+    const i = plans.findIndex((pl) => pl.team === t);
+    return i >= 0 ? (this.fields[i] || null) : null;
+  }
+
   _startUniteClient(plan) {
+    if (Array.isArray(plan)) return this._startVersusUniteClient(plan);
     this.phase = PHASE.UNITE;
     this.unitePlan = plan;
     const limit = this.uniteTimeLimit(plan);
@@ -136,6 +230,24 @@ export class MatchUnite {
 
   _finishUniteClient() {
     if (this.phase !== PHASE.UNITE) return;
+    if (this.unitePlans) {
+      // 2V2: every team's field must finish; settle once with the merged per-player results
+      if (this.fields.some((f) => !f.result)) return;
+      const merged = { perPlayer: {}, unspawned: [] };
+      for (const f of this.fields) {
+        this._collectSimErrors(f, f.result);
+        f.live = false;
+        Object.assign(merged.perPlayer, (f.result && f.result.perPlayer) || {});
+        if (f.result && Array.isArray(f.result.unspawned)) merged.unspawned.push(...f.result.unspawned);
+      }
+      const plans = this.unitePlans;
+      this._stopClientCombat();
+      this.deadline = 0;
+      this.markPublic();
+      const plan = this._mergedUnitePlan(plans);
+      this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, merged));
+      return;
+    }
     const f = this.fields[0];
     const res = f.result;
     this._stopClientCombat();
@@ -200,10 +312,13 @@ export class MatchUnite {
    * @returns {number|null}
    */
   _uniteLeft(ps) {
-    const plan = this.unitePlan;
-    if (this.phase !== PHASE.UNITE || !plan || !ps || !plan.leakers.includes(ps)) return null;
+    // 2V2: the running plan / field of ps's own team (its own battle bills its own leaks)
+    const plans = this.isVersus && this.unitePlans ? this.unitePlans : [this.unitePlan].filter(Boolean);
+    const plan = plans.find((p) => p && p.leakers.includes(ps)) || null;
+    if (this.phase !== PHASE.UNITE || !plan || !ps) return null;
     const pid = ps.playerId;
-    const f = this.fields.find((x) => x && x.kind === 'unite') || null;
+    const f = (this.isVersus && plan.team != null ? this.fields.find((x) => x && x.team === plan.team) : null)
+      || this.fields.find((x) => x && x.kind === 'unite') || null;
     let res = null;
     if (f && f.cc) res = f.done ? f.result : null;
     else if (f && f.battle && f.battle.finished) { try { res = f.battle.result(); } catch { res = null; } }

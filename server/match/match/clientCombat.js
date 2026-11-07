@@ -36,7 +36,7 @@ export class MatchClientCombat {
    * A client-combat field record: the JSON BattleSpec of its Battle options plus the authority / result state. The spec
    * names the room's content set (`cs`, opts.cs — DESIGN §32) when the match was given one.
    */
-  _ccField({ fieldId, kind, players, opts, boss = null }) {
+  _ccField({ fieldId, kind, players, opts, boss = null, team = null }) {
     const seq = `${this.battlePrefix}.${this.round}.${++this._battleSeq}`;
     // protocol ids are ≤ 64 chars (shared/protocol.js isId): the field id is informational, the sequence is unique
     const battleId = seq.length + 1 + String(fieldId).length <= 64 ? `${seq}.${fieldId}` : seq;
@@ -44,7 +44,7 @@ export class MatchClientCombat {
     let total = 0;
     for (const x of spec.spawns) if (x && x.tag !== 'boss' && x.tag !== 'part' && x.countInTotal !== false) total += Math.max(1, Math.floor(Number(x.count) || 1));
     return {
-      cc: true, fieldId, kind, players: players.slice(), battleId, spec, battle: null, live: true, done: false,
+      cc: true, fieldId, kind, team, players: players.slice(), battleId, spec, battle: null, live: true, done: false,
       mode: null, authority: null, startAt: this.sched.now(), result: null, resultSource: null, timeline: null, endGt: null,
       // progress: the field's own numbers as far as they are known before its first b.progress / result (`total` = the
       // spec's scheduled enemies — the capsule's denominator). `resolved` starts at **null**: it is only adopted from a

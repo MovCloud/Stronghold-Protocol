@@ -34,12 +34,12 @@ export class MatchPhases {
   }
 
   maybeEndInfo() {
-    if (this.phase !== PHASE.INFO_CHECK || this.setupVote || this._infoAdvanceTimer) return;
+    if (this.phase !== PHASE.INFO_CHECK || this._anySetupVote() || this._infoAdvanceTimer) return;
     if (this.order.every((p) => p.isBot || p.left || p.infoReady)) {
       this.setDeadline(0);
       this._infoAdvanceTimer = this.later(0, () => {
         this._infoAdvanceTimer = null;
-        if (this.phase === PHASE.INFO_CHECK && !this.setupVote) this.enterBandDraft();
+        if (this.phase === PHASE.INFO_CHECK && !this._anySetupVote()) this.enterBandDraft();
       });
     }
   }
@@ -380,10 +380,13 @@ export class MatchPhases {
   bandTaken(bandId, playerId) {
     if (this.capacityExperiment) return false;
     // group-local 队友已选: a group-mate's pick (parallel groups may repeat a band across groups); a botBands
-    // designation still blocks everybody until its AI seat picks (d.picks is the global mirror)
-    const picks = this.draftGroup(playerId)?.picks || {};
-    for (const [pid, id] of Object.entries(picks)) if (pid !== playerId && id === bandId) return true;
-    for (const [pid, id] of this.botBands || []) if (pid !== playerId && id === bandId && !this.draft?.picks[pid]) return true;
+    // designation still blocks everybody until its AI seat picks (d.picks is the global mirror).
+    // 2V2: a strategy is unique per TEAM — the opposing team's pick never blocks.
+    const picks = this.draftGroup(playerId)?.picks || this.draft?.picks || {};
+    const team = this.isVersus ? this.teamIdOf(this.players.get(playerId)) : null;
+    const otherTeam = (pid) => this.isVersus && this.teamIdOf(this.players.get(pid)) !== team;
+    for (const [pid, id] of Object.entries(picks)) if (pid !== playerId && id === bandId && !otherTeam(pid)) return true;
+    for (const [pid, id] of this.botBands || []) if (pid !== playerId && id === bandId && !this.draft?.picks[pid] && !otherTeam(pid)) return true;
     return false;
   }
 
@@ -535,6 +538,8 @@ export class MatchPhases {
       }
       this.markPrivate(ps);
     }
+    // 2V2: every seat now holds a band, so the teams' shared HP pools (Σ of the members' band HP) can be built
+    if (this.isVersus) this.initTeamHp();
     void timeout;
     this.enterBattleCheck();
   }
@@ -575,6 +580,7 @@ export class MatchPhases {
     if (this.gameSpeed !== this.defaultSpeed) this.setGameSpeed(this.defaultSpeed);
     this._flushDamage(true); // no-field prep may view the complete frozen scope, including a former boss group
     this.unitePlan = null;
+    this.unitePlans = null;
     this._normalAliveCount = 0;
     this._uniteRelay = null;
     this._revival = null;
@@ -583,16 +589,29 @@ export class MatchPhases {
     this.wave = null;
     this.bossWaves = null;
     this.bossPairsRound = null;
+    // 同盟狩猎 plans never survive a round (a no-op while coopHuntOn is off)
+    this._coopHuntPlans = null;
+    this._coopHuntRound = 0;
+    // a 投放公示 never survives a round (a new round starts only after the previous battle / settle)
+    this.confrontStage = null;
+    this.coopRoster = false;
+    // 2V2: the previous round's 对抗期 must not leak into this round's PREP / views / wave (enterConfront rebuilds them)
+    this.confront = null;
+    this.confrontSubs = null;
+    this.confrontTargets = null;
     const alive = this.alivePlayers();
     // the round's enemies (shared composition, generated now so the prep preview is exact). Planned BEFORE the players'
     // round start: its recompute() checks the board on the field the player deploys on this round (deployFieldOf reads
     // the boss pairing), so R14 → R15 never re-checks a boss-field board against the normal field (user playtest #5
     // item 7). rngWaves is used only here, so the order leaves every random stream unchanged.
-    const isBoss = r === this.gd.bossRound || r === this.gd.hiddenRound;
+    const isBoss = this.isBossRound(r);
     if (isBoss) {
       this._planBossWaves();
     } else {
       this.wave = buildNormalWave(this.gd, this.rngWaves, this.factions, r);
+      // 同盟狩猎: each alive player's prey for this 狩猎期 — planned once, from the round's shared wave, before any
+      // preview or deployment (a no-op on R1–R(start−1) and in every non-coop mode)
+      if (this.coopHuntActive()) this.coopHuntPlans();
     }
     for (const ps of alive) ps.startRound(r);
     for (const ps of alive) this.dispatch(ps, 'onRoundStart', { round: r });
@@ -630,7 +649,8 @@ export class MatchPhases {
     // maps are identical). Only the round's first plan draws anew: a re-plan after a departure in its round start, 机变
     // draft or prep (platform.js _quit) keeps the intact pairs and re-pairs the orphan, as the Final Assault does.
     const fresh = hidden && this.bossPairsRound !== r;
-    const groups = pairPlayers(this.alivePlayers(), createRng(deriveSeed(this.seed, bossPairSalt(this.gd, r))), fresh ? null : this.bossPairs);
+    const rng = createRng(deriveSeed(this.seed, bossPairSalt(this.gd, r)));
+    const groups = this.bossPairGroups(this.alivePlayers(), rng, fresh ? null : this.bossPairs);
     this.bossPairs = groups.map(g => g.map(p => p.playerId));
     this.bossPairsRound = r;
     this.bossWaves = groups.map((g) => ({
@@ -640,6 +660,8 @@ export class MatchPhases {
   }
 
   afterRoundStart() {
+    // 2V2 事件期 (eventRoundsFor): one entry per player before the round's 机变 / 休整期 (server/match/match/event.js)
+    if (this.eventDue()) { this.enterEvent(); return; }
     if (this.gd.spRounds().includes(this.round)) this.enterSpDraft();
     else this.beforePrepOffers();
   }

@@ -149,6 +149,8 @@ export class PlayerState {
     this.gd = m.gd;
     this.playerId = seat.playerId;
     this.seat = seat.seat;
+    // 2V2: the team this player fights for (null outside a 'versus' match) — Match passes seats[].team
+    this.team = Number.isInteger(seat.team) ? seat.team : null;
     this.name = seat.name;
     this.isBot = !!seat.isBot;
     this.connected = this.isBot ? true : !!seat.connected;
@@ -171,6 +173,24 @@ export class PlayerState {
     this.bandId = null;
     this.funds = 0;
     this.pendingFunds = 0;
+    /** 2V2 赏金: the bank, this round's / the match's withdrawals at 坎诺特, and the match-long 赏金 income. */
+    this.bountyBank = 0;
+    this.withdrawnThisRound = 0;
+    this.withdrawnGold = 0;
+    this.bountyEarned = 0;
+    /**
+     * 2V2 事件期 (server/match/match/event.js): the entries this seat RECEIVED, the round their modifiers are evaluated
+     * against (startRound), the targets / cards this seat already used, and the modifiers the entries produce.
+     */
+    this.eventEntries = [];
+    this.eventRound = 0;
+    this.eventTargets = [];
+    this.eventCards = [];
+    this.eventMods = {
+      atkPct: 0, aspd: 0, hpPct: 0, defPct: 0, defIgnorePct: 0, regenPct: 0, dmgTakenMul: 1, moveMul: 1, deploy: 0,
+      spRecoveryMul: 1, spRecoveryFlat: 0, spCostFlat: 0,
+      goldPerRound: 0, bountyGold: 0, enemySpeedMul: 1, refreshDiscount: 0, refreshUses: 0, sellDiscount: 0,
+    };
     this.ready = false;
     this.infoReady = this.isBot;
     this.lastEmoteAt = -Infinity;

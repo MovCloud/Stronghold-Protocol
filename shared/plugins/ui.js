@@ -91,10 +91,11 @@ const HOST_TYPES = new Set(UI_HOST_MESSAGES);
 
 /**
  * A client→server type (shared/protocol.js C2S): hello, ping, room.*, queue.* (this fork's matchmaking),
- * lobby.* (this fork's lobby queries), g.*, b.*. The unit test asserts every current C2S key matches.
+ * lobby.* (this fork's lobby queries), g.*, b.*. A 2V2 intent may nest one level (`g.event.pick`,
+ * `g.confront.withdraw`). The unit test asserts every current C2S key matches.
  * @param {unknown} s
  */
-export const isIntentType = (s) => typeof s === 'string' && /^(?:hello|ping|room\.[A-Za-z][A-Za-z0-9]*|queue\.[A-Za-z][A-Za-z0-9]*|lobby\.[A-Za-z][A-Za-z0-9]*|g\.[A-Za-z][A-Za-z0-9]*|b\.[A-Za-z][A-Za-z0-9]*)$/.test(s);
+export const isIntentType = (s) => typeof s === 'string' && /^(?:hello|ping|room\.[A-Za-z][A-Za-z0-9]*|queue\.[A-Za-z][A-Za-z0-9]*|lobby\.[A-Za-z][A-Za-z0-9]*|g\.[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)?|b\.[A-Za-z][A-Za-z0-9]*)$/.test(s);
 
 /**
  * Whether `value` is, or carries, a match intent. A plugin must not send one (no auto-play, no cheat).

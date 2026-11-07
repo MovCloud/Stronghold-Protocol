@@ -119,6 +119,9 @@ import { ExitModal, AwayOverlay, awayStore } from '../ui/matchChrome.js';
 import { RoundPopup, PhasePopup, phasePopupOf, roundsToBoss, preloadPopupArt } from '../ui/matchPopups.js';
 import { openGuide } from '../ui/guide.js';
 import { actions, onRefreshBusy } from '../ui/gameActions.js';
+// 2V2 狩猎模拟 (the fork's 娱乐模式): PHASE.EVENT's 机变 target pick and PHASE.CONFRONT's two steps (+ the clash banner)
+import { EventOverlay } from '../ui/eventOverlay.js';
+import { ConfrontOverlay, ConfrontClash } from '../ui/confrontOverlay.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
 import { Underframe, underframeRect, TempRowNotice } from '../ui/underframe.js';
 import { StandInTags } from './game/standInTags.js';
@@ -319,6 +322,9 @@ function MatchScreen() {
   const [resultBox, setResultBox] = useState(null);      // the round's result box (ResultDialog), shown at SETTLE
   const [bossPlate, setBossPlate] = useState(null);      // ui/bossPlates.js: { kind: 'final'|'core'|'end', … , key }
   const [readyBusy, setReadyBusy] = useState(false);
+  // 2V2 (娱乐模式): a pick / plan is on the wire — the overlays' buttons dim (ui/eventOverlay.js, ui/confrontOverlay.js)
+  const [eventBusy, setEventBusy] = useState(false);
+  const [confBusy, setConfBusy] = useState(false);
   const [spBusy, setSpBusy] = useState(null);
   const [personalBusy, setPersonalBusy] = useState(null); // { choiceId, idx }: an older request cannot clear a newer pick
   const [layer, setLayer] = useState('ALL');             // 联防 / 最终攻势 camera: 'L' | 'ALL' | 'R'
@@ -2073,6 +2079,15 @@ function MatchScreen() {
       chev=${banner.chev} duration=${banner.duration} onDone=${() => setBanner(null)} />` : null}
     ${!hasOffers && banner && !banner.plate && !roundPop ? html`<${PhaseBanner} key=${banner.key} mode="overlay" title=${banner.title} sub=${banner.sub} micro=${banner.micro}
       tone=${banner.tone} duration=${banner.duration || 1500} onDone=${() => setBanner(null)} />` : null}
+
+    ${phase === PHASE.EVENT ? html`<${EventOverlay} pub=${pub} busy=${eventBusy}
+      onPick=${async (target) => { setEventBusy(true); try { await actions.eventPick(target); } finally { setEventBusy(false); } }} />` : null}
+
+    ${pub?.confront && (pub.confront.active || pub.confront.roster) ? html`<${ConfrontOverlay} pub=${pub} busy=${confBusy}
+      onTarget=${async (targetPlayerId) => { setConfBusy(true); try { await actions.confrontTarget(targetPlayerId); } finally { setConfBusy(false); } }}
+      onConfirm=${async (group, position, picks) => { setConfBusy(true); try { await actions.confront(group, position, picks); } finally { setConfBusy(false); } }} />` : null}
+
+    ${pub?.confront && !pub.confront.active && !pub.confront.roster ? html`<${ConfrontClash} pub=${pub} />` : null}
 
     ${resultBox ? html`<${ResultDialog} key=${resultBox.key} title=${resultBox.title} sub=${resultBox.sub} micro=${resultBox.micro}
       tone=${resultBox.tone} duration=${resultBox.duration} onDone=${() => setResultBox(null)} />` : null}

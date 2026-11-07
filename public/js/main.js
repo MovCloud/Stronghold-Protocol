@@ -57,6 +57,7 @@ import { NameHost, sanitizeName, defaultName } from './ui/nickname.js';
 import { LobbyScreen, rememberRoom, parseRoomParam, joinRoom } from './screens/lobby.js';
 import { RoomScreen, TrustedNotice } from './screens/room.js';
 import { GameScreen } from './screens/game.js';
+import { ArcadeScreen } from './screens/arcade.js';
 import { preloadBootArt } from './ui/protocolBoot.js';
 import { audio, installAudio } from './audio.js';
 import { roomCue, cueGate } from './ui/roomCues.js';
@@ -93,12 +94,21 @@ const CLAIM_RETRY_GAP_MS = 5000;
 const TICKER_KEEP = 20;
 const EMOTE_KEEP = 20;
 
-const SCREENS = { lobby: LobbyScreen, room: RoomScreen, game: GameScreen };
+const SCREENS = { lobby: LobbyScreen, room: RoomScreen, game: GameScreen, arcade: ArcadeScreen };
 
 /** Copy of a server message without transport fields. */
 function payload(msg) {
   const { t, rid, ...rest } = msg; // eslint-disable-line no-unused-vars
   return rest;
+}
+
+/** 娱乐模式 (arcade) open state from a welcome / presence.state frame (admin switches, server/lobby.js arcadeInfo). */
+function arcadeModes(msg) {
+  const arcade = msg.arcade && typeof msg.arcade === 'object' ? msg.arcade : null;
+  return {
+    hunt2v2: arcade ? arcade.hunt2v2 === true : msg.versus === true,
+    alliancehunt: arcade ? arcade.alliancehunt === true : false,
+  };
 }
 
 function clearRoomParam() {
@@ -218,6 +228,11 @@ function onWelcome(msg) {
     installedPlugins: pluginCount(msg.content),
     installedNotices: msg.content?.notices === true,
     testMode: msg.testMode === true,
+    // the fork's 2V2 狩猎模拟 is on (protocol: welcome.versus; absent = the operator's switch is off)
+    versus: msg.versus === true,
+    // 娱乐模式 (arcade): the admin panel's effective open state per completed mode (welcome.arcade; an older welcome
+    // falls back to versus for 2V2 and leaves 同盟狩猎 locked)
+    arcade: arcadeModes(msg),
     // the official versions the server enables (protocol §2; absent: the switch is off — versions.js)
     versions: sanitizeVersions(msg.versions),
   });
@@ -332,7 +347,7 @@ function wireNet() {
   });
   net.on('clock', (c) => store.set({ clock: { offset: c.offset, rtt: c.rtt, synced: c.synced } }));
   net.on('welcome', onWelcome);
-  net.on('presence.state', (msg) => store.set({ presence: payload(msg) }));
+  net.on('presence.state', (msg) => store.set({ presence: payload(msg), ...(msg.arcade ? { arcade: arcadeModes(msg) } : {}) }));
   // Admin-published site notices (server/announcements.js); display components live in ui/announcement.js.
   net.on('site.announcement', (msg) => store.set({
     announcement: announcementFromMessage(msg), popupAnnouncement: announcementFromMessage(msg, 'popup') }));

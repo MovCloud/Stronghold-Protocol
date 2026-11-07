@@ -7,7 +7,7 @@
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
 import { PHASE, ERR } from '../../../shared/constants.js';
-import { generateDraft, generateGroupDrafts, applyCard, bountyBattles, isMultiRoundBounty, bountyCard } from '../choices.js';
+import { generateDraft, generateGroupDrafts, generateVersusDrafts, applyCard, bountyBattles, isMultiRoundBounty, bountyCard } from '../choices.js';
 import { onPickCard } from '../botEmotes.js';
 import { weightedPick } from '../waves.js';
 import { OK, fail, DELAYS } from './common.js';
@@ -19,6 +19,10 @@ const PERSONAL_OFFER_SIZE = 3;
 export class MatchSpDraft {
   enterSpDraft() {
     if (this.capacityExperiment) { this._enterFlatSpDraft(); return; }
+    // 2V2: every team drafts its own board — 4 cards (3 for the 机密商店) from its own live bonds / pool, same family and
+    // the same fixed gradient for both, the team's own turn order alternating one member of each team. Solo/co-op keep
+    // the shared (group) draw below.
+    if (this.isVersus) { this._enterVersusSpDraft(); return; }
     if (!this.alivePlayers().length) { this.beforePrepOffers(); return; }
     const groups = this.makeDraftGroups({ shuffle: false, living: true });
     const active = groups.filter((g) => g.order.length).map((g) => ({ id: g.id, playerIds: g.order.slice() }));
@@ -39,6 +43,44 @@ export class MatchSpDraft {
       ['order', 'idx', 'cards', 'taken', 'turnDeadline', 'turnSeconds']);
     this.setDeadline(0);
     for (const g of groups) this.startSpTurn(g);
+    this.markPublic();
+    this._checkpoint('sp-draft');
+  }
+
+  /** The 2V2 机变 draft: generateVersusDrafts builds the two fixed-gradient boards (choices.js); this lays them out as
+   * one flat 8-card draw with per-team tags (poolTeam), fills sp.teams and alternates the pick order. */
+  _enterVersusSpDraft() {
+    const alive = this.alivePlayers();
+    if (!alive.length) { this.beforePrepOffers(); return; }
+    const pair = generateVersusDrafts(this.gd, this.rngDraft, this.round, {
+      stageId: this.stageId,
+      bondAvailable: (bondId, team) => this.bondLive(bondId, team),
+      itemAvailable: (id) => this.itemPool.canGain(id),
+    });
+    if (!pair) { this.beforePrepOffers(); return; }
+    const cards = [];
+    const teams = new Map();
+    this.matchTeamIds().forEach((team, i) => {
+      const list = pair.teams[i] || [];
+      const base = cards.length;
+      list.forEach((c, j) => cards.push({ ...c, idx: base + j, poolTeam: team }));
+      teams.set(team, { family: pair.family, name: pair.name, desc: pair.desc, eventId: pair.eventId });
+    });
+    if (!cards.length) { this.beforePrepOffers(); return; }
+    // the two teams decide IN STEP: alternate one member of each team (each team's own internal order), so neither side
+    // gets a head start; a team that runs out of cards waits for the other (spViewFor `waiting`)
+    const perTeam = this.matchTeamIds().map((team) => {
+      const ids = alive.filter((p) => this.teamIdOf(p) === team).map((p) => p.playerId);
+      if (!this.isSolo) this.rngDraft.shuffle(ids);
+      return this.humansFirst(ids);
+    });
+    const slots = Math.max(0, ...perTeam.map((ids) => ids.length));
+    const order = [];
+    for (let i = 0; i < slots; i++) for (const ids of perTeam) if (ids[i]) order.push(ids[i]);
+    this.phase = PHASE.SP_DRAFT;
+    this.sp = { ...teams.get(0), cards, teams, order, idx: 0, picks: {}, taken: {}, untimed: this.soloUntimed, turnDeadline: 0 };
+    this.setDeadline(0);
+    this.startSpTurn();
     this.markPublic();
     this._checkpoint('sp-draft');
   }
@@ -67,6 +109,15 @@ export class MatchSpDraft {
     this.startSpTurn();
     this.markPublic();
     this._checkpoint('sp-draft');
+  }
+
+  /** The 机变 cards a player may pick: their own team's in 2V2, the whole draw otherwise. */
+  spCardsFor(ps) {
+    const s = this.sp;
+    if (!s) return [];
+    if (!this.isVersus) return s.cards;
+    const team = this.teamIdOf(ps);
+    return s.cards.filter((c) => c.poolTeam === team);
   }
 
   spGroup(playerId = null) {
@@ -172,7 +223,10 @@ export class MatchSpDraft {
       if (ps && ps.alive && s.picks[ps.playerId] == null && s.cards.some(c => this.spCardAvailable(c, ps))) break;
       s.idx++;
     }
-    const available = s.cards.filter(c => this.spCardAvailable(c)).map(c => c.idx);
+    const cur0 = this.players.get(this.spTurn());
+    // 2V2: the picker may only take its own team's cards (the other team's board is not its business)
+    const mine = this.isVersus ? this.spCardsFor(cur0) : s.cards;
+    const available = mine.filter(c => this.spCardAvailable(c)).map(c => c.idx);
     if (s.idx >= s.order.length || !available.length) { this.setDeadline(0); this.later(0, () => this.finishSpDraft()); return; }
     const token = ++this._turnToken;
     if (!s.untimed) {
@@ -182,8 +236,8 @@ export class MatchSpDraft {
         if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken) return;
         const ps = this.players.get(this.spTurn());
         if (!ps) return;
-        const avail = s.cards.filter(c => this.spCardAvailable(c)).map(c => c.idx);
-        if (!avail.length) { this.finishSpDraft(); return; }
+        const avail = (this.isVersus ? this.spCardsFor(ps) : s.cards).filter(c => this.spCardAvailable(c)).map(c => c.idx);
+        if (!avail.length) { this.startSpTurn(); return; }
         this._applyCard(ps, avail[Math.floor(this.rngDraft() * avail.length)]);
       });
       s.turnDeadline = this.deadline;
@@ -271,11 +325,12 @@ export class MatchSpDraft {
       if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken || !this.sp || this.sp !== s) return;
       const ps = s.concurrent ? target : this.players.get(this.spTurn());
       if (!ps || !ps.botControlled || !this.spPending(ps)) return;
-      const avail = s.cards.filter(c => this.spCardAvailable(c, ps)).map(c => c.idx);
+      const pool = this.isVersus ? this.spCardsFor(ps) : s.cards;
+      const avail = pool.filter(c => this.spCardAvailable(c, ps)).map(c => c.idx);
       if (!avail.length) return;
       // The strategy API is upstream's; the card list it is handed stays the fork's per-group view (s is the seat's
       // own group).
-      const fallback = () => this._applyCard(ps, this.bot.pickCard(this, ps, s.cards, avail));
+      const fallback = () => this._applyCard(ps, this.bot.pickCard(this, ps, pool, avail));
       if (this.bot.decide?.(this, ps, { kind: 'card',
         valid: () => this.phase === PHASE.SP_DRAFT && token === this._turnToken,
         complete: () => this.sp?.picks[ps.playerId] != null, fallback })) return;
@@ -302,6 +357,8 @@ export class MatchSpDraft {
     if (this.sp.picks[ps.playerId] != null) return fail(ERR.ALREADY);
     if (!this.sp.concurrent && this.spTurn() !== ps.playerId) return fail(ERR.NOT_YOUR_TURN);
     if (!Number.isInteger(idx) || idx < 0 || idx >= this.sp.cards.length) return fail(ERR.BAD_TARGET);
+    // 2V2: the card must belong to the picker's own team board
+    if (this.isVersus && this.sp.cards[idx].poolTeam !== this.teamIdOf(ps)) return fail(ERR.BAD_TARGET);
     if (!this.spCardAvailable(this.sp.cards[idx], ps)) return fail(ERR.SOLD_OUT);
     this._applyCard(ps, idx);
     return OK;
@@ -331,6 +388,7 @@ export class MatchSpDraft {
       return;
     }
     if (!s || s.picks[ps.playerId] != null || !this.spCardAvailable(s.cards[idx], ps)) return;
+    if (this.isVersus && s.cards[idx].poolTeam !== this.teamIdOf(ps)) return;
     const card = this.capacityExperiment ? structuredClone(s.cards[idx]) : s.cards[idx];
     if (!card) return;
     s.picks[ps.playerId] = idx;

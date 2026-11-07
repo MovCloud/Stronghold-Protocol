@@ -4,7 +4,7 @@
 // coming enemies; in a boss round's prep on the player's half of the boss field).
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
-import { PHASE, GEO } from '../../../shared/constants.js';
+import { PHASE, GEO, VERSUS_CONFRONT } from '../../../shared/constants.js';
 import { REVIVAL_COST, REVIVAL_MIN_DONOR_LP } from './common.js';
 import { TEST_PUBLIC_LOG } from '../../../shared/testMode.js';
 import { boardOrder, pieceDir } from '../board.js';
@@ -56,6 +56,9 @@ export class MatchViews {
       case PHASE.SP_DRAFT:
         if (this.sp && this.sp.picks[ps.playerId] != null) return 'ready';
         return this.sp && (this.sp.concurrent ? this.spPending(ps) : this.spTurn(ps.playerId) === ps.playerId) ? 'deciding' : 'acting';
+      case PHASE.EVENT:
+        if (this.event && this.event.picks.has(ps.playerId)) return 'ready';
+        return 'deciding';
       case PHASE.PREP: return ps.ready ? 'ready' : 'acting';
       case PHASE.COMBAT: case PHASE.FINAL_ASSAULT: case PHASE.HIDDEN_CORE: {
         const f = this.fields.find((x) => x.players.includes(ps.playerId));
@@ -102,11 +105,67 @@ export class MatchViews {
         need: this.setupVote.need,
         deadline: this.setupVote.deadline,
       } : null,
+      // 2V2: per-team setup visible as maps (each team has its own disabled core bonds / reroll vote); the client shows
+      // its own team's entry. 阶段 3b-3 turns m.public into per-team views so the opponent's entry is hidden.
+      ...(this.isVersus ? {
+        rerollVotes: Object.fromEntries([...this.setupVotes.entries()].map(([t, v]) => [t, { id: v.id, proposerId: v.proposerId, voters: v.voters.slice(), agreed: [...v.agreed], rejected: [...v.rejected], need: v.need, deadline: v.deadline }])),
+        teamBans: Object.fromEntries(this.matchTeamIds().map((t) => {
+          const b = this.bansOf(t);
+          return [t, { disabledBonds: [...new Set([...b.drawn, ...b.staticOff])].sort(), drawnDisabledBonds: b.drawn.slice(), bannedChess: b.banned.slice() }];
+        })),
+      } : {}),
       // 投票移出 an offline AI-托管 teammate (kickVote.js): null or { id, proposerId, targetId, voters, agreed, rejected, need, deadline }
       kickVote: this.kickVoteView(),
       // 比赛控制 (matchControl.js): null or { id, action, proposerId, voters, agreed, rejected, need, deadline }
       matchControl: this.matchControlView(),
+      // 2V2 对抗期: the 6 equal-value monster groups, the round's per-player budget, who targets whom and each player's
+      // submission. The budget and every card value carry this round's scaling. The view carries the OWN TEAM's entries
+      // only — the opponent's are masked by messaging.js _teamPublicView (the panel shows them as '?').
+      ...(this.isVersus && this.confrontActive() && (this.phase === PHASE.CONFRONT || (this.confront && this.confront.size)) ? (() => {
+        const src = this.phase === PHASE.CONFRONT ? (this.confrontSubs || new Map()) : (this.confront || new Map());
+        const subs = {};
+        for (const [pid, s] of src) subs[pid] = s ? { group: s.group, position: s.position || null, picks: s.picks || [], total: (s.picks || []).length, target: s.target || null, coins: this.confrontBountyOf(s.picks) } : null;
+        return {
+          confront: {
+            active: this.phase === PHASE.CONFRONT,
+            stage: this.phase === PHASE.CONFRONT ? (this.confrontStage || 'target') : null,
+            roster: this.phase === PHASE.CONFRONT && this.confrontStage === 'roster'
+              ? { until: this.deadline, ms: VERSUS_CONFRONT.rosterMs }
+              : null,
+            round: this.round,
+            ratio: this.confrontRatio(),
+            hunt: this.confrontHunt(),
+            budget: this.confrontBudget(),
+            maxPicks: VERSUS_CONFRONT.maxPicks,
+            targets: this.confrontTargets ? Object.fromEntries(this.confrontTargets) : {},
+            groups: this.confrontGroups().map((g) => ({
+              id: g.id, name: g.name, icon: g.icon, desc: g.desc,
+              rows: g.rows.map((r) => ({ key: r.key, name: r.name, value: r.value })),
+            })),
+            subs,
+          },
+        };
+      })() : {}),
+      // 同盟狩猎 本回合投放公示 (CONFRONT_ROSTER_MS): the PREP is over, the battles have not started; every alive player
+      // sees what the system deployed at them (public information only — no budget / gates / coins).
+      ...(this.coopRoster && this.phase === PHASE.PREP && this.confrontStage === 'roster' ? {
+        confront: {
+          active: true,
+          stage: 'roster',
+          roster: {
+            until: this.deadline,
+            ms: Math.max(0, Number(this.huntCfg().rosterMs) || 0),
+            coop: true,
+            plans: this.coopHuntRosterPlans(),
+          },
+        },
+      } : {}),
       factions: this.factions.slice(),
+      // 商人「坎诺特」: the round's withdrawal rate and cap (the player's own bank/options ride in m.private.merchant)
+      ...(this.huntMode ? (() => {
+        const cap = this.merchantCap();
+        return { merchant: { rate: this.merchantRate(), cap: Number.isFinite(cap) ? cap : null } };
+      })() : {}),
       disabledBonds: [...new Set([...this.disabledBonds, ...this.staticInactiveBonds])].sort(),
       drawnDisabledBonds: this.disabledBonds.slice(),
       bannedChess: this.bannedChess.slice(),
@@ -141,6 +200,9 @@ export class MatchViews {
       players: this.order.map((ps) => ({
         playerId: ps.playerId,
         seat: ps.seat,
+        // 2V2 ('versus'): the team this player fights for — present only in a versus match (the client groups the team
+        // panel by it); 'solo' / 'coop' rows keep their exact shape
+        ...(ps.team != null ? { team: ps.team } : {}),
         name: ps.name,
         avatar: ps.avatar,
         isBot: ps.isBot,
@@ -151,7 +213,12 @@ export class MatchViews {
         revived: ps.revived,
         pendingDeath: ps.pendingDeath,
         revivalUnavailableReason: ps.revivalUnavailableReason,
-        lp: Math.max(0, ps.lp),
+        // 2V2: the row carries the TEAM's shared HP pool (both teammates show the same number; the internal ps.lp is
+        // only a split of it); solo/coop keep their own LP.
+        lp: this.teamLps ? Math.max(0, this._teamLpOf(ps.team)) : Math.max(0, ps.lp),
+        // 商人「坎诺特」: the player's banked 赏金 (never gold — only a prep withdrawal turns it into funds) and the
+        // round's withdrawal rate; a hidden opponent row is a stub (messaging.js _teamPublicView), so no leak.
+        ...(this.huntMode ? { bank: Math.max(0, Math.trunc(Number(ps.bountyBank) || 0)), rate: this.merchantRate() } : {}),
         // 干员皮肤 (docs/SKINS.md): PUBLIC on purpose — this is how a teammate sees your skin, and the reason the
         // renderer reads the skin off the unit rather than off the local player. Omitted when empty, which is the normal
         // case: the appearance comes from a cosmetic plugin each player switches on for themself, so most have none.
@@ -202,9 +269,30 @@ export class MatchViews {
     }
     if (this.offers.length) v.offers = this.offerViews();
     if (this.teamLp != null) v.teamLp = Math.max(0, Math.round(this.teamLp));
+    // 2V2: every team's SHARED HP pool (the number both teammates' rows show) — versus only
+    if (this.teamLps) {
+      v.teamLps = {};
+      for (const t of this.matchTeamIds()) v.teamLps[t] = Math.max(0, Math.round(this._teamLpOf(t)));
+    }
     // 最终攻势 / 隐秘核心: when the overtime drain starts (ms epoch; `deadline` is the level's 120 s countdown)
     if ((this.phase === PHASE.FINAL_ASSAULT || this.phase === PHASE.HIDDEN_CORE) && this.overtimeAt) v.overtimeAt = this.overtimeAt;
-    if (this.bossPool) v.bossHp = { hp: Math.max(0, Math.round(this.bossPool.hp)), max: Math.round(this.bossPool.maxHp) };
+    if (this.isVersus && this.bossPools) {
+      // 2V2: one boss HP per team (the scalar bossHp is null); the client shows its own team's entry
+      v.bossHpTeams = {};
+      for (const t of this._teamIds()) {
+        const pool = this._poolOf(t);
+        v.bossHpTeams[t] = { hp: Math.max(0, Math.round(pool.hp)), max: Math.round(pool.maxHp) };
+      }
+    } else if (this.bossPool) {
+      v.bossHp = { hp: Math.max(0, Math.round(this.bossPool.hp)), max: Math.round(this.bossPool.maxHp) };
+    }
+    // 2V2: the drawn round where the Competition starts (R4/R5/R6; m.public.contestStartRound)
+    if (this.contestStartRound != null) v.contestStartRound = this.contestStartRound;
+    // 2V2 事件期: who gave whom and which entry number — public by design (the cost entries affect the economy)
+    {
+      const ev = this.eventView();
+      if (ev) v.event = ev;
+    }
     if (this.phase === PHASE.BAND_DRAFT && this.draft) {
       const d = this.draft;
       // the fixed pool groups (MatchPhases.makeDraftGroups): one page and one countdown per group; `order` / `turn` /
@@ -230,6 +318,11 @@ export class MatchViews {
       };
     }
     if (this.phase === PHASE.SP_DRAFT && this.sp) {
+      // 2V2: m.public carries ONLY the viewer's team's draw (spViewFor, filled per team by messaging.js
+      // _teamPublicView) — the opponent's cards, order and picks never leave the server.
+      if (!this.isVersus) v.sp = this.spViewFor(0);
+    }
+    if (!this.isVersus && this.phase === PHASE.SP_DRAFT && this.sp) {
       const s = this.sp;
       v.sp = {
         ...(s.groups?.length ? {
@@ -297,6 +390,54 @@ export class MatchViews {
       }));
     }
     return v;
+  }
+
+  /**
+   * m.public.sp as ONE team sees it (2V2), or the whole shared draw in solo/co-op:
+   *   * `cards` — the viewer's team's own draw only, with their original indexes (a pick sent back to `g.choice` maps to
+   *     the right card: the client keeps a card's `idx` when the server set one);
+   *   * `order` / `picks` / `taken` — that team's own members only;
+   *   * `turn` — the team's current picker, null while the OTHER team decides, with `waiting` saying so.
+   * The opponent's pool is therefore never published (messaging.js _teamPublicView installs this per team).
+   * @param {number} team
+   */
+  spViewFor(team) {
+    const s = this.sp;
+    if (!s) return null;
+    const itemPoolOf = (t) => (this.poolGroups ? this.poolGroups.find((g) => g.id === t + 1)?.itemPool : null) || this.itemPool;
+    const cardsOf = (list, t) => list.map((c) => {
+      const v = cardView(c); // cardView copies only the public fields, so the pool tag stays server-side
+      v.soldOut = c.kind === 'item' && !(itemPoolOf(t)?.canGain(c.id) ?? true);
+      return v;
+    });
+    const infoOf = (t) => (s.teams && s.teams.get(t)) || {};
+    if (!this.isVersus) {
+      const info = infoOf(0);
+      return {
+        family: info.family ?? null, name: info.name ?? null, desc: info.desc ?? null, eventId: info.eventId ?? null,
+        cards: cardsOf(s.cards, 0), order: s.order.slice(), turn: this.spTurn(), waiting: false,
+        picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed, versus: false,
+        turnSeconds: Number(s.turnSeconds) || 0,
+      };
+    }
+    const info = infoOf(team);
+    const cards = s.cards.filter((c) => c.poolTeam === team);
+    const own = new Set(cards.map((c) => c.idx));
+    const picks = {};
+    for (const [pid, idx] of Object.entries(s.picks)) if (own.has(idx)) picks[pid] = idx;
+    const taken = {};
+    for (const [idx, pid] of Object.entries(s.taken)) if (own.has(Number(idx))) taken[idx] = pid;
+    const curPid = this.spTurn();
+    const curTeam = curPid ? this.teamIdOf(this.players.get(curPid)) : null;
+    return {
+      family: info.family ?? null, name: info.name ?? null, desc: info.desc ?? null, eventId: info.eventId ?? null,
+      cards: cardsOf(cards, team),
+      order: s.order.filter((pid) => this.teamIdOf(this.players.get(pid)) === team),
+      turn: curTeam === team ? curPid : null,
+      waiting: !!curPid && curTeam !== team,
+      picks, taken, untimed: !!s.untimed, versus: true,
+      turnSeconds: Number(s.turnSeconds) || 0,
+    };
   }
 
   /**
@@ -381,7 +522,11 @@ export class MatchViews {
     }
     if (!this.wave) return [];
     const bounty = bountySpawns(this.gd, this.round, this.wave, ps.bounties, ps.playerId, { solo: this.isSolo });
-    return previewOf([...this.wave.spawns, ...bounty]);
+    // 2V2 事件期: the round's monster card + 强力属性 subset (the preview's counts/flags must match the battle)
+    // 同盟狩猎: the system's prey is appended last, exactly as _normalOpts inserts it
+    let list = this.foeWaveSpawns([...this.wave.spawns, ...bounty]);
+    if (this.coopHuntActive()) list = this.applyCoopHunt(list, ps);
+    return previewOf(list);
   }
 
   /** A 自选 piece's pick (like the sim's UnitInfo.diy): a scout's card composes the operator from it (shared/diy.js). */
@@ -394,7 +539,7 @@ export class MatchViews {
    * battleStart, so the prep view always uses the reserve medic, regardless of the current elite count. The stage's
    * normal-board slot is transformed to the correct half of a boss field by _onBossHalf / the client prep camera. */
   prepMapChars(ps) {
-    if (!ps?.alive || this.phase !== PHASE.PREP || !this.teamMedicGranted()) return [];
+    if (!ps?.alive || this.phase !== PHASE.PREP || !this.teamMedicGranted(ps)) return [];
     const id = 'char_605_cmedic';
     const slot = this.stage?.mapChars?.find((m) => m?.key === id && Array.isArray(m.pos) && m.pos[0] >= 9 && m.pos[0] <= 12
       && m.pos[1] >= 0 && m.pos[1] <= 10 && !/multi_only/.test(String(m.alias)));

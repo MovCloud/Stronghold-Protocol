@@ -102,6 +102,8 @@ export function makeMatch(o = {}) {
     playerCapacity,
     headlessSliceMs: o.headlessSliceMs,
     aiPicksLast: o.aiPicksLast,
+    // 同盟狩猎 (COOP_HUNT): a co-op room runs the system 狩猎期 unless a test opts out with coopHunt: false
+    coopHunt: o.coopHunt,
     // the room rule 「全局默认速度」 (Match opts.combatSpeed, 1× or 2×): every match and every round starts at it
     combatSpeed: o.combatSpeed,
     // the AFK rule (Match opts.afkRemoveRounds) is off unless a test asks for it: the suites' scripted humans only

@@ -93,11 +93,17 @@ export const initialState = Object.freeze({
   queue: { state: 'idle', ticketId: null },
   // welcome.testMode (DESIGN §34.8). The server omits the key when the switch is off; the client cannot set it.
   testMode: false,
+  // welcome.versus: the server runs the fork's 2V2 狩猎模拟 (SP_VERSUS, lobby option versus). Omitted when off, so the
+  // client cannot turn it on — the 娱乐模式 page hides / locks the 2V2 card then.
+  versus: false,
+  // welcome.arcade / presence.state.arcade: the admin panel's effective open state of each COMPLETED 娱乐模式
+  // (server/playerAdmin.js /admin/api/arcade). A missing / false entry locks that card (暂未开放).
+  arcade: { hunt2v2: false, alliancehunt: false },
   match: emptyMatch(),
   ticker: [],
   emotes: [],
   clock: { offset: 0, rtt: null, synced: false },
-  ui: { pendingJoin: null, restoring: false, resumed: false, buildStale: false, nameDialog: false },
+  ui: { pendingJoin: null, restoring: false, resumed: false, buildStale: false, nameDialog: false, arcade: false, versusLaunch: false, huntLaunch: false },
   // official versions (DESIGN §35.23, versions.js): welcome.versions (null: the switch is off), this browser's lobby choice
   // (the pref as stored — versions.js lobbyVersion checks it against the list) and the version of the stored match
   // 统计数据 replays (null when none: the lobby preference is never changed to show one). A match's version is its frames'
@@ -121,6 +127,7 @@ export function selectRoute(s) {
   if (phase && phase !== PHASE.LOBBY) return 'game';
   if (s?.room?.inMatch) return 'game'; // match starting: m.public is on its way
   if (s?.room) return 'room';
+  if (s?.ui?.arcade) return 'arcade'; // 娱乐模式 (screens/arcade.js): a page of its own, a room always wins
   return 'lobby';
 }
 

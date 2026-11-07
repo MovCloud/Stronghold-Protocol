@@ -38,6 +38,7 @@ import { createStore, useStore, loadPref, savePref, store } from '../store.js';
 import { settingsStore } from './settingsStore.js';
 export { settingsStore } from './settingsStore.js';
 import { sanitizeSettings, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, hotkeyLabel, rebindHotkey, isDefaultHotkeys, captureHotkey, TEXT_SIZES, BOARD_VIEWS, sanitizeHotkeys } from './gameLogic.js';
+import { installOrientation, setOrientationPreference } from './orientation.js';
 import { audio } from '../audio.js';
 import { openGuide } from './guide.js';
 import { detectFeatures, isIOS } from './device.js';
@@ -65,7 +66,7 @@ import { cosmetics } from '../cosmetics.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
-/** Settings store (ui/settingsStore.js): { bgm, sfx, voice, voiceLang, voiceNative, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoEnergyCount, fullscreenWakeLock, bondTimers, combatMetrics, prepDeployFold, quality, officialFx, otherSkins, textSize, keys, bgmPrep, bgmCombat, boardView }. */
+/** Settings store (ui/settingsStore.js): { bgm, sfx, voice, voiceLang, voiceNative, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoEnergyCount, fullscreenWakeLock, bondTimers, combatMetrics, prepDeployFold, quality, officialFx, otherSkins, textSize, orientation, keys, bgmPrep, bgmCombat, boardView }. */
 // The fork keeps the voice dub in its own `sp.pref.voiceLang` (ui/voiceLanguage.js), so the shared store takes it as the
 // voice language before the first render; every later change is mirrored by the subscription below.
 if (settingsStore.get().voiceLang !== voiceLanguageStore.get().language) settingsStore.set({ voiceLang: voiceLanguageStore.get().language });
@@ -89,6 +90,7 @@ settingsStore.subscribe((s) => {
   audio.setBgmChoice({ prep: s.bgmPrep, combat: s.bgmCombat });
   audio.setVoiceNative(s.voiceNative);
   applyTextSize(s.textSize);
+  setOrientationPreference(s.orientation);
 });
 audio.setVolumes(settingsStore.get());
 audio.setVoiceLang(settingsStore.get().voiceLang, settingsStore.get().voiceOverrides);
@@ -97,6 +99,9 @@ audio.setVoiceNative(settingsStore.get().voiceNative);
 // before the first render (main.js boot renders after its imports ran): the stored step is on screen without a flash
 // (界面大小 is applied by ui/screenFit.js at the same moment)
 applyTextSize(settingsStore.get().textSize);
+// 显示方向 (ui/orientation.js): the turn is on <html data-rotate> before the first render, and 'auto' follows the window
+installOrientation();
+setOrientationPreference(settingsStore.get().orientation);
 // Keep the upstream settings field as a mirror, never a second independently selected dub.
 voiceLanguageStore.subscribe(({ language }) => {
   if (settingsStore.get().voiceLang !== language) settingsStore.set({ voiceLang: language });
@@ -163,6 +168,12 @@ const OFFICIAL_FX = [['off', N_('关')], ['lite', N_('精简')], ['full', N_('�
  * raise the text root `--t` (css/theme.css) and with it every readable font-size; the board and the HUD's boxes stay.
  */
 const TEXT_SCALES = [['sm', N_('小')], ['md', N_('中')], ['lg', N_('大')], ['xl', N_('特大')]];
+/**
+ * 显示方向 (orientation, ui/orientation.js): the interface is one landscape stage. 自动适应 turns the whole page 90°
+ * while the window is taller than wide; 锁定竖屏 never turns; 锁定横屏 always turns (the default is 锁定竖屏 — a desktop
+ * window, user 2026-11-07). The labels live here because the step names and their hint are settings-dialog strings only.
+ */
+const ORIENTATION_STEPS = [['auto', N_('自动适应')], ['portrait', N_('锁定竖屏')], ['landscape', N_('锁定横屏')]];
 /**
  * 棋盘样式 (boardView, render/app.js): 官方贴图 / 3D. 官方贴图 = the three.js official board scene (owner-verified,
  * the default — do not replace it with another texture set); 3D (the stored value '2d') = the procedural metal tiles on
@@ -559,6 +570,14 @@ export function SettingsModal({ open, onClose }) {
         </div>
       </div>
       <p class="set-hint set-textsize-note">${t('调整界面文字大小，棋盘保持原比例。')}</p>
+      <div class="set-row" data-testid="orientation">
+        <span class="set-row__label">${t('显示方向')}<${MicroLabel}>ORIENTATION<//></span>
+        <div class="set-seg" role="radiogroup" aria-label=${t('显示方向')}>
+          ${ORIENTATION_STEPS.map(([id, label]) => html`<button key=${id} type="button" role="radio" aria-checked=${s.orientation === id ? 'true' : 'false'}
+            class=${s.orientation === id ? 'is-on' : ''} onClick=${() => updateSettings({ orientation: id })}>${t(label)}</button>`)}
+        </div>
+      </div>
+      <p class="set-hint">${t('界面始终按横屏布局设计：自动适应在窗口高于宽时把整个画面旋转 90°，锁定竖屏始终保持正向，锁定横屏始终保持旋转 90°。棋盘的画面始终按自己的比例适配。')}</p>
       <${AssetSection} voice=${s.voiceLang} native=${s.voiceNative} />
       <${HotkeySection} keys=${s.keys} touchUi=${touchUi} />
       <${ScreenFitSection} />

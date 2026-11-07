@@ -180,7 +180,11 @@ export function createVersionSets({ enabled, defaultId = DEFAULT_VERSION, dataDi
      */
     offered(id, roomMode) {
       const entry = ids.includes(id) ? versionById(id) : null;
-      if (!entry || !entry.roomModes.includes(roomMode)) return [];
+      // 2V2 ('versus', the fork's 娱乐模式) is not a feature of any official version: it plays the room's `multi` (同盟)
+      // official mode on every enabled version, so the registry's roomModes stays ['solo', 'coop'] and only this
+      // lookup folds versus into it (lobby.create still refuses it when the versus switch is off).
+      const official = roomMode === 'versus' ? 'coop' : roomMode;
+      if (!entry || !entry.roomModes.includes(official)) return [];
       const modes = id === DEFAULT_VERSION ? defaultModes() : /** @type {any} */ (others.get(id)).modes;
       return DIFFICULTIES.filter((d) => modes.has(modeIdFor(roomMode, d)));
     },

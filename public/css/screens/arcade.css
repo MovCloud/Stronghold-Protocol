@@ -1,0 +1,131 @@
+/* 娱乐模式 (screens/arcade.js): its own dark page behind the lobby entry, same palette as the hub. */
+
+.arcade {
+  /* A screen root needs its own paint layer: .app-bg is a positioned z-index 0 layer inside .app-root, so it paints
+     above every non-positioned sibling's own background and inline content (paint order steps 3 / 5 under step 6).
+     Without this the header, hint and footer of this page disappeared behind the backdrop and only the positioned
+     .arcade__card buttons survived (owner report 2026-11-07: 返回键没有正确渲染UI). Screens under .screen already
+     carry position: absolute + --z-screen; this page renders straight into .app-root. */
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-screen);
+  overflow: auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: calc(.18 * var(--t));
+  padding: calc(.16 * var(--t)) calc(.24 * var(--t)) calc(.3 * var(--t));
+  background: #050807;
+  color: var(--text-100, #e8fff7);
+}
+
+.arcade__head { display: flex; align-items: flex-end; justify-content: space-between; gap: calc(.2 * var(--t)); }
+
+.arcade__back {
+  display: inline-flex;
+  align-items: center;
+  gap: .05rem;
+  padding: .06rem .1rem;
+  border: 1px solid var(--mint-a20);
+  border-radius: .06rem;
+  background: transparent;
+  color: var(--mint-400);
+  font: inherit;
+  /* plain px floors: the root scale is clamped at 40 px in a short window, which made these .17rem labels 6.9 px (owner
+     report 2026-11-07); the icon keeps its own floor. */
+  font-size: max(calc(.17 * var(--t)), 13px);
+  cursor: pointer;
+}
+.arcade__back:hover, .arcade__back:focus-visible { border-color: var(--mint-400); color: #e8fff7; }
+.arcade__back .icon { width: max(calc(.2 * var(--t)), 14px); height: max(calc(.2 * var(--t)), 14px); }
+/* a touch target, like the hub's pills */
+.sp-coarse .arcade__back { min-height: max(32px, calc(40px * var(--sp-ui, 1))); }
+
+.arcade__titles { display: flex; flex-direction: column; align-items: flex-end; gap: .04rem; }
+.arcade__title { margin: 0; font-size: max(calc(.42 * var(--t)), 20px); font-weight: 900; letter-spacing: .08em; line-height: 1; }
+.arcade__hint { margin: 0; max-width: 46em; font-size: max(calc(.16 * var(--t)), 12px); line-height: 1.5; color: rgba(232, 255, 247, .62); }
+
+.arcade__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(2.6 * var(--t)), 1fr));
+  gap: calc(.16 * var(--t));
+  margin-top: calc(.06 * var(--t));
+}
+
+.arcade__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .05rem;
+  min-height: calc(1.6 * var(--t));
+  padding: calc(.18 * var(--t)) calc(.2 * var(--t)) calc(.24 * var(--t));
+  border: 1px solid var(--mint-a20);
+  border-radius: .08rem;
+  background: linear-gradient(160deg, rgba(20, 42, 36, .9), rgba(6, 14, 12, .95));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--t-slow) var(--ease-out), border-color var(--t-slow) var(--ease-out);
+}
+.arcade__card:hover:not(:disabled), .arcade__card:focus-visible:not(:disabled) {
+  transform: translateY(-.04rem);
+  border-color: var(--mint-400);
+  box-shadow: 0 .08rem .3rem rgba(0, 0, 0, .55), 0 0 .2rem var(--mint-a20);
+}
+.arcade__card.is-locked { cursor: default; opacity: .62; }
+.arcade__card-icon { color: var(--mint-a35); }
+.arcade__card-icon .icon { width: max(calc(.36 * var(--t)), 18px); height: max(calc(.36 * var(--t)), 18px); }
+.arcade__card-en {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: max(calc(.1 * var(--t)), 10px);
+  font-weight: 700;
+  letter-spacing: .22em;
+  color: var(--mint-400);
+}
+.arcade__card-name { font-size: max(calc(.26 * var(--t)), 15px); font-weight: 900; letter-spacing: .04em; line-height: 1.15; }
+.arcade__card-desc { font-size: max(calc(.15 * var(--t)), 12px); line-height: 1.5; color: rgba(232, 255, 247, .66); }
+.arcade__card-badge {
+  position: absolute;
+  right: calc(.14 * var(--t));
+  top: calc(.14 * var(--t));
+  padding: .02rem .08rem;
+  border-radius: .04rem;
+  border: 1px solid currentColor;
+  font-size: max(calc(.12 * var(--t)), 10px);
+  letter-spacing: .08em;
+}
+/* badge colours are the mode lifecycle (owner 2026-11-07): yellow 敬请期待 (in development), green 开放中 (admin open),
+   red 暂未开放 (admin closed) */
+.arcade__card-badge--dev { color: #ffcf70; }
+.arcade__card-badge--soon { color: #ffcf70; }
+.arcade__card-badge--ready { color: var(--mint-400); }
+.arcade__card-badge--off { color: #ff9a9a; }
+
+.arcade__foot { margin-top: auto; padding-top: calc(.2 * var(--t)); font-size: max(calc(.13 * var(--t)), 11px); color: rgba(232, 255, 247, .45); }
+
+/* The lobby's 4th hub entry (screens/lobby.js HubEntry, card id 'arcade'): a violet tint so it reads as "not the official
+   rule set", while keeping the hub-entry layout and hover from lobby.css. */
+.hub-entry--arcade { background: linear-gradient(160deg, #2b2544, #14121f); border-color: rgba(178, 160, 255, .45); }
+.hub-entry--arcade .hub-entry__en { color: #c9b8ff; }
+.hub-entry--arcade .hub-entry__icon { color: rgba(201, 184, 255, .35); }
+.hub-entry--arcade .hub-entry__corner { background: linear-gradient(135deg, transparent 50%, #8f7cff 50%); }
+
+@media (max-width: 640px) {
+  .arcade__head { flex-direction: column; align-items: flex-start; }
+  .arcade__titles { align-items: flex-start; }
+  /* one card per row: the auto-fit grid squeezed two columns' names and descriptions into a phone's width */
+  .arcade__grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* short landscape phones / a short desktop window: the page is one screenful, so the cards lose their extra air */
+@media (max-height: 520px) {
+  .arcade { gap: .1rem; padding: .1rem .16rem .16rem; }
+  .arcade__title { font-size: max(calc(.32 * var(--t)), 20px); }
+  .arcade__hint { font-size: max(calc(.14 * var(--t)), 12px); line-height: 1.4; }
+  .arcade__grid { gap: .1rem; }
+  .arcade__card { min-height: 0; padding: .12rem .14rem .14rem; }
+  .arcade__card-icon .icon { width: max(.26rem, 18px); height: max(.26rem, 18px); }
+  .arcade__card-name { font-size: max(calc(.22 * var(--t)), 15px); }
+}

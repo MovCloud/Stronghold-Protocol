@@ -1406,8 +1406,18 @@ export async function createFieldView(host, options = {}) {
     clearHl('dragFrom'); clearHl('dragTarget'); clearHl('legal');
   }
 
+  /** 显示方向 (ui/orientation.js): the page — and this canvas with it — is turned 90° (css/orientation.css). */
+  function turned() { return document.documentElement.dataset.rotate === '1'; }
+
+  /** Canvas CSS px → client px, through the turn when it is on: local (x, y) is screen (right − y, top + x). */
+  function clientOf(x, y, r = canvas.getBoundingClientRect()) {
+    return turned() ? { x: r.right - y, y: r.top + x } : { x: r.left + x, y: r.top + y };
+  }
+
   function canvasPoint(e) {
     const r = canvas.getBoundingClientRect();
+    // the inverse of clientOf: a turned canvas puts its local x along the screen's y (and its local y right-to-left)
+    if (turned()) return { x: e.clientY - r.top, y: r.right - e.clientX };
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
@@ -2287,6 +2297,11 @@ export async function createFieldView(host, options = {}) {
       if (!v || v.destroyed || !v.placed) return null;
       const b = v.bounds();
       const r = canvas.getBoundingClientRect();
+      // a turned canvas's drawn body swaps its axes on screen (ui/orientation.js; the underframe / wheel place against this)
+      if (turned()) {
+        const left = r.right - b.y - b.height, top = r.top + b.x;
+        return { left, top, right: left + b.height, bottom: top + b.width, width: b.height, height: b.width, x: left, y: top };
+      }
       const left = r.left + b.x, top = r.top + b.y;
       return { left, top, right: left + b.width, bottom: top + b.height, width: b.width, height: b.height, x: left, y: top };
     },
@@ -2310,8 +2325,9 @@ export async function createFieldView(host, options = {}) {
       const r = canvas.getBoundingClientRect();
       const c = cam.project(d.col, d.row, z);
       if (!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) return null;
-      const corner = (dx, dy) => { const p = cam.project(d.col + dx, d.row + dy, z); return [r.left + p.x, r.top + p.y]; };
-      return { x: r.left + c.x, y: r.top + c.y, s: c.s, poly: [corner(-0.5, 0.5), corner(0.5, 0.5), corner(0.5, -0.5), corner(-0.5, -0.5)], mirror: mode === 'prep' && prepXf.mirror };
+      const corner = (dx, dy) => { const p = cam.project(d.col + dx, d.row + dy, z); const q = clientOf(p.x, p.y, r); return [q.x, q.y]; };
+      const centre = clientOf(c.x, c.y, r);
+      return { x: centre.x, y: centre.y, s: c.s, poly: [corner(-0.5, 0.5), corner(0.5, 0.5), corner(0.5, -0.5), corner(-0.5, -0.5)], mirror: mode === 'prep' && prepXf.mirror };
     },
     /**
      * True when the view itself stripes range previews ('facing' / 'selRange' / 'range' groups) under the units (the 2D

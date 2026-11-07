@@ -15,6 +15,7 @@ import { audio } from '../audio.js';
 import { store } from '../store.js';
 import { settingsStore } from './settings.js';
 import { outfitModelOf } from './outfits.js';
+import { layoutBox, turnedBox } from './turnedLayout.js';
 
 const LOAD_TIMEOUT_MS = 12000;
 // [ASSUMED] Two automatic retries; keep the existing two event retries available for a later network/tab recovery.
@@ -99,21 +100,24 @@ export function hudBands(kind, size, opts) {
   let bondsBottom = 0;
   try {
     rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 100;
+    // 显示方向 (ui/turnedLayout.js): a turned page lays the HUD out in swapped px — every measured box is mapped back
+    // before it is compared with the view's (logical) size.
+    const ar = turnedBox();
     // 异形屏适配 (ui/screenFit.js): the board's host may not start at the viewport's top — the HUD rects are measured from it
-    oy = document.querySelector('.gm__field')?.getBoundingClientRect()?.top || 0;
+    oy = layoutBox(document.querySelector('.gm__field')?.getBoundingClientRect(), ar)?.top || 0;
     // the HUD layer starts below the top safe-area inset and ends above the bottom one (css/devices.css .gm__hud)
-    const hud = document.querySelector('.gm__hud')?.getBoundingClientRect();
+    const hud = layoutBox(document.querySelector('.gm__hud')?.getBoundingClientRect(), ar);
     safeTop = Math.max(0, (hud?.top || 0) - oy);
     // #678 adds 44 px arrows; a native scrollbar can make the strip taller still.
     // Keep the same minimum band before mount and while collapsed, so toggling cannot shrink it.
-    const bonds = document.querySelector('.gm__bonds')?.getBoundingClientRect();
+    const bonds = layoutBox(document.querySelector('.gm__bonds')?.getBoundingClientRect(), ar);
     if (bonds?.height > 0) bondsBottom = Math.max(0, bonds.bottom - oy);
     if (folded) {
       if (hud && hud.bottom - oy > 0) safeBottom = Math.max(0, h - (hud.bottom - oy));
       corner = cornerBand(h, oy);
     } else {
       // Phone cards have a readable pixel floor; reserve their actual row, not the old rem-only height.
-      const row = document.querySelector('.gm__hud > .shopbar .shopbar__row')?.getBoundingClientRect();
+      const row = layoutBox(document.querySelector('.gm__hud > .shopbar .shopbar__row')?.getBoundingClientRect(), ar);
       if (row && row.height > 0) shopRow = Math.max(0, h - row.top);
     }
   } catch { /* ignore */ }
@@ -141,8 +145,9 @@ function cornerBand(h, oy = 0) {
   const root = document.documentElement;
   const tap = root?.classList?.contains('sp-coarse') ? parseFloat(getComputedStyle(root).getPropertyValue('--tap-min')) || 0 : 0;
   let top = Infinity;
+  const ar = turnedBox();
   for (const b of btns) {
-    const r = b.getBoundingClientRect();
+    const r = layoutBox(b.getBoundingClientRect(), ar);
     if (r && r.height > 0) top = Math.min(top, r.top + r.height / 2 - Math.max(r.height, tap) / 2);
   }
   return top < Infinity ? Math.max(0, h - (top - oy)) : 0;

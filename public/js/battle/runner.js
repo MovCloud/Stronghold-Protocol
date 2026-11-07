@@ -1073,6 +1073,8 @@ export function createBattleRunner(deps) {
     }
     const e = {
       battleId: msg.battleId, fieldId: msg.fieldId || msg.spec.fieldId, kind: msg.kind || msg.spec.kind, spec: msg.spec,
+      // 2V2 (versus): the team this field fights for — b.pool carries one pool per team in `pools`, the scalars null
+      team: msg.team ?? msg.spec.team ?? null,
       // built by prepare(); `seq` = its latest b.start, `elapsed` = the field clock to start from, `endReason` = the first
       // forced / timeout b.end (applied once the Battle exists), `ready` = the preparation (a promise)
       sim: null, battle: null, meter: null, seq, elapsed: Number(msg.elapsed) || 0, endReason: null, ready: null,
@@ -1182,7 +1184,8 @@ export function createBattleRunner(deps) {
         for (const x of queued) if (!feedExt(e, x)) return;
       }
       // digests that arrived while it was loading: compared as the replica reaches them
-      if (lastPool) await e.host.syncPool(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined);
+      const pool = poolFor(e, lastPool);
+      if (pool) await e.host.syncPool(pool.hp, pool.acked ? pool.acked[e.fieldId] : undefined, pool.max);
       if (e.endReason) await endBattle(e);
       // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field) — for the view
       // asked for; a superseded authority catches up in the background (advance)
@@ -1215,12 +1218,27 @@ export function createBattleRunner(deps) {
     }
   }
 
+  /**
+   * The pool a field follows inside a b.pool broadcast. Solo / coop send the scalars (hp / max / acked) for the one
+   * shared boss; 2V2 (versus) sends one pool per team in `pools` with the scalars nulled, and each field follows the
+   * pool of its own team (b.start `team`) — a team never sees the other team's boss.
+   * @returns the { hp, max, acked } record for this field, or null when the message carries neither
+   */
+  function poolFor(e, msg) {
+    if (!msg) return null;
+    if (!msg.pools) return msg;
+    const t = e.team;
+    return t == null ? null : (msg.pools[t] || null);
+  }
+
   function onPool(msg) {
     if (!msg || typeof msg !== 'object') return;
     lastPool = msg;
     // a pending battle not built yet takes lastPool when it is built
     for (const e of [...entries.values(), ...pending.values()]) {
-      if (e.battle && !e.failed) e.host.syncPool(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
+      if (!e.battle || e.failed) continue;
+      const pool = poolFor(e, msg);
+      if (pool) e.host.syncPool(pool.hp, pool.acked ? pool.acked[e.fieldId] : undefined, pool.max);
     }
     emit('pool', msg);
   }

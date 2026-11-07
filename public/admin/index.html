@@ -28,6 +28,7 @@
         <button class="nav-item" data-tab="matches"><span>▤</span>对局列表 <span id="match-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="bans"><span>⊘</span>封禁管理 <span id="ban-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="announcements"><span>◇</span>服务器公告</button>
+        <button class="nav-item" data-tab="arcade"><span>▧</span>娱乐模式</button>
         <button class="nav-item" data-tab="feedback"><span>✎</span>玩家反馈 <span id="feedback-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="audit"><span>≡</span>操作记录</button>
         <!-- plugin panels (window.SP_ADMIN_PANELS) append their nav items and tab sections here at runtime -->
@@ -73,6 +74,12 @@
           <div class="form-row"><label>等级<select name="level"><option value="info">普通通知</option><option value="warning" selected>提醒</option><option value="urgent">紧急</option></select></label><label>显示时长<select name="durationSeconds"><option value="300">5 分钟</option><option value="900" selected>15 分钟</option><option value="3600">1 小时</option><option value="86400">24 小时</option></select></label></div>
           <p class="panel-note">同时存在多条公告时按等级优先、同等级按发布时间先后展示。</p><button class="primary" type="submit">发布公告 ↗</button>
         </form><div class="announcement-list"><h2>当前与排期</h2><div id="announcements-list"></div></div></div>
+      </section>
+
+      <section class="tab-panel" id="tab-arcade" hidden>
+        <div class="panel-heading"><div><h2>娱乐模式</h2><p class="muted">开放：玩家可以进入该玩法；停用：拒绝该玩法的新房间与新对局，进行中的对局自然打完。</p></div></div>
+        <div id="arcade-modes" class="arcade-mode-list"></div>
+        <p class="panel-note">开发中或修改中的玩法不在此列表，客户端固定显示黄字「敬请期待」。主线（独立模拟 / 同盟模拟）的维护由「玩家状态」里的维护开关统一处理。</p>
       </section>
 
       <section class="tab-panel" id="tab-feedback" hidden>

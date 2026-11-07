@@ -126,4 +126,13 @@ export const actions = {
   // room-level intent (NOT g.*): the host frees a spectator seat while the match runs — the server takes room.removeSpectator at
   // any time (server/lobby.js removeSpectator), the game screen had no entry for it (ui/hud.js SpectatorPill; GitHub #120)
   removeSpectator: (playerId) => act('room.removeSpectator', { playerId }, { sfx: 'back' }),
+  // 2V2 狩猎模拟 (the fork's 娱乐模式; server/match/match/event.js / confront.js):
+  //   eventPick — PHASE.EVENT, the 机变 target this player gives this round (self | mate | oppA | oppB)
+  //   confrontTarget — PHASE.CONFRONT step 1, the opponent this seat attacks (first come inside the team)
+  //   confront — PHASE.CONFRONT step 2, the 特训敌人 plan thrown at that target ({ group, position, picks })
+  //   confrontWithdraw — PREP only, the 赏金 → 金币 withdrawal 坎诺特 sells
+  eventPick: (target) => act('g.event.pick', { target }, { sfx: 'confirm' }),
+  confrontTarget: (targetPlayerId) => act('g.confrontTarget', { targetPlayerId }, { sfx: 'click' }),
+  confront: (group, position, picks) => act('g.confront', { group, position, picks }, { sfx: 'confirm' }),
+  confrontWithdraw: (gold) => act('g.confront.withdraw', { gold }, { sfx: 'confirm' }),
 };

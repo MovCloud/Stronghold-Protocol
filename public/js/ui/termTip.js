@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html } from './components.js';
 import { RichText } from './gameComponents.js';
 import { data, useData } from '../data.js';
+import { layoutBox, layoutViewport, turnedBox } from './turnedLayout.js';
 
 const GAP = 6;
 
@@ -69,11 +70,16 @@ export function TermTipHost() {
     };
   }, []);
 
-  // measure, then place inside the viewport
+  // measure, then place inside the viewport (a turned page places this fixed box in layout px — ui/turnedLayout.js)
   useEffect(() => {
     const box = boxRef.current;
     if (!tip || !box) return;
-    setPos(placeTip(tip.rect, box.offsetWidth, box.offsetHeight, window.innerWidth, window.innerHeight));
+    const ar = turnedBox();
+    if (ar) {
+      const r = layoutBox(tip.rect, ar);
+      const vp = layoutViewport(ar);
+      setPos(placeTip({ left: r.left, top: r.top, bottom: r.bottom }, box.offsetWidth, box.offsetHeight, vp.width, vp.height));
+    } else setPos(placeTip(tip.rect, box.offsetWidth, box.offsetHeight, window.innerWidth, window.innerHeight));
   }, [tip]);
 
   const term = tip ? data.lookup('terms', tip.id) : null;

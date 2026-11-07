@@ -69,9 +69,12 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
     await page.emulate({ viewport: d.viewport, userAgent: d.userAgent || await b.userAgent() });
     const problems = [];
     const local = (u) => u.startsWith(base);
-    page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) problems.push(`console: ${m.text()}`); });
+    // this worktree does not vendor public/fonts/ (the upstream font package), so index.html's /fonts/fonts.css is a
+    // 404 here while every screen still renders: that one request is the environment's (same note in orientation.e2e)
+    const fontsCss = /fonts\/fonts\.css/;
+    page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text()) && !fontsCss.test(m.text())) problems.push(`console: ${m.text()}`); });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => { if (local(r.url()) && !intercept) problems.push(`requestfailed: ${r.url()}`); });
+    page.on('requestfailed', (r) => { if (local(r.url()) && !intercept && !fontsCss.test(r.url())) problems.push(`requestfailed: ${r.url()}`); });
     if (intercept) {
       await page.setRequestInterception(true);
       page.on('request', (r) => (intercept(r.url()) ? r.respond({ status: 404, body: 'gone' }) : r.continue()));
@@ -407,16 +410,19 @@ describe('multi-device (Chrome device emulation)', { skip: !ENABLED && 'set SP_E
     }
   });
 
-  test('portrait phone: lobby remains usable and only the battlefield requires rotation', async () => {
+  test('portrait phone: the page turns itself instead of covering the game with a rotate hint', async () => {
     const page = await browser.newPage();
     await page.emulate({ viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }, userAgent: IOS_UA });
     await page.goto(`${base}/`, { waitUntil: 'load' });
     await page.waitForSelector('.lobby-screen', { timeout: 10000 });
     await sleep(400);
+    // 设置 →「显示方向」 (ui/orientation.js): the default 锁定竖屏 keeps the page upright, and the hint never covers the
+    // game — 自动适应 / 锁定横屏 turn .app-root instead (test/ui/orientation.e2e.test.js)
     assert.equal(await page.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'none');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.rotate), '0');
     await page.evaluate(() => document.documentElement.classList.add('sp-in-match'));
-    assert.equal(await page.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'grid');
-    await page.screenshot({ path: path.join(OUT, 'device-portrait-rotate.png') });
+    assert.equal(await page.$eval('.rotate-hint', (el) => getComputedStyle(el).display), 'none', 'no covering hint in a match');
+    await page.screenshot({ path: path.join(OUT, 'device-portrait-upright.png') });
     await page.close();
     // review regression: a narrow desktop window (half a 1080p screen, portrait monitor) cannot be "rotated" — no hint
     const desk = await browser.newPage();

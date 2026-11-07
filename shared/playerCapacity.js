@@ -1,4 +1,4 @@
-import { MAX_SEATS, MAX_DRAFT_CARDS } from './constants.js';
+import { MAX_SEATS, MAX_DRAFT_CARDS, TEAMS, TEAM_SIZE } from './constants.js';
 
 // Larger rooms and same-capacity party matchmaking are explicit opt-in experiments.
 export const PLAYER_CAPACITIES = Object.freeze([MAX_SEATS, 8, 12, 16, 20]);
@@ -8,6 +8,8 @@ export const isPlayerCapacity = value => Number.isInteger(value) && PLAYER_CAPAC
 
 export function roomCapacity(mode, experimental) {
   if (mode === 'solo') return 1;
+  // 2V2 ('versus') is a FIXED two teams of two: the seat count never follows the larger-room experiment
+  if (mode === 'versus') return TEAMS * TEAM_SIZE;
   const capacity = experimental && typeof experimental === 'object'
     ? Object.getOwnPropertyDescriptor(experimental, 'playerCapacity')?.value : undefined;
   return isPlayerCapacity(capacity) ? capacity : MAX_SEATS;

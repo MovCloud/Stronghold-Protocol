@@ -1099,8 +1099,11 @@ describe('versus (2V2) match: team model', () => {
     assert.ok(validateC2S({ t: 'g.confront', group: 17, position: 'mid', picks: [pick] }), 'group 17 is refused');
   });
 
-  test('co-op keeps the 6-card 机变 draft and draws a 同盟狩猎 start round', () => {
-    const h = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: 1, bots: 1, seed: 33, fake: true }).start();
+  test('co-op keeps the 6-card 机变 draft; the 同盟狩猎 opt-in draws a start round, an ordinary co-op does not', () => {
+    const plain = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: 1, bots: 1, seed: 33, fake: true }).start();
+    assert.equal(plain.m.contestStartRound, null, 'an ordinary co-op room keeps the official rules');
+    plain.m.dispose();
+    const h = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: 1, bots: 1, seed: 33, fake: true, coopHunt: true }).start();
     const m = h.m;
     // 同盟狩猎: the co-op 狩猎期 start round is drawn like the 2V2 contest round (the opponent-based 对抗期 stays 2V2-only)
     assert.ok([4, 5, 6].includes(m.contestStartRound), `co-op hunt start ${m.contestStartRound}`);

@@ -4,7 +4,7 @@
 // Core).
 // Installed on Match.prototype by server/match/Match.js (a method container: never instantiated; `this` is the match).
 
-import { PHASE } from '../../../shared/constants.js';
+import { PHASE, VERSUS_ITEM_PHONE, VERSUS_ITEM_PAGER, VERSUS_LOW_LP } from '../../../shared/constants.js';
 import { canUseWorkerRehearsal, rehearsalFingerprint } from '../combat/rehearsal.js';
 import { testSlice } from '../testTrace.js';
 import { DELAYS } from './common.js';
@@ -27,6 +27,8 @@ export class MatchPrep {
       // AFTER a golden overflowed into temp — pull the overflow back before the prep shows it (the temp invariant).
       if (this.random) ps._absorbTempIntoHand();
     }
+    // 2V2 development compensation: grant the 小电话 / 寻呼模块 at the prep start (design 2026-10-16)
+    this._versusPrepGrant();
     // solo / single-human matches: untimed (soloUntimed); co-op: the round's prepTime
     const secs = this.soloUntimed ? null : this.gd.prepTime(this.round);
     this.setDeadline(secs, () => this.prepDeadline());
@@ -34,6 +36,33 @@ export class MatchPrep {
     for (const ps of alive) if (ps.botControlled) this.scheduleBotPrep(ps, i++);
     this.markPublic();
     this.maybeEndPrep();
+  }
+
+  /**
+   * 2V2 ('versus') development compensation (design 2026-10-16): from the drawn contest round, every
+   * OTHER round every alive player gains a 小电话 (简易通讯机); a team whose SHARED HP pool (m.teamLps) drops below
+   * VERSUS_LOW_LP gains a 寻呼模块 — ONCE per team in the whole match, the teams triggering independently (both may
+   * take it, each only once). Non-versus untouched.
+   * [ASSUMED] the grant respects the shared item pool (canGain); exhausted copies are skipped silently.
+   */
+  _versusPrepGrant() {
+    if (!this.isVersus || this.contestStartRound == null) return;
+    const r = this.round;
+    const everyOther = r >= this.contestStartRound && (r - this.contestStartRound) % 2 === 0;
+    const alive = this.alivePlayers();
+    if (!this._pagerGranted) this._pagerGranted = new Set();
+    const granted = new Set();
+    for (const t of this.matchTeamIds()) {
+      if (this._pagerGranted.has(t)) continue;
+      const pool = this.teamHpPool(t);
+      if (pool != null && pool > 0 && pool < VERSUS_LOW_LP) { this._pagerGranted.add(t); granted.add(t); }
+    }
+    if (!everyOther && !granted.size) return;
+    const grant = (ps, id) => { if (this.itemPool.canGain(id)) ps.acquireItem(id, { source: 'versus-grant' }); };
+    for (const ps of alive) {
+      if (everyOther) grant(ps, VERSUS_ITEM_PHONE);
+      if (granted.has(this.teamIdOf(ps))) grant(ps, VERSUS_ITEM_PAGER);
+    }
   }
 
   /**
@@ -274,6 +303,9 @@ export class MatchPrep {
     // rehearsals still waiting for a host's answer die with the prep: their bots place the default layout, a late answer
     // is ignored (Match._takeOverRehearsal / MatchRehearsal) and nothing of them runs after the phase ended
     this._cancelRehearsal();
+    // 同盟狩猎: the 投放公示 keeps the round in PREP after its end; a second endPrep (un-ready → ready again, or the
+    // deadline) must never re-run the prep or arm another hold. (Unused while coopHuntOn is off.)
+    if (this.confrontStage === 'roster') return;
     this.setDeadline(0);
     const alive = this.alivePlayers();
     for (const ps of alive) this.dispatch(ps, 'onPrepEnd', { round: this.round });
@@ -282,8 +314,13 @@ export class MatchPrep {
     if (r === this.gd.bossRound) {
       this.hiddenLayerSum = alive.reduce((s, p) => s + p.activatedLayers(), 0);
       this.startFinalAssault(false);
-    } else if (r === this.gd.hiddenRound) {
+    } else if (this.isBossRound(r) && r !== this.gd.bossRound) {
       this.startFinalAssault(true);
+    } else if (this.confrontActive()) {
+      // 2V2 对抗期: each team intervenes against the opponent's next battle before it starts
+      this.enterConfront();
+    } else if (this.coopHuntActive() && this.enterCoopHuntRoster()) {
+      // 同盟狩猎: 5 s 投放公示 (CONFRONT_ROSTER_MS) before the battles start; finishCoopHuntRoster calls startCombat
     } else {
       this.startCombat();
     }

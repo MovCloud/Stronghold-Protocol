@@ -205,14 +205,29 @@ export class MatchInfra {
     throw new TypeError('player card pool required');
   }
 
-  /** Whether any chess of a bond is in this match's pool (a 驰援 card of a fully banned bond is never offered). A null
-   * player asks the whole-match view (`pool`): every group shares the same banned set and chess list, so its keys are
-   * the match-wide view. */
-  bondInPool(bondId, player = null) {
-    const pool = player == null ? this.pool : this.poolFor(player);
-    for (const id of pool.entries.keys()) {
-      const c = this.gd.chess(id);
-      if (c && Array.isArray(c.bonds) && c.bonds.includes(bondId)) return true;
+  /** The chess pool a team's players draw from (2V2: per team; solo/coop: the single pool). */
+  poolOf(team) { return this.pools ? this.pools.get(team) : this.pool; }
+
+  /** The disabled-bond draw of a team (2V2: per team; solo/coop: the single match-wide draw). */
+  bansOf(team) {
+    if (!this.teamBans) return { drawn: this.disabledBonds, staticOff: this.staticInactiveBonds, banned: this.bannedChess };
+    return this.teamBans.get(team) || { drawn: [], staticOff: [], banned: [] };
+  }
+
+  /** Whether any chess of a bond is in a pool (a 驰援 card of a fully banned bond is never offered). A null target asks
+   * the whole-match view (2V2: any team's pool; otherwise `pool`). */
+  bondInPool(bondId, target = null) {
+    const pools = Number.isInteger(target)
+      ? [this.poolOf(target)]
+      : target == null
+        ? (this.pools ? [...this.pools.values()] : [this.pool])
+        : [this.poolFor(target)];
+    for (const pool of pools) {
+      if (!pool) continue;
+      for (const id of pool.entries.keys()) {
+        const c = this.gd.chess(id);
+        if (c && Array.isArray(c.bonds) && c.bonds.includes(bondId)) return true;
+      }
     }
     return false;
   }
@@ -222,8 +237,8 @@ export class MatchInfra {
    * 奥术 … never activate, research 02 §2.1) and still with chess in the pool. 机变 tactic cards whose every target bond
    * is dead are not offered (choices.js).
    */
-  bondLive(bondId, player = null) {
-    return !this.gd.modeInactiveBonds.has(bondId) && this.bondInPool(bondId, player);
+  bondLive(bondId, target = null) {
+    return !this.gd.modeInactiveBonds.has(bondId) && this.bondInPool(bondId, target);
   }
   humans() { return this.order.filter((p) => !p.isBot && !p.left); }
 
@@ -253,8 +268,44 @@ export class MatchInfra {
    */
   isSpectator(ps) { return !!(ps && ps.spectator); }
 
-  /** [ASSUMED] Touch's initial, match-long team grant survives its holder's elimination/quit; focus alone grants none. */
-  teamMedicGranted() { return this.order.some(p => (this.gd.band(p.bandId)?.effectRef ?? p.bandId) === 'band_amedic'); }
+  /**
+   * A hunt mode: 2V2 ('versus', the player-run 对抗期) or 同盟狩猎 (co-op, the system-run 狩猎期). Merchant / 赏金 /
+   * 事件期 read this; solo never does. The per-round window itself is `huntActive()` / `confrontActive()`.
+   */
+  get huntMode() { return this.isVersus || this.coopHuntOn; }
+
+  /** Every player of ps's team, in seat order (solo/coop: the whole roster — a no-op). */
+  alliesOf(ps) { const t = this.teamIdOf(ps); return this.order.filter((p) => this.teamIdOf(p) === t); }
+
+  /** The alive players of ps's team (solo/coop: every alive player). */
+  aliveAlliesOf(ps) { return this.alliesOf(ps).filter((p) => p.alive); }
+
+  /** The team ids present in this match, sorted (2V2 'versus': [0,1]; solo/coop: [0]). */
+  matchTeamIds() { return [...new Set(this.order.map((p) => this.teamIdOf(p)))].sort((a, b) => a - b); }
+
+  /**
+   * 2V2 ('versus'): each team shares ONE HP pool = the sum of its members' chosen 策略 (band) HP (`gd.startLp`). The pool
+   * REPLACES the individual 目标生命值: a team lives and dies as one. Built once every seat has a band;
+   * solo/coop never build it and keep their per-player LP untouched.
+   */
+  initTeamHp() {
+    if (!this.isVersus) return;
+    this.teamLps = new Map();
+    for (const t of this.matchTeamIds()) {
+      let hp = 0;
+      for (const ps of this.order) if (this.teamIdOf(ps) === t) hp += Math.max(0, this.gd.startLp(ps.bandId));
+      this.teamLps.set(t, hp);
+    }
+    this.teamLp = [...this.teamLps.values()].reduce((s, v) => s + v, 0);
+    this._syncTeamLp();
+  }
+
+  /** A team's shared HP pool (2V2), or null in solo/coop (which keep the per-player LP). */
+  teamHpPool(team) { return this.teamLps ? (this.teamLps.get(team) ?? 0) : null; }
+
+  /** [ASSUMED] Touch's initial, match-long team grant survives its holder's elimination/quit; focus alone grants none.
+   *  2V2: scoped to the player's own team (solo/coop: the whole roster, as before). */
+  teamMedicGranted(ps) { return this.alliesOf(ps).some(p => (this.gd.band(p.bandId)?.effectRef ?? p.bandId) === 'band_amedic'); }
 
   /**
    * The boss-round group of a player (`bossWaves`: the per-match random pairs, planned in startRound

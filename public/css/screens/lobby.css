@@ -1245,6 +1245,24 @@ button.ally-card:disabled .ally-card__bar { filter: grayscale(.5) brightness(.8)
 /* the version chip's own height (components.css .verchip), so the two pills line up in the top bar */
 .hub-online { display: inline-flex; align-items: center; gap: .08rem; height: max(.42rem, 28px); padding: 0 .14rem; margin-right: .1rem; border: 1px solid var(--mint-a35); background: rgba(8, 14, 12, .6); color: var(--text-hi); font-size: calc(.14 * var(--t)); white-space: nowrap; }
 .hub-online .num { color: var(--mint-400); font-weight: 800; }
+/* The top bar's two pills — the 版本 switch (.verchip) and 在线 (.hub-online) — are one size at every window size and
+   pointer type: the 在线 box is the reference. components.css grows .verchip alone under .sp-coarse (32 px, 40 px at
+   --sp-ui) and on short screens (font .22), which made the version pill a head taller than the online one. These scoped
+   rules pin both to the same height / floor / padding / font, and leave .sp-coarse .verchip's other uses untouched. */
+.lobby-hub .topbar__right { --hub-pill-h: max(.42rem, 28px); }
+
+.lobby-hub .topbar__right .verchip,
+.lobby-hub .topbar__right .verchip__retry,
+.lobby-hub .topbar__right .hub-online {
+  height: var(--hub-pill-h); min-height: var(--hub-pill-h); box-sizing: border-box;
+  padding: 0 .14rem; font-size: calc(.14 * var(--t));
+}
+
+.sp-coarse .lobby-hub .topbar__right .verchip,
+.sp-coarse .lobby-hub .topbar__right .verchip__retry,
+.sp-coarse .lobby-hub .topbar__right .hub-online {
+  height: max(32px, calc(40px * var(--sp-ui, 1))); min-height: max(32px, calc(40px * var(--sp-ui, 1)));
+}
 /* 单人设置: the version pill + ⚙ in 选择模拟协议, the room footer's group (room.css .rs-pill, .rs-pill__ver, .rs-pill__gear)
    in the same shape — the solo-side entries only: the version this browser creates solo rooms in, and the account's 默认速度.
    It sits centred at the bottom of the dialog, in the room footer's place; on a window narrower than tall (the halves

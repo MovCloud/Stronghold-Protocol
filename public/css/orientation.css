@@ -1,0 +1,153 @@
+/* css/orientation.css — 设置 →「显示方向」 (orientation, ui/orientation.js).
+   Every screen is one landscape stage (theme.css derives the root scale from a 19.2 × 10.8 box). 显示方向 decides
+   whether the whole app is turned 90° so the stage's long side lies along the screen's long side: 自动适应 turns a
+   viewport taller than wide, 锁定竖屏 never turns, 锁定横屏 always turns. ui/orientation.js writes <html data-rotate="1">
+   for the turned states and keeps the chosen value in data-orient (the dialog / tests).
+
+   The turn is one transform of .app-root (fixed, inset 0 — every screen, dialog, toast and overlay lives inside it, and
+   a transformed ancestor makes their `position: fixed` boxes resolve against it, so they turn and fill with it). The
+   root scale is re-derived from the swapped box, the 异形屏 bands are swapped with it, and the landscape layout branch
+   the physical media queries would drop for a narrow window is restored. render/app.js maps canvas pointer coordinates
+   through the turn.
+
+   Media queries keep reading the physical window, which is why the landscape branch must be restored here: a phone held
+   upright (the window 自动适应 turns) would otherwise take every portrait-window rule in lobby.css / sweep.css. */
+
+html[data-rotate="1"] .app-root {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  transform-origin: top left;
+  transform: translateX(100vw) rotate(90deg);
+}
+
+/* 异形屏适配 (设置, ui/screenFit.js): the bands are physical. For the turned box the top / bottom bands become its left /
+   right and the left / right bands its top / bottom; the translate lines the box up with them (the rule above keeps
+   precedence over devices.css's inset block). */
+html[data-fit][data-rotate="1"] .app-root {
+  left: 0;
+  top: var(--fit-t, 0px);
+  right: auto;
+  bottom: auto;
+  width: calc(100vh - var(--fit-t, 0px) - var(--fit-b, 0px));
+  height: calc(100vw - var(--fit-l, 0px) - var(--fit-r, 0px));
+  transform: translateX(calc(100vw - var(--fit-r, 0px))) rotate(90deg);
+}
+
+/* the stage's own scale: theme.css's rule with the two axes swapped (the turned box is 100vh wide and 100vw tall). */
+html[data-rotate="1"] {
+  font-size: calc(clamp(40px, min(calc(100vh / 19.2), calc(100vw / 10.8)), 240px) * var(--sp-ui, 1));
+}
+
+@supports (height: 100svh) {
+  html[data-rotate="1"] {
+    font-size: calc(clamp(40px, min(calc(100svh / 19.2), calc(100vw / 10.8)), 240px) * var(--sp-ui, 1));
+  }
+}
+
+html[data-rotate="1"][data-fit] {
+  font-size: clamp(40px, min(calc((100vh - var(--fit-t, 0px) - var(--fit-b, 0px)) / 19.2), calc((100vw - var(--fit-l, 0px) - var(--fit-r, 0px)) / 10.8)), 240px) * var(--sp-ui, 1);
+}
+
+@supports (height: 100svh) {
+  html[data-rotate="1"][data-fit] {
+    font-size: clamp(40px, min(calc((100svh - var(--fit-t, 0px) - var(--fit-b, 0px)) / 19.2), calc((100vw - var(--fit-l, 0px) - var(--fit-r, 0px)) / 10.8)), 240px) * var(--sp-ui, 1);
+  }
+}
+
+/* 娱乐模式's page fills the window with 100dvh: the turned box is 100vw tall. */
+html[data-rotate="1"] .arcade { min-height: 100vw; }
+
+/* ---- the landscape branch, whatever the physical window says ------------------------------------------------ */
+
+@media (min-height: 521px) {
+  /* Dialogs: the base two-column / multi-column values, and the room seats and the sweep panel. The narrow-window
+     blocks in lobby.css / sweep.css stack them for a physical portrait window; the turned box is the other way round. */
+  html[data-rotate="1"] .proto-body {
+    grid-template-columns: minmax(0, 1fr) min(max(5.6rem, 32px, calc(300px * var(--sp-ui, 1))), 46vw);
+    grid-template-rows: none;
+  }
+
+  html[data-rotate="1"] .ally-body {
+    grid-template-columns: minmax(0, 1fr) min(7.4rem, 46vw);
+    grid-template-rows: none;
+  }
+
+  html[data-rotate="1"] .proto__pic { inset: -.5rem -1.8rem .9rem -.3rem; }
+
+  html[data-rotate="1"] .proto-foot { padding-left: .5rem; }
+
+  html[data-rotate="1"] .ally-side { padding-left: .3rem; }
+
+  html[data-rotate="1"] .proto-setup {
+    position: absolute; grid-area: auto; align-self: auto; justify-self: auto;
+    left: 50%; bottom: .1rem; margin-bottom: 0; transform: translateX(-50%);
+  }
+
+  html[data-rotate="1"] .rs-seats { justify-content: center; }
+
+  html[data-rotate="1"] .rseat {
+    --w: min(18vw, 3.4rem, calc((100vw - 1.6rem) / var(--n, 4) - .3rem));
+  }
+
+  html[data-rotate="1"] .sw-body {
+    grid-template-columns: minmax(0, 4.3fr) minmax(0, 5.7fr);
+    grid-template-rows: none;
+    gap: .5rem;
+  }
+
+  html[data-rotate="1"] .sw-left { max-height: none; }
+
+  html[data-rotate="1"] .sw-tabs .sw-tab { min-width: max(2.3rem, 32px, calc(92px * var(--sp-ui, 1))); }
+
+  html[data-rotate="1"] .sw-codex__body {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+    grid-template-rows: none;
+  }
+
+  html[data-rotate="1"] .sw-codex__list {
+    border-right: 2px solid rgba(255, 255, 255, .5);
+    border-bottom: 0;
+  }
+
+  /* The dialog keeps its base text sizes: the narrow-window block (max-aspect-ratio: 1/1, lobby.css) drops the cards'
+     and the button's caps because its own layout has the cards spanning the width in one column; the turned box keeps
+     the column, so the caps return. Scoped to the narrow window, so a 960×540 window's 20 px label (min-height 521 /
+     max-height 600, lobby.css — 1rem is 50 px there) still wins. [ASSUMED] the caps */
+  @media (max-aspect-ratio: 1/1) {
+    html[data-rotate="1"] .pcard__name { font-size: min(calc(.28 * var(--t)), .36rem); }
+
+    html[data-rotate="1"] .proto-foot .proto-start__label { font-size: min(calc(.4 * var(--t)), .46rem); }
+
+    html[data-rotate="1"] .proto-foot .proto-start__rook { font-size: min(calc(.36 * var(--t)), .4rem); }
+  }
+}
+
+/* A turned phone is a short window, but the short-window blocks (max-height: 520px) read the physical height and cannot
+   see it; the turned box's height is the physical width. 娱乐模式 is the page this matters for: its own ≤ 640 px block
+   reads the physical width (the turned box's height) and would stack the cards into one column in a 844 px wide stage. */
+@media (max-width: 640px) {
+  html[data-rotate="1"] .arcade { gap: .1rem; padding: .1rem .16rem .16rem; }
+
+  html[data-rotate="1"] .arcade__head { flex-direction: row; align-items: flex-end; }
+
+  html[data-rotate="1"] .arcade__titles { align-items: flex-end; }
+
+  html[data-rotate="1"] .arcade__grid {
+    grid-template-columns: repeat(auto-fit, minmax(calc(2.6 * var(--t)), 1fr));
+    gap: .1rem;
+  }
+
+  html[data-rotate="1"] .arcade__title { font-size: max(calc(.32 * var(--t)), 20px); }
+
+  html[data-rotate="1"] .arcade__hint { font-size: max(calc(.14 * var(--t)), 12px); line-height: 1.4; }
+
+  html[data-rotate="1"] .arcade__card { min-height: 0; padding: .12rem .14rem .14rem; }
+
+  html[data-rotate="1"] .arcade__card-icon .icon { width: .26rem; height: .26rem; }
+
+  html[data-rotate="1"] .arcade__card-name { font-size: max(calc(.22 * var(--t)), 15px); }
+}

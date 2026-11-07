@@ -26,6 +26,14 @@ import { DEFAULT_HOTKEYS, sanitizeHotkeys } from './shortcuts.js';
  */
 export const TEXT_SIZES = Object.freeze(['sm', 'md', 'lg', 'xl']);
 
+/**
+ * 设置 →「显示方向」 (orientation): whether the whole landscape stage is turned 90° (ui/orientation.js writes
+ * `<html data-rotate>`; css/orientation.css turns .app-root). 'auto' turns while the viewport is taller than wide,
+ * 'portrait' never turns, 'landscape' always turns. The owner's default is 锁定竖屏 (user 2026-11-07). The battle board
+ * keeps its own 19.2:10.8 fit either way.
+ */
+export const ORIENTATIONS = Object.freeze(['auto', 'portrait', 'landscape']);
+
 /** keys: the in-match shortcuts' key map (ui/gameLogic/shortcuts.js; settings → 快捷键). voiceLang: VOICE_LANGS.
  *  voiceNative: the 本土语言 switch (default off). textSize: TEXT_SIZES (css/theme.css `--t`, applied by ui/settings.js
  *  applyTextSize). 界面大小 is the global `--sp-ui` (ui/screenFit.js applyFit, `sp.pref.screenFit.ui`) and is not a
@@ -57,7 +65,7 @@ export const TEXT_SIZES = Object.freeze(['sm', 'md', 'lg', 'xl']);
  *  The removed 'auto' / 'board' (the unofficial PNG board art) migrate to '3d'. A URL `?board=`
  *  only fills in when the caller passes no setting at all (render/app/view.js boardPreference).
  */
-export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceNative: false, voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, officialDamageNumbers: false, ammoEnergyCount: false, fullscreenWakeLock: false, bondTimers: false, combatMetrics: false, prepDeployFold: true, quality: 'high', officialFx: 'auto', otherSkins: true, textSize: 'sm', keys: DEFAULT_HOTKEYS, bgmPrep: 'official', bgmCombat: 'official', boardView: '3d' });
+export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceNative: false, voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, officialDamageNumbers: false, ammoEnergyCount: false, fullscreenWakeLock: false, bondTimers: false, combatMetrics: false, prepDeployFold: true, quality: 'high', officialFx: 'auto', otherSkins: true, textSize: 'sm', orientation: 'portrait', keys: DEFAULT_HOTKEYS, bgmPrep: 'official', bgmCombat: 'official', boardView: '3d' });
 const QUALITIES = ['high', 'medium', 'low'];
 /** The values of 设置「官方特效」 (render/vfx/tier.js OFFICIAL_FX). Display order in the dialog is low / medium / high. */
 export const OFFICIAL_FX_MODES = Object.freeze(['auto', 'off', 'lite', 'full']);
@@ -103,6 +111,7 @@ export function sanitizeSettings(raw) {
     officialFx: OFFICIAL_FX_MODES.includes(r.officialFx) ? r.officialFx : DEFAULT_SETTINGS.officialFx,
     otherSkins: r.otherSkins !== false,
     textSize: TEXT_SIZES.includes(r.textSize) ? r.textSize : DEFAULT_SETTINGS.textSize,
+    orientation: ORIENTATIONS.includes(r.orientation) ? r.orientation : DEFAULT_SETTINGS.orientation,
     keys: sanitizeHotkeys(r.keys),
     bgmPrep: sanitizeBgmChoice(r.bgmPrep),
     bgmCombat: sanitizeBgmChoice(r.bgmCombat),

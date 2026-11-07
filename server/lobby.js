@@ -263,7 +263,7 @@
 
 import { aiTakeover, resetAiTakeover, reconcileAiTakeover } from './aiTakeover.js';
 import { randomBytes, randomInt } from 'node:crypto';
-import { DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, PHASE, PLAYBACK, ROOM_CODE_LEN, MATCHMAKING_VERSION, modeIdFor } from '../shared/constants.js';
+import { ARCADE_ADMIN_MODES, COOP_HUNT, DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTATORS, PHASE, PLAYBACK, ROOM_CODE_LEN, MATCHMAKING_VERSION, TEAMS, teamOfSeat, modeIdFor } from '../shared/constants.js';
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, charPotentialChanges, checkSkinSelection, operatorCharIds, isSkinId, isCharId } from '../shared/protocol.js';
 import { EXPERIMENTAL_DEFAULTS, experimentalOptions, isExperimental, sameExperimental } from '../shared/experimental.js';
 import { MAX_PLAYER_CAPACITY, PLAYER_CAPACITY_VERSION, isPlayerCapacity, roomCapacity } from '../shared/playerCapacity.js';
@@ -492,6 +492,12 @@ export class Room {
     this.code = code;
     this.mode = mode;
     this.difficulty = difficulty;
+    /**
+     * 同盟狩猎 (COOP_HUNT): only an 娱乐模式 co-op room opts in (room.create hunt: true), and only its match runs the
+     * system-run 狩猎期 (Match opts.coopHunt). An ordinary co-op room keeps the official rules and never carries the
+     * key in room.state, so the mainline shape is untouched.
+     */
+    this.hunt = false;
     /** the official version the room plays (shared/versions.js id; header "Official versions") */
     this.version = version;
     /**
@@ -620,6 +626,8 @@ export class Room {
       code: this.code,
       hostId: this.hostId,
       mode: this.mode,
+      // 同盟狩猎 (COOP_HUNT): only the opt-in 娱乐模式 co-op room carries the key; an ordinary co-op room stays as it was
+      ...(this.hunt === true ? { hunt: true } : {}),
       difficulty: this.difficulty,
       aiPicksLast: this.aiPicksLast,
       speed: this.speed,
@@ -630,6 +638,8 @@ export class Room {
       revival: this.revivalState(),
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left,
+          // 2V2 ('versus'): the team this seat fights for (0..TEAMS-1); solo / coop rooms carry no team
+          ...(this.mode === 'versus' ? { team: teamOfSeat(s.seat) } : {}),
           // 复活投票 is a product-only field: only sent while a vote is open, so the mainline room.state shape stays intact
           ...(!s.isBot && s.revivalVote != null ? { revivalVote: s.revivalVote } : {}),
           // an AI seat's designated strategy (room.setBotBand; null = it picks by itself)
@@ -655,6 +665,8 @@ export class Room {
       ...(this.test ? { test: true } : {}),
       // 「不限时」 (header): omitted unless on, so a default room.state stays identical
       ...(this.soloUnlimited === true ? { soloUnlimited: true } : {}),
+      // 2V2: how many teams the room splits its seats into — present only in a versus room (solo / coop keep their shape)
+      ...(this.mode === 'versus' ? { teams: TEAMS } : {}),
     };
   }
 }
@@ -742,6 +754,18 @@ export class Lobby {
     this.testHost = '';
     this.testEnabled = false;
     this.testWarn = this.testUnrecognized;
+    // 2V2 ('versus', the fork's 娱乐模式): the code lives in the mainline (Match / PlayerState / choices / phases), but
+    // the mode stays behind a switch so an unfinished build can be shut off with SP_VERSUS=0 (or the `versus` option
+    // passed by an embedder / test) — the lobby then refuses room.create mode versus and hides its entry
+    // (welcomeInfo.versus).
+    const rawVersus = Object.hasOwn(options, 'versus') ? options.versus
+      : (typeof process !== 'undefined' && process.env ? process.env.SP_VERSUS : undefined);
+    this.versusEnabled = rawVersus == null || rawVersus === ''
+      || !(rawVersus === false || /^(0|off|false|no|disabled)$/i.test(String(rawVersus)));
+    // 娱乐模式 (arcade) runtime switches: the admin panel opens / closes the COMPLETED modes per mode
+    // (server/playerAdmin.js /admin/api/arcade, persisted in state.json). Both start open; the build-level switches
+    // above (SP_VERSUS / COOP_HUNT.enabled) still gate them — see arcadeOpen().
+    this.arcade = Object.fromEntries(ARCADE_ADMIN_MODES.map((m) => [m.id, true]));
     if (testHostOpt != null) this.setTestHost(testHostOpt);
     /** @type {Map<string, Room>} */
     this.rooms = new Map();
@@ -1029,7 +1053,7 @@ export class Lobby {
   }
 
   presenceState() {
-    return { t: 'presence.state', online: this.online.size, seq: this.presenceSeq, serverNow: this.now(), ...(this.maintenance() ? { maintenance: true } : {}) };
+    return { t: 'presence.state', online: this.online.size, seq: this.presenceSeq, serverNow: this.now(), arcade: this.arcadeInfo(), ...(this.maintenance() ? { maintenance: true } : {}) };
   }
 
   /** The limits file's maintenance switch is on (server/onlineLimit.js) or the admin dashboard's runtime override:
@@ -1052,6 +1076,42 @@ export class Lobby {
     this.maintenanceOverride = on === true;
     const after = this.maintenance();
     if (before !== after) this.maintenanceChanged(after);
+    return before !== after;
+  }
+
+  /**
+   * 娱乐模式 (arcade) per-mode open state: the admin panel's runtime switch AND the build-level switch of that mode.
+   * A mode that is not a completed one (still 敬请期待) is never open. 'hunt2v2' is gated by SP_VERSUS / options.versus,
+   * 'alliancehunt' by COOP_HUNT.enabled.
+   * @param {string} id
+   */
+  arcadeOpen(id) {
+    if (!Object.hasOwn(this.arcade, id)) return false;
+    if (id === 'hunt2v2' && this.versusEnabled !== true) return false;
+    if (id === 'alliancehunt' && COOP_HUNT.enabled === false) return false;
+    return this.arcade[id] === true;
+  }
+
+  /** The effective state of every admin-controlled 娱乐模式 (welcome.arcade / presence.state.arcade). */
+  arcadeInfo() {
+    return Object.fromEntries(ARCADE_ADMIN_MODES.map((m) => [m.id, this.arcadeOpen(m.id)]));
+  }
+
+  /**
+   * The admin dashboard's per-mode switch (server/playerAdmin.js /admin/api/arcade). Closing a mode refuses its NEW
+   * rooms and match starts, like the maintenance drain: its running matches keep playing and finish (自然排空).
+   * Returns whether the effective value flipped; either way presence is republished so open arcade pages update.
+   * @param {string} id @param {boolean} open
+   */
+  setArcadeMode(id, open) {
+    if (!Object.hasOwn(this.arcade, id) || typeof open !== 'boolean') return false;
+    const before = this.arcadeOpen(id);
+    this.arcade[id] = open;
+    const after = this.arcadeOpen(id);
+    if (before !== after) {
+      this.presenceSeq++;
+      this.publishPresence(true);
+    }
     return before !== after;
   }
 
@@ -1261,6 +1321,7 @@ export class Lobby {
       case 'room.aiVote': return aiTakeover(this, session, msg);
       case 'room.addBot': return this.addBot(session);
       case 'room.removeBot': return this.removeBot(session, msg);
+      case 'room.swapSeats': return this.swapSeats(session, msg);
       case 'room.kick': return this.kick(session, msg);
       case 'room.transferHost': return this.transferHost(session, msg);
       case 'room.start': return this.start(session);
@@ -1400,10 +1461,16 @@ export class Lobby {
   // room.* handlers
   // ---------------------------------------------------------------------------------------------------
 
-  create(session, { mode, difficulty: asked, test, version: askedVersion, soloUnlimited, experimental = EXPERIMENTAL_DEFAULTS, capacity } = {}) {
+  create(session, { mode, difficulty: asked, test, version: askedVersion, soloUnlimited, experimental = EXPERIMENTAL_DEFAULTS, capacity, hunt } = {}) {
     if (this.emergency.active) return fail(ERR.SERVER_EMERGENCY);
     // A test room exists only when the process switch allowed it. The check runs before the room is built.
     if (test === true && this.testEnabled !== true) return fail(ERR.TEST_DISABLED);
+    // 2V2 ('versus'): the fork's own mode, offered only while its switch is on — SP_VERSUS / options.versus AND the
+    // admin panel's 娱乐模式 switch (closed = new rooms refused, running matches drain)
+    if (mode === 'versus' && this.arcadeOpen('hunt2v2') !== true) return fail(ERR.MODE_DISABLED);
+    // 同盟狩猎 (COOP_HUNT) is a co-op room option, not a mode: any other mode refusing it keeps the wire honest
+    if (hunt === true && mode !== 'coop') return fail(ERR.BAD_MSG, 'hunt is a co-op room option');
+    if (hunt === true && this.arcadeOpen('alliancehunt') !== true) return fail(ERR.MODE_DISABLED);
     // SiderLock merge: the plain numeric `capacity` option (its room API; the wire's room.create never carries
     // it) folds into the experimental rules as playerCapacity. It is server-side intent, so the hello
     // playerCapacityVersion gate below only applies to a larger capacity asked through `experimental`.
@@ -1472,6 +1539,8 @@ export class Lobby {
     const room = new Room(code, mode, difficulty, this.now(),
       capacity !== undefined ? { ...experimental, playerCapacity: capacity } : experimental, version);
     room.maxAiPerRoom = this.maxAiPerRoom;
+    // 同盟狩猎 (COOP_HUNT): the 娱乐模式 co-op room's opt-in; the ordinary co-op room stays official
+    room.hunt = hunt === true;
     room.test = test === true;
     // 「不限时」 only on a solo room of a version whose solo is timed (header). Anywhere else the key is ignored, so a
     // stray true cannot change a default or co-op create.
@@ -2185,11 +2254,57 @@ export class Lobby {
     if (room.maxAiPerRoom !== null && room.seats.filter((s) => s?.isBot).length >= room.maxAiPerRoom) {
       return fail(ERR.AI_LIMIT);
     }
+    this._seatBot(room, idx);
+    this.broadcastState(room);
+    return OK;
+  }
+
+  /** Put an AI teammate into a specific seat (room.addBot and the 2V2 start-up fill share this). */
+  _seatBot(room, idx) {
     const used = new Set(room.seats.filter((s) => s && s.isBot).map((s) => s.name));
     const name = BOT_NAMES.find((n) => !used.has(n)) || `AI·${idx + 1}`;
     let playerId;
     do playerId = 'ai_' + randomBytes(4).toString('hex'); while (room.seatOf(playerId));
     room.seats[idx] = { seat: idx, playerId, name, isBot: true, ready: true, connected: true, left: false, band: null };
+  }
+
+  /**
+   * 2V2 ('versus') is a FIXED 2v2: every empty seat is handed to an AI teammate when the match starts, so a room with
+   * two (or even one) humans plays out with AI filling the rest instead of being refused. Non-versus rooms keep their
+   * seats exactly as the host arranged them.
+   * @returns {number} how many seats were filled
+   */
+  _fillEmptySeatsWithBots(room) {
+    if (room.mode !== 'versus') return 0;
+    let filled = 0;
+    for (let idx = 0; idx < room.seats.length; idx++) {
+      if (room.seats[idx]) continue;
+      this._seatBot(room, idx);
+      filled++;
+    }
+    return filled;
+  }
+
+  /**
+   * room.swapSeats { a, b } (2V2, host, before the match): swap the occupants of two seats — a player dragged between
+   * the two teams changes team (the team follows the seat index, teamOfSeat). Either seat may be empty (a move).
+   */
+  swapSeats(session, { a, b }) {
+    const room = this.roomOf(session);
+    if (!room) return fail(ERR.NOT_IN_ROOM);
+    if (room.mode !== 'versus') return fail(ERR.BAD_TARGET, 'not a 2V2 room');
+    if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (a === b) return OK;
+    this.dropReplay(room, session.playerId);
+    const sA = room.seats[a];
+    const sB = room.seats[b];
+    room.seats[a] = sB;
+    room.seats[b] = sA;
+    if (room.seats[a]) room.seats[a].seat = a;
+    if (room.seats[b]) room.seats[b].seat = b;
+    // moving a human un-readies the humans that changed team (the host's start still counts as the host's ready)
+    for (const s of [room.seats[a], room.seats[b]]) if (s && !s.isBot) s.ready = false;
     this.broadcastState(room);
     return OK;
   }
@@ -2263,9 +2378,19 @@ export class Lobby {
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (this.maintenance()) return fail(ERR.MAINTENANCE);
+    // 娱乐模式 (arcade): a mode closed by the admin panel refuses NEW matches too (a room built before the switch
+    // stays open); its running matches keep playing, like the maintenance drain
+    if (room.mode === 'versus' && this.arcadeOpen('hunt2v2') !== true) return fail(ERR.MODE_DISABLED);
+    if (room.hunt === true && this.arcadeOpen('alliancehunt') !== true) return fail(ERR.MODE_DISABLED);
     if (this.roomQueued(room)) return fail(ERR.QUEUED);
     if (!room.validCapacity() || !this.capacityClients(room)) return fail(ERR.BAD_MSG);
     if (room.versionVote) return fail(ERR.VERSION_VOTE);
+    // 2V2 ('versus'): the mode is a FIXED 2v2 — empty seats become AI teammates here, so a room with fewer than four
+    // humans simply plays out with AI fill instead of being refused (they are ready at once, the check below passes).
+    if (room.mode === 'versus') {
+      const filled = this._fillEmptySeatsWithBots(room);
+      if (filled) this.log.info(`[lobby] ${room.code} filled ${filled} empty seat(s) with AI at start`);
+    }
     const humans = room.activeHumans();
     if (room.content?.trusted && humans.some(s => s.consentCs !== room.content.cs)) return fail(ERR.PLUGIN_CONSENT);
     for (const s of humans) {
@@ -2306,7 +2431,10 @@ export class Lobby {
     const room = this.roomOf(session);
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
-    if (room.hostId !== session.playerId && (cancel || room.source !== 'matchmaking')) return fail(ERR.NOT_HOST);
+    // 2V2: each team rerolls only its OWN disabled core bonds, so any human of a team may propose it (the match still
+    // needs that team's humans to agree, and the vote only ever touches the proposer's team).
+    const versus = !!(room.mode === 'versus' && room.match && room.match.setupVotes);
+    if (!versus && room.hostId !== session.playerId && (cancel || room.source !== 'matchmaking')) return fail(ERR.NOT_HOST);
     const method = cancel ? 'cancelSetupReroll' : 'requestSetupReroll';
     if (!room.match || typeof room.match[method] !== 'function') return fail(ERR.WRONG_PHASE);
     return this.callMatch(room, method, session.playerId, cancel ? msg.voteId : msg.setupRevision) || fail(ERR.INTERNAL);
@@ -2792,6 +2920,11 @@ export class Lobby {
     if (versions) info.versions = versions;
     // Omitted when the switch is off, so a welcome from a normal server stays identical.
     if (this.testEnabled === true) info.testMode = true;
+    // 2V2 ('versus'): tells the lobby to show the 娱乐模式 entry and its 狩猎模拟 2V2 card (omitted when off)
+    if (this.versusEnabled === true) info.versus = true;
+    // 娱乐模式 (arcade): the admin panel's effective open state of every completed mode (presence.state carries the same
+    // map, so an open arcade page follows a toggle without a reconnect)
+    info.arcade = this.arcadeInfo();
     return info;
   }
 
@@ -2827,6 +2960,8 @@ export class Lobby {
       const own = s.isBot ? null : this.seatSettings(room, s, data);
       return {
         seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, connected: s.connected,
+        // 2V2 ('versus'): the team this seat fights for (PlayerState.team) — absent in 'solo' / 'coop'
+        ...(room.mode === 'versus' ? { team: teamOfSeat(s.seat) } : {}),
         // DESIGN §16: the human's checked operator loadout and (0.2.2) per-operator 潜能 / 练度 (bots fight with the defaults)
         loadout: own ? own.loadout : null,
         ops: own ? own.ops : null,
@@ -2869,6 +3004,9 @@ export class Lobby {
         experimental: room.experimental,
         // 「AI 队友最后选择」 (GitHub #338): fixed for the match
         aiPicksLast: room.mode !== 'solo' && room.aiPicksLast === true,
+        // 同盟狩猎 (COOP_HUNT): only the 娱乐模式 room that opted in runs the system 狩猎期; an ordinary co-op match
+        // carries no key (Match.coopHuntOn requires opts.coopHunt === true)
+        ...(room.mode === 'coop' && room.hunt === true ? { coopHunt: true } : {}),
         // 「全局默认速度」 (room.setSpeed): every match and every round starts at it
         combatSpeed: room.speed === PLAYBACK.NORMAL ? PLAYBACK.NORMAL : PLAYBACK.FAST,
         seats,

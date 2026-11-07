@@ -1769,7 +1769,7 @@
 
 .set-workshop__row .field { flex: 1 1 1.4rem; min-width: 0; }
 
-.set-workshop__field { display: flex; flex-direction: column; gap: .02rem; min-width: 0; }
+.set-workshop__field { display: flex; flex-direction: column; gap: .02rem; min-width: 0; flex: 1 1 1.4rem; }
 
 .set-workshop__label { font-size: calc(.13 * var(--t)); color: var(--text-lo); }
 
@@ -1777,6 +1777,23 @@
   box-sizing: border-box; height: .36rem; max-width: 100%; padding: 0 .08rem; background: #0a0d0c;
   border: 1px solid var(--line-2); color: var(--text-hi); font: inherit; font-size: calc(.14 * var(--t));
 }
+
+.set-workshop select { width: 100%; }
+
+/* 归属干员 / 皮肤 ID / 皮肤名称 share one row and one box: the TextField's default .56rem box and .2 text made the
+   inputs a head taller and wider than the select beside them. Scoped here — the rest of the settings keep their fields. */
+.set-workshop .field { gap: .02rem; }
+
+.set-workshop .field__label { gap: .06rem; font-size: calc(.13 * var(--t)); font-weight: 400; letter-spacing: 0; }
+
+.set-workshop .field__box { height: .36rem; padding: 0 .08rem; gap: .06rem; }
+
+.set-workshop .field__input { height: 100%; padding: 0; font-size: calc(.14 * var(--t)); }
+
+.set-workshop .field__icon { width: .18rem; height: .18rem; }
+
+.sp-coarse .set-workshop select,
+.sp-coarse .set-workshop .field__box { min-height: max(32px, calc(40px * var(--sp-ui, 1))); }
 
 .set-workshop__pick { display: inline-flex; align-items: center; gap: .08rem; font-size: calc(.13 * var(--t)); color: var(--text-lo); }
 
@@ -1849,6 +1866,14 @@
 
 @media (max-width: 767px) {
   .set-keys__list { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* a phone: the 显示方向 row puts its label above the three buttons so the full labels fit (the other rows keep their
+   three-column shape) */
+@media (max-width: 480px) {
+  .set-row[data-testid="orientation"] { grid-template-columns: minmax(0, 1fr); row-gap: .06rem; }
+  .set-row[data-testid="orientation"] .set-seg { grid-column: 1 / -1; width: 100%; }
+  .set-row[data-testid="orientation"] .set-seg button { flex: 1 1 0; min-width: 0; padding-inline: .06rem; }
 }
 
 @media (max-height: 600px) and (pointer: coarse), (max-height: 600px) and (any-pointer: coarse) {
