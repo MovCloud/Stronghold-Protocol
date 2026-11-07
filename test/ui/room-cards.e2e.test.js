@@ -109,12 +109,12 @@ describe('名片 seat cards (real server)', { skip: !ENABLED && 'set SP_E2E=1 (C
       await host.open();
       await host.enter('凯尔希');
 
-      // the picker in 个人名片: 默认 is the choice and has the focus; search and rarity filter the tiles
+      // the picker in 个人名片: 随机 is the choice and has the focus; search and rarity filter the tiles
       await openCardPicker(host);
       let pk = await picker(host);
       assert.ok(pk.tiles > 100, `tiles: ${pk.tiles}`);
       assert.deepEqual(pk.on, ['']);
-      assert.equal(pk.focus, '', 'the current choice (默认) takes the focus');
+      assert.equal(pk.focus, '', 'the current choice (随机) takes the focus');
       assert.ok(pk.inside && pk.pageFits && !pk.bodyScrolls, JSON.stringify(pk));
       await host.click('.cardpick__search input');
       await host.page.keyboard.type('斯卡蒂');
@@ -131,9 +131,16 @@ describe('名片 seat cards (real server)', { skip: !ENABLED && 'set SP_E2E=1 (C
       await host.shot('picker');
       await host.page.$eval(`.cardpick__op[data-char="${PICK}"]`, (el) => el.scrollIntoView({ block: 'center' })); // the grid scrolls
       await host.click(`.cardpick__op[data-char="${PICK}"]`);
-      await host.page.waitForFunction(() => !document.querySelector('.modal__box.cardpick'));
+      // a named operator keeps the picker open and shows its 外观 row (user request 2026-11-07); only 随机 closes it
+      await host.page.waitForFunction((id) => {
+        const box = document.querySelector('.modal__box.cardpick');
+        return !!box && !!box.querySelector('.cardpick__looks')
+          && !!box.querySelector(`.cardpick__op[data-char="${id}"].is-on`);
+      }, {}, PICK);
       // the pick is only a draft until 保存 (关闭 would drop it)
       assert.notEqual(await host.page.evaluate(() => localStorage.getItem('sp.pref.room.card')), JSON.stringify(PICK));
+      await host.page.keyboard.press('Escape');
+      await host.page.waitForFunction(() => !document.querySelector('.modal__box.cardpick'));
       await host.click('[data-testid="profile-save"]');
       await host.page.waitForFunction(() => !document.querySelector('.modal__box.prof'));
       // 保存 keeps the pick as a pref (installCardSync sends it as room.card once a room exists)

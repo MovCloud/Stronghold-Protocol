@@ -52,7 +52,7 @@ function LookBar({ m, charId, looks }) {
     <span class="cardpick__looks-label">${t('外观')}</span>
     ${opts.map((o) => html`<button key=${o.id || 'e2'} type="button" role="radio" aria-checked=${on === o.id ? 'true' : 'false'}
       class=${`cardpick__look${on === o.id ? ' is-on' : ''}${looks.kind === 'portrait' ? ' is-tall' : ''}`} title=${t(o.name)} onClick=${() => looks.onLook(o.id)}>
-      <span class="cardpick__img">${o.src ? html`<img src=${o.src} alt="" loading="lazy" draggable=${false} />` : null}</span>
+      <span class="cardpick__img">${o.src ? html`<img src=${o.src} alt="" loading="eager" decoding="async" draggable=${false} />` : null}</span>
       <span class="cardpick__name">${t(o.name)}</span></button>`)}
   </div>`;
 }
@@ -79,10 +79,11 @@ function CardThumb({ src, name }) {
 
 /**
  * 名片干员 picker (the lobby's 个人名片): the operators a seat card can show (ui/seatArt.js cardOperators — search by name,
- * rarity tabs) and 默认, no pick: the card shows the operator chosen by the player id. Picking closes it; the current
- * choice takes the focus (no on-screen keyboard on a phone). Each tile wears this browser's outfit for that operator
- * (`localSkins`, docs/SKINS.md), as the card will. `looks` (the picked operator's art, ui/seatArt.js lookOptions): the
- * 精二 / 精一 / skin row above the grid, as the room's picker had it before 2026-11-05.
+ * rarity tabs) and the 随机 tile (a random operator and its first skin, which closes the picker; the parent decides —
+ * a named operator keeps it open so its 外观 row can be picked next). The current choice takes the focus (no on-screen
+ * keyboard on a phone). Each tile wears this browser's outfit for that operator (`localSkins`, docs/SKINS.md), as the
+ * card will. `looks` (the picked operator's art, ui/seatArt.js lookOptions): the 精二 / 精一 / skin row above the grid,
+ * as the room's picker had it before 2026-11-05.
  */
 export function CardOperatorPicker({ current, list, m, localSkins = {}, looks = null, onPick, onClose }) {
   const [q, setQ] = useState('');
@@ -104,8 +105,8 @@ export function CardOperatorPicker({ current, list, m, localSkins = {}, looks = 
     ${looks ? html`<${LookBar} m=${m} charId=${current} looks=${looks} />` : null}
     <div class="cardpick__grid" data-testid="card-picker">
       <button type="button" class=${`cardpick__op cardpick__op--auto${known ? '' : ' is-on'}`} aria-pressed=${known ? 'false' : 'true'}
-          data-char="" data-autofocus=${known ? undefined : ''} title=${t('按博士编号自动分配')} onClick=${() => onPick('')}>
-        <span class="cardpick__img"><${Icon} name="refresh" /></span><span class="cardpick__name">${t('默认')}</span>
+          data-char="" data-autofocus=${known ? undefined : ''} title=${t('随机选择一名干员及其第一款皮肤')} onClick=${() => onPick('')}>
+        <span class="cardpick__img"><${Icon} name="refresh" /></span><span class="cardpick__name">${t('随机')}</span>
       </button>
       ${shown.map((c) => {
         const src = chessAvatarUrl(m, c, { skin: ownerSkin(c.charId, { localSkins }) });

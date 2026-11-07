@@ -151,10 +151,27 @@ export function roomFacts(room, myId) {
   };
 }
 
+/**
+ * 2V2 双人组队匹配 (user request 2026-11-07): one complete team and the other team empty is ONE party. It queues with
+ * required = the room's full capacity (4 in versus), so two such parties form one 4-seat versus match; the shape is
+ * computed from seat halves rather than hard-coded 2 so a future 1- or 3-player side follows the same rule.
+ */
+export function versusPartySlot(room) {
+  if (!room || room.mode !== 'versus') return false;
+  const seats = Array.isArray(room.seats) ? room.seats : [];
+  if (seats.length < 2 || seats.length % 2) return false;
+  const half = seats.length / 2;
+  const humans = seats.map((s, i) => (s && s.playerId && !s.isBot ? i : -1)).filter((i) => i >= 0);
+  if (humans.length !== half) return false;
+  return humans.every((i) => Math.floor(i / half) === Math.floor(humans[0] / half));
+}
+
 /** Client hint only; the server independently validates every party member before queuing. */
 export function partyQueueReason(room, myId, online = true) {
   if (!online) return t('连接中断，请稍候重试');
-  if (room?.mode !== 'coop' || room.inMatch) return t('仅等待中的好友同盟可组队匹配');
+  if (!room || room.inMatch) return t('仅等待中的好友同盟可组队匹配');
+  if (room.mode !== 'coop' && room.mode !== 'versus') return t('仅等待中的好友同盟可组队匹配');
+  if (room.mode === 'versus' && !versusPartySlot(room)) return t('2V2 组队匹配需要一支队伍满员、另一支队伍为空');
   if (room.hostId !== myId) return t('由同盟创建者发起组队匹配');
   const seats = room.seats?.filter(Boolean) || [];
   if (seats.some(s => s.isBot)) return t('请先移除 AI 队友，公开匹配仅限真人');

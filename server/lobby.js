@@ -2482,6 +2482,18 @@ export class Lobby {
 
   roomQueued(room) { return room.activeHumans().some((seat) => this.queue.entries.has(seat.playerId)); }
 
+  /**
+   * 2V2 双人组队匹配 (user request 2026-11-07): one complete team and the other team empty is ONE party. The team
+   * width comes from room.capacity / TEAMS, not a hard-coded 2, so a 1- or 3-player side follows the same rule later.
+   */
+  versusPartyShape(room) {
+    if (!room || room.mode !== 'versus') return false;
+    const humans = room.activeHumans();
+    const teamSize = room.capacity / TEAMS;
+    if (!Number.isInteger(teamSize) || teamSize < 1 || humans.length !== teamSize) return false;
+    return humans.every((seat) => Math.floor(seat.seat / teamSize) === Math.floor(humans[0].seat / teamSize));
+  }
+
   matchmakingMembers(session, difficulty, party) {
     const room = this.roomOf(session);
     if (room?.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR);
@@ -2491,14 +2503,15 @@ export class Lobby {
     }
     if (!room) return fail(ERR.NOT_IN_ROOM);
     if (room.hostId !== session.playerId) return fail(ERR.NOT_HOST);
-    if (room.mode !== 'coop' || room.match) return fail(ERR.WRONG_PHASE, 'party matchmaking requires a waiting cooperative room');
+    if ((room.mode !== 'coop' && room.mode !== 'versus') || room.match) return fail(ERR.WRONG_PHASE, 'party matchmaking requires a waiting cooperative or 2v2 room');
+    if (room.mode === 'versus' && !this.versusPartyShape(room)) return fail(ERR.WRONG_PHASE, '2v2 party matchmaking needs one full team and an empty other team');
     if (!room.validCapacity() || !this.capacityClients(room)) return fail(ERR.BAD_MSG, 'all room members must support its capacity');
     if (difficulty !== room.difficulty) return fail(ERR.BAD_MSG, 'party difficulty must match the room');
     if (room.seats.some((seat) => seat?.isBot)) return fail(ERR.BAD_MSG, 'public matchmaking has no AI players');
     if (room.activeHumans().some(seat => !seat.connected || (seat.playerId !== room.hostId && seat.ready !== true))) return fail(ERR.NOT_READY);
     const sessions = room.activeHumans().map((seat) => this.registry.byId(seat.playerId));
     if (!sessions.length || sessions.some((s) => !this.isOnline(s))) return fail(ERR.NOT_READY, 'all party members must be online');
-    return { sessions, roomCode: room.code, leaderId: room.hostId, experimental: room.experimental };
+    return { sessions, roomCode: room.code, leaderId: room.hostId, experimental: room.experimental, mode: room.mode };
   }
 
   matchmakingAvailable(session, entry) {
@@ -2506,7 +2519,9 @@ export class Lobby {
     const room = this.roomOf(session);
     const party = entry?.party;
     if (!party?.roomCode) return !room;
-    if (!room || room.code !== party.roomCode || room.match || room.mode !== 'coop'
+    if (!room || room.code !== party.roomCode || room.match || room.mode !== party.mode
+      || room.mode !== 'coop' && room.mode !== 'versus'
+      || (room.mode === 'versus' && !this.versusPartyShape(room))
       || room.capacity !== party.required || !room.validCapacity() || !this.capacityClients(room)
       || room.activeHumans().some(seat => !seat.connected || (seat.playerId !== room.hostId && seat.ready !== true))
       || room.hostId !== party.leaderId || room.difficulty !== entry.difficulty
@@ -2598,7 +2613,8 @@ export class Lobby {
     const now = this.now();
     if (!offer || offer.entries.length !== offer.required || sessions.length !== offer.required
       || offer.deadline <= now) return fail(ERR.BAD_TARGET, 'expired matchmaking offer');
-    if (!isExperimental(offer.experimental) || roomCapacity('coop', offer.experimental) !== offer.required) return fail(ERR.BAD_MSG);
+    const mode = offer.mode === 'versus' ? 'versus' : 'coop';
+    if (!isExperimental(offer.experimental) || roomCapacity(mode, offer.experimental) !== offer.required) return fail(ERR.BAD_MSG);
     const oldRooms = new Set();
     for (const session of sessions) {
       const entry = this.queue.entries.get(session.playerId);
@@ -2631,7 +2647,9 @@ export class Lobby {
     }
     const code = this.genCode();
     if (!code) return fail(ERR.INTERNAL, 'no room code available');
-    const room = new Room(code, 'coop', difficulty, this.now());
+    // The offer's mode decides the room: a 2V2 offer seats the first party (leader + its teammate) at 0/1 and the
+    // other party at 2/3, which is exactly Room's team split (offer.entries is [leader party, ...rest]).
+    const room = new Room(code, mode, difficulty, this.now());
     room.maxAiPerRoom = this.maxAiPerRoom;
     room.source = 'matchmaking';
     room.experimental = experimentalOptions(offer.experimental);

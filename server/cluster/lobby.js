@@ -264,7 +264,8 @@ export class ClusterLobby extends Lobby {
     const first = this.queue.entries.get(sessions[0].playerId), offer = this.queue.offers.get(context.offerId), now = this.now();
     if (!offer || first?.offerId !== offer.id || offer.entries.length !== offer.required
       || sessions.length !== offer.required || now >= offer.deadline) invalid(ERR.BAD_TARGET);
-    if (!isExperimental(offer.experimental) || roomCapacity('coop', offer.experimental) !== offer.required) invalid(ERR.BAD_MSG);
+    const mode = offer.mode === 'versus' ? 'versus' : 'coop';
+    if (!isExperimental(offer.experimental) || roomCapacity(mode, offer.experimental) !== offer.required) invalid(ERR.BAD_MSG);
     const oldRooms = new Set();
     for (const session of sessions) {
       const entry = this.queue.entries.get(session.playerId);
@@ -287,13 +288,13 @@ export class ClusterLobby extends Lobby {
       if ((perAddr > 0 && this.countRooms(room => this.roomCharges(room, key)) - released >= perAddr)
         || (maxMatches > 0 && this.countRooms(room => !!room.match && this.matchCharges(room, key)) >= maxMatches)) invalid(ERR.RATE);
     }
-    return { oldRooms, spectators, keys, experimental: experimentalOptions(offer.experimental) };
+    return { oldRooms, spectators, keys, mode, experimental: experimentalOptions(offer.experimental) };
   }
 
   async prepareMatchmadeRoom(sessions, difficulty, context) {
     const initial = this.collectMatchmade(sessions, difficulty, context), code = this.genCode();
     if (!code) invalid(ERR.INTERNAL);
-    const room = new Room(code, 'coop', difficulty, this.now());
+    const room = new Room(code, initial.mode, difficulty, this.now());
     room.source = 'matchmaking'; room.experimental = initial.experimental;
     room.ownerKeys = initial.keys; room.ownerKey = sessions[0].limitKey || null; room.hostId = sessions[0].playerId;
     room.spectators = initial.spectators.map(s => ({ ...s }));
@@ -310,7 +311,7 @@ export class ClusterLobby extends Lobby {
           || !isDeepStrictEqual(current.spectators, initial.spectators) || !sameExperimental(current.experimental, initial.experimental)) return false;
         for (const [old, stamp] of stamps) if (this.rooms.get(old.code) !== old || old.match || !isDeepStrictEqual(roomStamp(old), stamp)) return false;
         if (!sessions.every((s, i) => this.queue.entries.get(s.playerId) === entries[i] && entries[i].ticketId === tickets[i])) return false;
-        const live = new Room(code, 'coop', difficulty, room.createdAt);
+        const live = new Room(code, initial.mode, difficulty, room.createdAt);
         live.hostId = room.hostId; live.experimental = current.experimental; live.spectators = current.spectators.map(s => ({ ...s }));
         live.seats = sessions.map((s, i) => ({ ...this.humanSeat(i, s), ready: true, revivalVote: entries[i].revivalVote }));
         return isDeepStrictEqual(matchDTO(live, plan.dto.seed, this.opts.snapshotHz), plan.dto);

@@ -237,7 +237,10 @@ no battle effect), it gets the settlement's `m.result`, and `handle()` answers o
 The rest of this section is the legacy server-run mode
 (`SP_COMBAT=server`):
 `g.watch { fieldId }`: any live field during COMBAT / 联防; while no battle field is up (PREP, drafts, SETTLE)
-`'n:<pid>'` keeps the viewer scouting that board and pushes `prepFieldMeta` again when it changes (GitHub #87) — during a battle phase an `'n:<pid>'` id must name a live field
+`'n:<pid>'` keeps the viewer scouting that board and pushes `prepFieldMeta` again when it changes (GitHub #87) — in 2V2
+(`versus`) prep scouting is TEAM-ONLY until `Match#opponentRevealed` (R14+), so the other team's board answers
+`OPPONENT_HIDDEN 'opponent hidden'` and its row's 前往查看 is disabled (a spectator seat scouts anyone from the start) —
+during a battle phase an `'n:<pid>'` id must name a live field
 (`BAD_TARGET 'no such field'` otherwise, and the viewer keeps its stream). In the
 最终攻势 / 隐秘核心 a player fighting in a boss field may only watch its own field ("两名参与者会处于同一个战场，但无法查看
 另一组队友的战场情况" → `BAD_TARGET 'other group hidden'`); eliminated / departed players spectate any field.

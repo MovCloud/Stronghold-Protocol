@@ -5244,5 +5244,11 @@
   "自动适应": "Auto",
   "锁定竖屏": "Lock portrait",
   "锁定横屏": "Lock landscape",
+  "服装": "Outfits",
+  "干员服装": "Operator outfits",
+  "随机": "Random",
+  "随机选择一名干员及其第一款皮肤": "Pick a random Operator and their first outfit",
+  "你不能查看对手的信息": "You cannot view an opponent's information",
+  "2V2 组队匹配需要一支队伍满员、另一支队伍为空": "2V2 team matchmaking needs one team full and the other team empty",
   "界面始终按横屏布局设计：自动适应在窗口高于宽时把整个画面旋转 90°，锁定竖屏始终保持正向，锁定横屏始终保持旋转 90°。棋盘的画面始终按自己的比例适配。": "The interface is always laid out landscape: Auto turns the whole picture 90° whenever the window is taller than wide, Lock portrait always stays upright and Lock landscape always stays turned 90°. The battle board always fits its own aspect."
 }

@@ -49,7 +49,7 @@ import { moduleBadge, fullTraitText } from './loadoutModel.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { morphSlotPolicy } from '../../../shared/plugins/rules.js';
 import { audio } from '../audio.js';
-import { appearanceRecord } from './skinAssets.js';
+import { appearanceRecord, appearanceEntry } from './skinAssets.js';
 import { tokenVariantFor } from './gameLogic/loadout.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -763,7 +763,7 @@ export function resolveDetail(target, pieces, { priv = null, backups = data.get(
   const skin = target.kind === 'unit' ? target.unit?.skin : foreign ? target.skin : (priv?.skins && charId ? priv.skins[charId] : null);
   // the manifest must still hold that appearance (docs/SKINS.md), else the card draws the operator's own look
   const m = data.get('assets');
-  const skinOk = typeof skin === 'string' && skin && charId && m?.chars && Object.hasOwn(m.chars, charId) && m.chars[charId].skins && Object.hasOwn(m.chars[charId].skins, skin);
+  const skinOk = typeof skin === 'string' && !!appearanceEntry(m, charId, skin);
   return skinOk ? { ...detail, skin } : detail;
 }
 

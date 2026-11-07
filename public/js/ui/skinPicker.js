@@ -38,6 +38,9 @@ export function SkinSection({ m, charId, record, choices = {}, sync = 'idle', on
   const list = Object.entries(map).map(([id, s]) => ({ id, name: (s && s.name) || id, group: (s && s.group) || '', art: (s && s.portrait) || (s && s.illust) || null, wearable: wearable(s) }));
   // the choice is only shown once the manifest still holds that skin (a plugin removed it → back to the default look)
   const chosen = typeof choices?.[charId] === 'string' && choices[charId] && map[choices[charId]] ? choices[charId] : null;
+  // any stored choice — an official outfit included — means the operator is not on its default look, so this section's
+  // 默认 tile stays unmarked (the 服装 row shows the outfit that is actually worn)
+  const picked = typeof choices?.[charId] === 'string' && choices[charId] ? choices[charId] : null;
   const art = chosen ? map[chosen] : null;
   const illustration = art ? (art.illust || null) : null;
   // A REGISTERED dynamic (spine) skin (the skin registry, P6 §3.3) previews through the shared player; its failure
@@ -62,11 +65,7 @@ export function SkinSection({ m, charId, record, choices = {}, sync = 'idle', on
   // section rather than an empty grid: the global rule can only show what the manifest has.
   const rows = m && m.chars && m.chars[charId] ? [{ id: null, name: t('默认外观'), group: t('随普通／精锐状态显示'), art: defaultArt, wearable: true }, ...list] : [];
   if (!rows.length) return null;
-  const pick = (id) => {
-    const next = { ...(choices || {}) };
-    if (id) next[charId] = id; else delete next[charId];
-    onChange?.(next);
-  };
+  const pick = (id) => onChange?.(outfitPick(choices, charId, id));
   return html`<${Fragment}>
     <section class="lo-sec lo-sec--skins" aria-label=${t('干员外观')} data-testid="skin-picker">
       <header class="lo-sec__head">
@@ -75,7 +74,7 @@ export function SkinSection({ m, charId, record, choices = {}, sync = 'idle', on
       </header>
       <div class="lo-skins" role="radiogroup" aria-label=${t('选择干员外观')}>
         ${rows.map((s) => {
-          const on = chosen === s.id;
+          const on = s.id ? chosen === s.id : !chosen && !picked;
           return html`<button key=${s.id || 'default'} type="button" role="radio" aria-checked=${on ? 'true' : 'false'} data-skin=${s.id || 'default'}
               class=${`lo-skin${on ? ' is-on' : ''}`} disabled=${!s.wearable} onClick=${() => pick(s.id)}>
             <span class="lo-skin__art"><${Img} src=${s.art} fallbackSrc=${defaultArt} fallback=${html`<span class="t-dim">${t('暂无预览')}</span>`} /></span>
@@ -97,4 +96,79 @@ export function SkinSection({ m, charId, record, choices = {}, sync = 'idle', on
         : SkinPreview({ art: illustration, name: list.find((s) => s.id === chosen)?.name || '', fallbackSrc: defaultArt, fallback: noArt })}
     <//>` : null}
   <//>`;
+}
+
+/**
+ * 服装 (official outfits): the operator's entries in the manifest's top-level `m.skins` catalog — the same records the
+ * 名片 look row (ui/seatArt.js `lookOptions`) offers. They are wearable through the ONE appearance store of 外观:
+ * `sp.pref.skins` (ui/skins.js `skinsStore`) → `room.skins` → the unit's `skin`, so a click here is the battle look
+ * (assets.js `spineEntry` / `avatarUrl` resolve the official record too). `id: null` is the 默认外观 tile.
+ * `fallbackArt` is the deployed avatar copy (`/assets/char/skin_avatar/<id>.png`, tools/fetch-skin-avatars.mjs):
+ * a full-art install draws `art`, a local install with avatars only still draws something, and neither → 素材未安装.
+ * @param {any} m manifest @param {string} charId @param {any} [record] the chess record (默认 art, elite included)
+ * @returns {{ id: string|null, name: string, art: string|null, fallbackArt: string|null }[]}
+ */
+export function outfitRows(m, charId, record = null) {
+  const id = typeof charId === 'string' ? charId : '';
+  const catalog = m && m.skins && typeof m.skins === 'object' && !Array.isArray(m.skins) ? m.skins : null;
+  if (!catalog || !id) return [];
+  const outfits = Object.entries(catalog)
+    .map(([skinId, s]) => (s && typeof s === 'object' && s.charId === id
+      ? { id: skinId, name: s.name || skinId, art: s.portrait || s.illustration || s.illust || s.avatar || null,
+        fallbackArt: `/assets/char/skin_avatar/${skinId}.png` }
+      : null))
+    .filter((s) => s && s.art);
+  if (!outfits.length) return [];
+  const defaultArt = chessPortraitUrl(m, { ...(record || {}), charId: record?.charId || id, skin: null });
+  return [{ id: null, name: N_('默认外观'), art: defaultArt, fallbackArt: null }, ...outfits];
+}
+
+/** The next `{ [charId]: skinId }` selection: an empty `id` removes the operator's entry (默认外观). */
+export function outfitPick(choices, charId, id) {
+  const next = { ...(choices && typeof choices === 'object' ? choices : {}) };
+  if (id) next[charId] = id; else delete next[charId];
+  return next;
+}
+
+/**
+ * The 服装 row: every official outfit of this operator plus a leading 默认外观 card. One outfit is enough to draw the
+ * row; none → no section at all.
+ */
+export function OutfitSection({ m, charId, record = null, choices = null, onChange = null, locked = false }) {
+  const rows = outfitRows(m, charId, record);
+  if (!rows.length) return null;
+  const picked = choices && typeof choices === 'object' && typeof choices[charId] === 'string' ? choices[charId] : null;
+  const pick = (id) => onChange?.(outfitPick(choices, charId, id));
+  return html`<section class="lo-sec lo-sec--outfits" aria-label=${t('干员服装')} data-testid="outfit-gallery">
+    <header class="lo-sec__head"><h3>${t('服装')}<${MicroLabel}>OUTFITS<//></h3></header>
+    <div class="lo-outfits" role="radiogroup" aria-label=${t('服装')}>
+      ${rows.map((s) => html`<${OutfitCard} key=${s.id || 'default'} art=${s.art} fallbackArt=${s.fallbackArt} name=${t(s.name)}
+        on=${s.id ? picked === s.id : !picked} onPick=${() => pick(s.id)} />`)}
+    </div>
+    ${locked ? html`<p class="lo-skin__note">${t('本局外观已锁定，修改将在下一局生效。')}</p>` : null}
+  </section>`;
+}
+
+/**
+ * One outfit tile: the picture and its name, loaded as soon as the section is visited (no lazy gap on a phone).
+ * A missing picture tries `fallbackArt` once (the deployed avatar copy); if that fails too the tile is disabled and
+ * says 素材未安装 — it is still listed, because the outfit exists and a later art install makes it wearable.
+ */
+function OutfitCard({ art, name, fallbackArt = null, on = false, onPick = null }) {
+  const [src, setSrc] = useState(art);
+  const [missing, setMissing] = useState(false);
+  const fail = () => {
+    if (fallbackArt && src !== fallbackArt) { setSrc(fallbackArt); return; }
+    setMissing(true);
+  };
+  const label = t('素材未安装');
+  return html`<button type="button" role="radio" aria-checked=${on ? 'true' : 'false'}
+      aria-disabled=${missing ? 'true' : null} disabled=${missing}
+      class=${`lo-outfit${on ? ' is-on' : ''}${missing ? ' is-missing' : ''}`}
+      title=${missing ? label : name} onClick=${missing ? null : onPick}>
+    <span class="lo-outfit__frame">${missing
+      ? html`<span class="lo-outfit__none"></span><span class="lo-outfit__miss">${label}</span>`
+      : html`<img src=${src} alt=${name} loading="eager" decoding="async" draggable=${false} onError=${fail} />`}</span>
+    <span class="lo-outfit__name" title=${name}>${name}</span>
+  </button>`;
 }

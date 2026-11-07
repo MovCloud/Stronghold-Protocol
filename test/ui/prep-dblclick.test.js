@@ -21,6 +21,7 @@ test('a prep double-click watches once when the teammate has a field and is not 
   assert.equal(prepDblClickWatches({ ...o, watching: 'n:p_1' }), false, 'already the prep scout');
   assert.equal(prepDblClickWatches({ ...o, watching: 'f1' }), false, 'already their live field');
   assert.equal(prepDblClickWatches({ ...o, askedRecently: true }), false, 'the click of this double-click already opened it');
+  assert.equal(prepDblClickWatches({ ...o, player: { ...mate, hidden: true } }), false, 'a hidden 2v2 opponent cannot be watched');
 });
 
 test('no field: the double-click does not watch; the single click still toasts through onWatch', () => {

@@ -60,6 +60,9 @@ export function observeTarget(p, pub, myId, { observing = false, ownDone = false
   if (!isObj(p)) return { reason: t('无效的目标') };
   if (p.playerId === myId) return observing ? { back: true } : { reason: null };
   if (p.alive === false || p.status === 'left') return { reason: t('该队友已被淘汰，无法查看') };
+  // 2v2 opponent still hidden: the row may expand, but watching is refused (locked) — the flyout shows a disabled
+  // 前往查看 button instead of sending a request the server answers with OPPONENT_HIDDEN.
+  if (p.hidden) return { fieldId: `n:${p.playerId}`, locked: true };
   const phase = pub?.phase;
   const me = players(pub).find((x) => x.playerId === myId) || null;
   const meAlive = me ? me.alive !== false : true;

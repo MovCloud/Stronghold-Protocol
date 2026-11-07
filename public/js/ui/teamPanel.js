@@ -95,6 +95,8 @@ export function teammateFieldShown(watching, player) {
  */
 export function teammateClickWatches(o = {}) {
   if (o.observe || o.askedRecently) return false;
+  if (o.player?.hidden) return false; // 2v2 opponent not revealed: expand the row, never watch it
+
   if (teammateFieldShown(o.watching, o.player)) return false;
   return !!o.player;
 }
@@ -109,6 +111,7 @@ export function teammateClickWatches(o = {}) {
  */
 export function prepDblClickWatches(o = {}) {
   if (o.phase !== PHASE.PREP || o.self || !o.player || !o.observe) return false;
+  if (o.player.hidden) return false; // a hidden 2v2 opponent: 前往查看 is disabled, double-click must not bypass it
   if (o.askedRecently || teammateFieldShown(o.watching, o.player)) return false;
   const view = (typeof o.observe.canObserve === 'function' ? o.observe.canObserve(o.player) : null) || {};
   return !!view.fieldId;
@@ -229,7 +232,10 @@ export function TeamRow({ p, pub, myId, watching, onWatch, observe, halves, clic
   const offline = p.connected === false && !p.isBot;
   const open = !!observe && clicks.openPid === p.playerId && !self;
   const back = !!observe && self && observe.observing;
-  const title = half ? (half === 'ALL' ? t('返回全景') : self ? t('查看自己的半场') : t('查看 {name} 的半场', { name: p.name }))
+  // a 2v2 opponent the server still hides: the row expands, but watching it is refused (and the server says why).
+  const locked = !!p.hidden;
+  const title = locked ? t('你不能查看对手的信息')
+    : half ? (half === 'ALL' ? t('返回全景') : self ? t('查看自己的半场') : t('查看 {name} 的半场', { name: p.name }))
     : observe ? (self ? (observe.observing ? t('返回战场') : t('你自己')) : t('查看 {name} 的战场', { name: p.name })) : (self ? t('查看自己的阵地') : t('查看 {name} 的阵地', { name: p.name }));
   const lp = rowLp(p, pub, self ? selfLive : null, { uniteLocal, cap });
   const inTeam = team.has(p.playerId);
@@ -256,8 +262,12 @@ export function TeamRow({ p, pub, myId, watching, onWatch, observe, halves, clic
       </div>
       <${ReviveAction} pub=${pub} myId=${myId} target=${p} compact=${list} />
       <${KickAction} pub=${pub} myId=${myId} target=${p} compact=${list} />
-      ${open ? html`<button type="button" class="btn btn--primary btn--sm team__ob"
-        onClick=${() => { clicks.setOpenPid(null); onWatch(p); }}><span class="btn__label">${t('前往查看')}</span></button>` : null}
+      ${open ? (locked
+        ? html`<${Tooltip} text=${t('你不能查看对手的信息')} placement="top">
+            <button type="button" class="btn btn--primary btn--sm team__ob" disabled aria-disabled="true">
+              <span class="btn__label">${t('前往查看')}</span></button><//>`
+        : html`<button type="button" class="btn btn--primary btn--sm team__ob"
+            onClick=${() => { clicks.setOpenPid(null); onWatch(p); }}><span class="btn__label">${t('前往查看')}</span></button>`) : null}
       ${back ? html`<button type="button" class="btn btn--secondary btn--sm team__back"
         onClick=${() => observe.onBack()}><span class="btn__label">${t('返回战场')}</span></button>` : null}
     </div>
@@ -327,8 +337,11 @@ function FlyBand({ bandId }) {
  * is exactly one roster row tall — so the 同盟成员 header has no group beside it and each avatar's discs sit directly to
  * that row's right. One block per seat, the viewer's own included (no name between the avatar and its discs: the row
  * itself says whose they are), and, to the right of the longest bond strip, the operators that seat has on the field
- * (FlyOps) and the strategy it drafted (FlyBand). Hidden while the roster is folded (TeamPanel only renders it with the
- * roster open).
+ * (FlyOps) and the strategy it drafted (FlyBand). The discs and the operators scroll sideways inside the window when a
+ * long operator list is wider than it; the strategy column stands beside that scroller (never inside it), so the scroll
+ * cannot cut the icon at the window's right edge (user report 2026-11-07). The window's width is capped by `--fly-max`,
+ * measured here from its left edge, so it cannot run past the screen either. Hidden while the roster is folded
+ * (TeamPanel only renders it with the roster open).
  * A room grouped by chess pool (`pools`, rosterPools) reserves each pool header's height here too, so the flyout's rows
  * stay level with their roster rows across the whole list (owner request 2026-10-25: one line across shows one seat).
  * The discs are icon-only in the flyout (owner request 2026-10-25): with no name under them every disc's white glyph
@@ -338,21 +351,29 @@ function FlyBand({ bandId }) {
  *   pools?: Array<{ id: number|null, players: any[] }>|null }} props
  */
 export function BondsFlyout({ players, myId, open, onToggle, onBond = null, pools = null }) {
+  // The window is two siblings: the horizontally scrolling part (bond discs + field operators) and the strategy column.
+  // The strategy column sits outside that scroller, so a long operator list — the scroller's content can exceed the
+  // window's max-width — can never cut the icon at the right edge (user report 2026-11-07).
   const row = (p) => html`<section key=${p.playerId} class=${cx('team__fly-row', p.playerId === myId && 'is-self')}>
-      <div class="team__fly-bonds"><${BondStrip} bonds=${p.bonds} max=${16} names=${false}
-        onOpen=${(id) => onBond?.(id, p.playerId)} /></div>
+      <!-- a hidden 2v2 opponent has no bonds to show: keep the cell (the grid columns must stay aligned) but print
+           nothing, rather than BondStrip's 「尚未激活盟约」 which reads as if the opponent had none to share. -->
+      <div class="team__fly-bonds">${p.hidden ? null : html`<${BondStrip} bonds=${p.bonds} max=${16} names=${false}
+        onOpen=${(id) => onBond?.(id, p.playerId)} />`}</div>
       <${FlyOps} ops=${p.boardOps} />
-      <${FlyBand} bandId=${p.bandId} />
     </section>`;
+  const band = (p) => html`<${FlyBand} key=${p.playerId} bandId=${p.bandId} />`;
+  const spacer = () => html`<div class="team__fly-pool" aria-hidden="true"></div>`;
+  const groups = () => (pools && pools.length > 1
+    ? pools.map((pool) => html`<${Fragment} key=${pool.id ?? 'rest'}>${spacer()}${pool.players.map(row)}<//>`)
+    : players.map(row));
+  const bands = () => (pools && pools.length > 1
+    ? pools.map((pool) => html`<${Fragment} key=${pool.id ?? 'rest'}>${spacer()}${pool.players.map(band)}<//>`)
+    : players.map(band));
   return html`<div class=${cx('team__fly', open && 'is-open')}>
     <${BondsToggle} open=${open} onToggle=${onToggle} />
     ${open ? html`<div class="team__fly-window" id="team-bonds" role="region" aria-label=${t('盟约')}>
-      ${pools && pools.length > 1
-        ? pools.map((pool) => html`<${Fragment} key=${pool.id ?? 'rest'}>
-            <div class="team__fly-pool" aria-hidden="true"></div>
-            ${pool.players.map(row)}
-          <//>`)
-        : players.map(row)}
+      <div class="team__fly-scroll">${groups()}</div>
+      <div class="team__fly-bands">${bands()}</div>
     </div>` : null}
   </div>`;
 }
@@ -403,6 +424,11 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
       if (rosterEl.hidden) return;
       const top = rosterEl.getBoundingClientRect().top - panel.getBoundingClientRect().top;
       panel.style.setProperty('--fly-top', `${Math.max(0, Math.round(top))}px`);
+      // the window opens to the right of the roster: keep its right edge on screen (css max-width reads --fly-max),
+      // so a wide flyout can never run past the viewport and have its strategy column clipped by the screen edge
+      const win = panel.querySelector('.team__fly-window');
+      if (win) panel.style.setProperty('--fly-max', `${Math.max(160, Math.round(innerWidth - win.getBoundingClientRect().left - 8))}px`);
+      else panel.style.removeProperty('--fly-max');
       // the flyout takes the roster's own metrics: a list seat carries a 1px frame (46px, not the nominal 44) and a
       // 卡池 head is as tall as its line box (~26px, not the 24px minimum), so a fixed height would drift a little
       // lower down every row (owner request 2026-10-25: one line across is one and the same seat)
@@ -417,7 +443,7 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
     // one scrolling column and its scrollbar stays hidden, css). A wheel or a drag over the 盟约 flyout beside it moves
     // the roster too, and the two always hold the same offset, so a group never drifts off the row it belongs to. Touch
     // keeps the browser's own panning (`touch-action: pan-y`).
-    const scrollers = () => [rosterEl, panel.querySelector('.team__fly-window')].filter((el) => el && !el.hidden);
+    const scrollers = () => [rosterEl, panel.querySelector('.team__fly-scroll'), panel.querySelector('.team__fly-bands')].filter((el) => el && !el.hidden);
     const sync = () => {
       for (const el of scrollers()) if (el !== rosterEl) el.scrollTop = rosterEl.scrollTop;
     };
@@ -481,7 +507,7 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
     return () => {
       observer?.disconnect(); window.removeEventListener('resize', place);
       rosterEl.removeEventListener('scroll', sync);
-      for (const key of ['--fly-top', '--fly-row', '--fly-pool']) panel.style.removeProperty(key);
+      for (const key of ['--fly-top', '--fly-row', '--fly-pool', '--fly-max']) panel.style.removeProperty(key);
       for (const el of targets) {
         el.removeEventListener('wheel', onWheel);
         el.removeEventListener('pointerdown', onDown);

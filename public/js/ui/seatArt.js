@@ -103,6 +103,23 @@ export function lookOptions(m, charId, kind) {
 }
 
 /**
+ * 随机 for the 名片干员 picker: one operator and its first skin, the pick the 随机 tile applies before it closes.
+ * Operators with an official skin are preferred so the tile really lands on a skin; when none has one, any operator
+ * with its default art. `rand` is injectable for tests.
+ * @param {any} m @param {any[]} list cardOperators @param {() => number} [rand]
+ * @returns {{ charId: string, look: string }}
+ */
+export function randomCardPick(m, list, rand = Math.random) {
+  const pool = Array.isArray(list) ? list.filter((c) => c && typeof c.charId === 'string') : [];
+  if (!pool.length) return { charId: '', look: '' };
+  const withSkin = pool.filter((c) => lookOptions(m, c.charId, 'portrait').some((o) => o.skin));
+  const from = withSkin.length ? withSkin : pool;
+  const c = from[Math.min(from.length - 1, Math.floor(rand() * from.length))];
+  const first = lookOptions(m, c.charId, 'portrait').find((o) => o.skin) || null;
+  return { charId: c.charId, look: first ? first.id : '' };
+}
+
+/**
  * 头像: the official avatar of an operator (room.card avatar) in its look (avatarLook: '' its elite (E2) avatar when
  * the art has one, as the card operators' golden form; 'e1'; a skin); null when unknown.
  * @param {string} charId @param {any} [m] the art manifest @param {string} [look]

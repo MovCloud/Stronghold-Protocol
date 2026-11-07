@@ -12,9 +12,11 @@ const obj = (v) => (v && typeof v === 'object' ? v : null);
 function skinPicture(m, chess, skinId, field) {
   if (!skinId) return null;
   const id = chess?.charId || str(chess?.assets?.[field])?.replace(/_[12]$/, '');
-  const skin = m?.chars?.[id]?.skins?.[skinId];
+  // appearanceEntry also resolves the manifest's top-level official-outfit catalogue (the 服装 row / namecards)
+  const skin = appearanceEntry(m, id, skinId);
   const elite = chess?.isGolden || /_2$/.test(chess?.assets?.[field] || '');
-  return str(elite && skin?.[`${field}E2`]) || str(skin?.[field]) || (field === 'portrait' ? str(skin?.illust) : null);
+  return str(elite && skin?.[`${field}E2`]) || str(skin?.[field])
+    || (field === 'portrait' ? str(skin?.illust) || str(skin?.illustration) : null);
 }
 
 /** @param {any} m manifest @param {string} key 'group/key' */

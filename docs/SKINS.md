@@ -1,11 +1,13 @@
 # 干员皮肤 (Operator skins)
 
-> **This fork (Stardust, 2026-10-18):** the game does not wear these plugin skins. Its 干员外观 are the built-in
-> catalogue (`shared/skins.js`, `room.skins { choices }`, `UnitInfo.skinId`; see [OPERATOR-SKINS.md](OPERATOR-SKINS.md)),
-> and the plugin path below — `room.skins { skins }`, `Match.publicView().players[].skins`, `UnitInfo.skin`, the 皮肤
-> section of `ui/skinPicker.js` — is not wired in. Upstream's helpers stay for the plugin studio and Forge import
-> (`public/js/ui/skins.js`, shared/protocol.js `isSkinSelection` …). 设置「显示其他玩家的皮肤」 was ported onto the
-> catalogue skins (render/app.js `skinOf` reads `UnitInfo.skinId`).
+> **This fork (2026-11-07):** two catalogues write ONE appearance selection. The plugin overlay
+> (`chars[charId].skins`, the 外观 section of `ui/skinPicker.js`) and the manifest's top-level official-outfit catalogue
+> (`m.skins`, the 服装 row, `ui/skinPicker.js OutfitSection`) are both stored as `sp.pref.skins { [charId]: skinId }` and
+> mirrored as `room.skins { skins }` → `Match.publicView().players[].skins` and each unit's `skin`. `assets.js`
+> (`spineEntry` / `avatarUrl` / `portraitUrl` / `illustUrl` / `hasBackSpine`, `officialSkin`) and `ui/skinAssets.js`
+> `appearanceEntry` resolve both, and never let an outfit id cross operators. `shared/skins.js`
+> (`shared/skin-catalogue.js`) is the server-side whitelist of the same official ids (`room.skins` is validated against
+> it). 设置「显示其他玩家的皮肤」 reads the per-unit `skin`.
 
 An operator's Spine model and its pictures can be replaced by one of its official alternative outfits (时装). This
 document is the normative reference for that feature; the art itself is **never** downloaded or written by the server —

@@ -59,7 +59,7 @@ import { loadoutStore, openLoadout, closeLoadout, setEntries, setOpsMap, setNotO
 import { serializeOperatorPreset, parseOperatorPreset, OPERATOR_PRESET_MAX_BYTES } from '../ui/operatorPresetModel.js';
 // 皮肤 (docs/SKINS.md): a self-contained section — everything it does lives in ui/skinPicker.js, so this screen keeps
 // one import and one line in its detail body
-import { SkinSection } from '../ui/skinPicker.js';
+import { SkinSection, OutfitSection } from '../ui/skinPicker.js';
 import { ownAppearance } from '../ui/skinAssets.js';
 import { skinsStore } from '../ui/skins.js';
 import { OperatorVoice } from '../ui/operatorVoice.js';
@@ -261,6 +261,7 @@ function Detail({ m, chess, golden, entries, ops = {}, onChange, onOps, onReset,
     <div class="lo-detail__body" ref=${bodyRef}>
       <${OperatorVoice} charId=${chess.assets?.voice || chess.charId} />
       <${SkinSection} m=${m} charId=${chess.charId} record=${golden || chess} choices=${skins} sync=${skinSync} onChange=${setSkins} locked=${locked} />
+      <${OutfitSection} m=${m} charId=${chess.charId} record=${golden || chess} choices=${skins} onChange=${setSkins} locked=${locked} />
       <${CultivationSection} charId=${chess.charId} ops=${ops} onSet=${onOps} standIn=${notOwned} />
       <${LoadoutGarrisons} chess=${level === 'elite' && golden ? golden : chess} m=${m} />
       <${SkillSection} m=${m} chess=${chess} golden=${golden} skillOptions=${opt.skillOptions} skill=${choice.skill} level=${level}

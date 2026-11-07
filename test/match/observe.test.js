@@ -13,6 +13,8 @@ test('observeTarget: prep, own battle running / over, boss pairs, eliminated pla
   const players = [P('a', 0), P('b', 1), P('c', 2, { alive: false })];
   assert.equal(isClientCombat(pubOf('PREP', [], players)), true);
   assert.deepEqual(observeTarget(players[1], pubOf('PREP', [], players), 'a'), { fieldId: 'n:b' });
+  // 2v2: an opponent is a hidden stub — the row keeps its seat's field id (locked) but no watch may open it
+  assert.deepEqual(observeTarget({ ...players[1], hidden: true }, pubOf('PREP', [], players), 'a'), { fieldId: 'n:b', locked: true });
   assert.match(observeTarget(players[2], pubOf('PREP', [], players), 'a').reason, /淘汰/);
   const combat = (liveA) => pubOf('COMBAT', [
     { fieldId: 'n:a', kind: 'normal', players: ['a'], live: liveA },

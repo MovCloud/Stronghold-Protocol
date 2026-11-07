@@ -587,6 +587,7 @@ export const ERR = Object.freeze({
   BOARD_FULL: 'BOARD_FULL',
   BAD_TILE: 'BAD_TILE',
   BAD_TARGET: 'BAD_TARGET',
+  OPPONENT_HIDDEN: 'OPPONENT_HIDDEN', // 2v2: the opponent is not revealed yet, so its field/board cannot be watched
   SOLD_OUT: 'SOLD_OUT',
   MAX_LEVEL: 'MAX_LEVEL',
   NOT_YOUR_TURN: 'NOT_YOUR_TURN',
@@ -659,7 +660,7 @@ export const ERR_TEXT = {
   ASSET_CACHE_REQUIRED: N_('服主要求完整预缓存，请先在「预缓存」中导入当前素材目录并补齐全部文件，再创建、加入、最快匹配或观战。'),
   SERVER_EMERGENCY: N_('服务器带宽紧急保护已开启，请等待恢复'),
   WRONG_PHASE: N_('当前阶段无法进行该操作'), NO_FUNDS: N_('资金不足'), HAND_FULL: N_('整备区已满'), BOARD_FULL: N_('已达到部署上限'),
-  BAD_TILE: N_('无法部署在该位置'), BAD_TARGET: N_('无效的目标'), SOLD_OUT: N_('已售出'), MAX_LEVEL: N_('调度中心已达最高等级'),
+  BAD_TILE: N_('无法部署在该位置'), BAD_TARGET: N_('无效的目标'), OPPONENT_HIDDEN: N_('你不能查看对手的信息'), SOLD_OUT: N_('已售出'), MAX_LEVEL: N_('调度中心已达最高等级'),
   NOT_YOUR_TURN: N_('尚未轮到你'), ALREADY: N_('已完成该操作'), TEMP_NOT_EMPTY: N_('临时整备区不为空'), ELIMINATED: N_('你已被淘汰'),
   SPECTATOR: N_('观战中无法进行该操作'), START_RETRY: N_('有玩家连接未就绪，请重试'), INTERNAL: N_('服务器内部错误'),
   CONFRONT_BUDGET: N_('投放的怪物总价值超出本回合预算'), CONFRONT_COUNT: N_('投放数量超出本回合上限'),

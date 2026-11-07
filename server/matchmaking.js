@@ -60,10 +60,12 @@ export class Matchmaking {
   has(session) { return this.entries.has(session.playerId); }
   get size() { return this.entries.size; }
   partyState(party) {
-    return { partyId: party.id, partySize: party.entries.length, partyLeaderId: party.leaderId, partyRoomCode: party.roomCode };
+    return { partyId: party.id, partySize: party.entries.length, partyLeaderId: party.leaderId, partyRoomCode: party.roomCode, mode: party.mode };
   }
 
-  poolKey(e) { return `${e.version}:${e.difficulty}:${e.party.required}`; }
+  // mode is part of the pool: a 2-person versus party must never pair with a 2-person coop party (the latter is a
+  // partial four-player co-op group, the former is one complete 2V2 side).
+  poolKey(e) { return `${e.version}:${e.party.mode}:${e.difficulty}:${e.party.required}`; }
 
   /** Read-only population: no sweep, offer creation, deadline or party mutation. */
   waitingPopulation() {
@@ -166,8 +168,11 @@ export class Matchmaking {
     let experimental = null;
     try { if (group.roomCode) experimental = experimentalOptions(group.experimental ?? EXPERIMENTAL_DEFAULTS); }
     catch { return fail(ERR.BAD_MSG, 'invalid party experimental options'); }
-    // Room inspection owns the mode; lobby solos remain in the ordinary four-player pool.
-    const required = roomCapacity('coop', experimental);
+    // Room inspection owns the mode; lobby solos remain in the ordinary four-player co-op pool. A versus room queues
+    // as one complete side (one team full, the other empty, validated by the lobby) with the full 4-seat requirement,
+    // so two such parties allocate one 2V2 room.
+    const mode = group.mode === 'versus' ? 'versus' : 'coop';
+    const required = roomCapacity(mode, experimental);
     const sessions = group.sessions;
     if (!Array.isArray(sessions) || sessions.length < 1 || sessions.length > required
       || sessions.some(member => !member || typeof member.playerId !== 'string')
@@ -189,7 +194,7 @@ export class Matchmaking {
     }
     const now = this.now();
     const unit = { id: id(), roomCode: group.roomCode || null, leaderId: group.leaderId || session.playerId,
-      experimental, required, sequence: ++this.sequence, entries: [] };
+      experimental, mode, required, sequence: ++this.sequence, entries: [] };
     unit.entries = sessions.map((member) => ({
       session: member, key: member.limitKey, ticketId: id(), difficulty, version: member.matchmakingVersion, party: unit,
       joinedAt: now, expiresAt: now + this.opts.waitMs, sequence: unit.sequence, offerId: null, accepted: false, revivalVote: null,
@@ -278,7 +283,7 @@ export class Matchmaking {
   prepareAllocation(offer) {
     if (offer.allocation || this.offers.get(offer.id) !== offer || this.closed) return;
     const allocation = {
-      controller: new AbortController(), offerId: offer.id, experimental: offer.experimental, required: offer.required,
+      controller: new AbortController(), offerId: offer.id, experimental: offer.experimental, mode: offer.mode, required: offer.required,
       cancelled: false, cleaned: false, completed: false, result: null,
       entries: offer.entries.map((entry) => ({ entry, session: entry.session, playerId: entry.session.playerId,
         ticketId: entry.ticketId, version: entry.version, party: entry.party, difficulty: entry.difficulty,
@@ -305,8 +310,8 @@ export class Matchmaking {
       if (this.closed || allocation.cancelled || allocation.controller.signal.aborted || offer.allocation !== allocation
         || this.offers.get(allocation.offerId) !== offer || offer.id !== allocation.offerId
         || offer.entries.length !== allocation.entries.length || offer.experimental !== allocation.experimental
-        || offer.required !== allocation.required || offer.entries.length !== offer.required
-        || roomCapacity('coop', offer.experimental) !== offer.required) return false;
+        || offer.mode !== allocation.mode || offer.required !== allocation.required || offer.entries.length !== offer.required
+        || roomCapacity(offer.mode, offer.experimental) !== offer.required) return false;
       const now = this.now();
       if (offer.deadline !== allocation.deadline || now >= allocation.deadline) return false;
       return allocation.entries.every((saved, index) => {
@@ -492,7 +497,7 @@ export class Matchmaking {
         const parties = [leader, ...rest];
         const entries = parties.flatMap((party) => party.entries);
         const experimental = parties.find(party => party.experimental)?.experimental ?? EXPERIMENTAL_DEFAULTS;
-        const offer = { id: id(), experimental, required: leader.required,
+        const offer = { id: id(), experimental, mode: leader.mode, required: leader.required,
           deadline: Math.min(this.now() + this.opts.acceptMs, ...entries.map((e) => e.expiresAt)), entries };
         this.offers.set(offer.id, offer);
         for (const party of parties) unused.delete(party);

@@ -69,7 +69,7 @@ The destination room's normal code retains its existing post-match lobby behavio
 observer-role and remote-owner fences remain authoritative.
 
 Fork queue feedback candidate (2026-10-11): `queue.state` may include optional `waitingCount` only in
-`queued` state. It counts valid waiting session identities in the ticket-frozen matchmaking version/difficulty/
+`queued` state. It counts valid waiting session identities in the ticket-frozen matchmaking version/mode/difficulty/
 required-capacity bucket, including the requesting party. Offered/allocation/matched identities are excluded.
 It is not natural-person deduplication, compatible-party population, a filled-seat progress bar or ETA; the
 count can exceed the target size. Count-only complete snapshots are coalesced/change-only around one second;

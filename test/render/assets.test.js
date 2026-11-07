@@ -8,8 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markPackInstalled, onPackInstalled, resetPackState } from '../../public/js/resourcePacks.js';
 import {
-  avatarUrl, portraitUrl, enemyIconUrl, tokenAvatarUrl, bondIconUrl, bandIconUrl, itemIconUrl, skillIconUrl, uiUrl,
-  profIconUrl, subProfIconUrl, spineEntry, hasBackSpine, unitPictureUrl, bgmEntry, sfxUrl, unitSfxUrl, baseCharId,
+  avatarUrl, portraitUrl, illustUrl, enemyIconUrl, tokenAvatarUrl, bondIconUrl, bandIconUrl, itemIconUrl, skillIconUrl, uiUrl,
+  profIconUrl, subProfIconUrl, spineEntry, hasBackSpine, unitPictureUrl, officialSkin, bgmEntry, sfxUrl, unitSfxUrl, baseCharId,
   validSpine, RefLru, createAssets, unloadSpineData, spinePages, spineDataWeight, SPINE_WEIGHT_MIN, SPINE_IDLE_BYTES,
   SPINE_IDLE_GRACE_MS, SPINE_EVICT_DELAY_MS, SPINE_QUIET_DELAY_MS,
 } from '../../public/js/assets.js';
@@ -694,5 +694,52 @@ describe('spine unload frees the atlas page images too', () => {
       pending.shift()();
       assert.equal((await p2).from, e.skel);
     } finally { f.restore(); }
+  });
+});
+
+// ---- official outfits (the manifest's top-level `skins`, the 服装 row) ------------------------------------------
+
+const OUTFIT = (charId, extra = {}) => ({
+  charId, name: '官方时装', avatar: '/of/av.png', portrait: '/of/pt.png', illustration: '/of/il.png',
+  spine: { front: SP('of_f'), back: SP('of_b') }, ...extra,
+});
+const OM = {
+  chars: {
+    char_103_angel: { avatar: '/a/angel.png', avatarE2: '/a/angel_2.png', portrait: '/p/angel_1.png', portraitE2: '/p/angel_2.png', illust: '/i/angel.png', spine: { front: SP('angel_f'), back: SP('angel_b') } },
+    char_003_kalts: { avatar: '/a/kalts.png', portrait: '/p/kalts.png', spine: { front: SP('kalts_f'), back: SP('kalts_b') } },
+  },
+  skins: {
+    char_103_angel_wild_1: OUTFIT('char_103_angel'),
+    char_103_angel_front_only: OUTFIT('char_103_angel', { spine: { front: SP('fo_f') } }),
+    char_003_kalts_off: OUTFIT('char_003_kalts'),
+  },
+};
+
+describe('official outfits: the manifest top-level `skins` catalogue', () => {
+  test('only the owning operator may wear an outfit (a SKIN id is never put through baseCharId)', () => {
+    assert.equal(officialSkin(OM, 'char_103_angel', 'char_103_angel_wild_1')?.name, '官方时装');
+    assert.equal(officialSkin(OM, 'char_003_kalts', 'char_103_angel_wild_1'), null);
+    assert.equal(officialSkin(OM, 'char_103_angel', 'char_003_kalts_off'), null);
+    assert.equal(officialSkin(OM, 'char_103_angel', 'char_103_angel_wild_9'), null);
+    assert.equal(officialSkin(null, 'char_103_angel', 'char_103_angel_wild_1'), null);
+  });
+
+  test('pictures: avatar / portrait / illustration, and the outfit replaces E2 too', () => {
+    assert.equal(avatarUrl(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1' }), '/of/av.png');
+    assert.equal(avatarUrl(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1', e2: true }), '/of/av.png');
+    assert.equal(avatarUrl(OM, 'char_103_angel_2', { skin: 'char_103_angel_wild_1' }), '/of/av.png', 'chess `_2` id selects the same operator');
+    assert.equal(portraitUrl(OM, 'char_103_angel_2', { skin: 'char_103_angel_wild_1' }), '/of/pt.png');
+    assert.equal(illustUrl(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1' }), '/of/il.png');
+    assert.equal(unitPictureUrl(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1' }), '/of/av.png');
+    assert.equal(unitPictureUrl(OM, 'char_003_kalts', { skin: 'char_103_angel_wild_1' }), '/a/kalts.png', 'a foreign outfit is never worn');
+  });
+
+  test('battle model: its own Front/Back; a missing Back stays Front (never the operator\'s)', () => {
+    assert.equal(spineEntry(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1' }).skel, '/assets/spine/of_f.skel');
+    assert.equal(spineEntry(OM, 'char_103_angel', { skin: 'char_103_angel_wild_1', back: true }).skel, '/assets/spine/of_b.skel');
+    assert.equal(spineEntry(OM, 'char_103_angel', { skin: 'char_103_angel_front_only', back: true }).skel, '/assets/spine/fo_f.skel');
+    assert.equal(hasBackSpine(OM, 'char_103_angel', 'char_103_angel_wild_1'), true);
+    assert.equal(hasBackSpine(OM, 'char_103_angel', 'char_103_angel_front_only'), false);
+    assert.equal(hasBackSpine(OM, 'char_003_kalts', 'char_103_angel_wild_1'), true, 'a foreign id falls back to the operator\'s own model');
   });
 });

@@ -83,7 +83,7 @@ export class MatchWatch {
       // hand and coming wave) must never be visible before the Final Assault. From R14 on (`Match#opponentRevealed`)
       // it opens; a spectator seat (no team) scouts anyone from the start.
       if (this.isVersus && !this.isSpectator(ps) && !this.opponentRevealed
-        && this.teamIdOf(target) !== this.teamIdOf(ps)) return fail(ERR.BAD_TARGET, 'opponent hidden');
+        && this.teamIdOf(target) !== this.teamIdOf(ps)) return fail(ERR.OPPONENT_HIDDEN, 'opponent hidden');
       this.watchers.set(ps.playerId, fieldId);
       if (target !== ps) this.watchPref.set(ps.playerId, target.playerId);
       this._notifyPrepScouts(target, { to: ps.playerId });

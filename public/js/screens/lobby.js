@@ -55,7 +55,7 @@ import { ARCADE_CARD, openArcade } from './arcade.js';
 import { html, Fragment, confirmDialog, Button, Icon, MicroLabel, Modal, Spinner, DifficultyIcon, TextField, AvatarFrame, doctorNo, Tooltip } from '../ui/components.js';
 import { Sprite, Img } from '../ui/gameComponents.js';
 import { uiUrl, chessPortraitUrl } from '../ui/assetUrls.js';
-import { cardOperators, cardContext, cardAvatarUrl, lookOptions, lookUrl, seatOperator, seatCardSkin } from '../ui/seatArt.js';
+import { cardOperators, cardContext, cardAvatarUrl, lookOptions, lookUrl, randomCardPick, seatOperator, seatCardSkin } from '../ui/seatArt.js';
 import { useMyCard, setCardOperator, setCardAvatar, setCardBackground, setCardLook, setAvatarLook } from '../ui/playerCard.js';
 import { CardOperatorPicker, AvatarPicker } from '../ui/opPicker.js';
 import { NameCardPicker, NameCardLayer, namecardOf } from '../ui/namecards.js';
@@ -766,7 +766,7 @@ function ProfileDialog({ onClose, queued }) {
         <div class="prof__rows">
           ${row(t('博士代号'), draft.name || t('博士'), { onClick: () => setRenaming(true), aria: t('修改博士代号'), test: 'profile-rename' })}
           ${row(t('头像'), draft.avatar ? t('已选择') : t('默认'), { onClick: () => setPicking('avatar'), aria: t('更换头像'), test: 'profile-avatar' })}
-          ${row(t('名片干员'), op ? op.name : t('默认'), { onClick: () => setPicking('op'), aria: t('更换名片干员'), test: 'profile-op' })}
+          ${row(t('名片干员'), op ? op.name : t('随机'), { onClick: () => setPicking('op'), aria: t('更换名片干员'), test: 'profile-op' })}
           ${row(t('名片底图'), nc ? t(nc.name) : t('不使用底图'), { onClick: () => setPicking('bg'), aria: t('更换底图'), test: 'profile-bg' })}
         </div>
         <p class="prof__note"><${Icon} name="info" />${t('同盟里的博士都会看到这张名片；只保存在这台设备的浏览器里')}</p>
@@ -774,7 +774,17 @@ function ProfileDialog({ onClose, queued }) {
     </div>
     ${picking === 'op' ? html`<${CardOperatorPicker} current=${draft.charId} list=${list} m=${m} localSkins=${localSkins}
       looks=${{ kind: 'portrait', current: draft.look, onLook: (look) => pick({ look }) }}
-      onPick=${(id) => { pick({ charId: id, look: '' }); setPicking(null); }} onClose=${() => setPicking(null)} />` : null}
+      onPick=${(id) => {
+        if (!id) {
+          // 随机: one operator and its first official skin, then close (the 随机 tile is an action, not a "none" choice)
+          const picked = randomCardPick(m, list);
+          pick({ charId: picked.charId, look: picked.look });
+          setPicking(null);
+          return;
+        }
+        // a named operator keeps the picker open: its 外观 row now shows the skins that operator has
+        pick({ charId: id, look: '' });
+      }} onClose=${() => setPicking(null)} />` : null}
     ${picking === 'avatar' ? html`<${AvatarPicker} current=${draft.avatar} list=${list} m=${m}
       looks=${{ kind: 'avatar', current: draft.avatarLook, onLook: (look) => pick({ avatarLook: look }) }}
       onPick=${(id) => { pick({ avatar: id, avatarLook: '' }); if (!id || lookOptions(m, id, 'avatar').length < 2) setPicking(null); }} onClose=${() => setPicking(null)} />` : null}

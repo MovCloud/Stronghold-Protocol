@@ -396,8 +396,28 @@ describe('§20.15 the strip and the popup say whose bonds they show', () => {
     assert.ok(!hasClass(rows[1], 'is-self'));
     assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'BondStrip').length, 1, 'the discs sit directly beside the avatar');
     assert.ok(![...walk(open)].some((x) => hasClass(x, 'team__fly-name')), 'no name column between the avatar and its discs');
+    // user report 2026-11-07 (the draft strategy icon cut at the flyout's right edge): the strategy column stands
+    // beside the horizontally scrolling part, never inside it, so a long operator list cannot scroll it out of view
+    const win = [...walk(open)].find((x) => hasClass(x, 'team__fly-window'));
+    const scroll = [...walk(open)].find((x) => hasClass(x, 'team__fly-scroll'));
+    const bandsCol = [...walk(open)].find((x) => hasClass(x, 'team__fly-bands'));
+    assert.ok(win && scroll && bandsCol, 'the window splits into a scroller and a strategy column');
+    assert.ok([...walk(win)].includes(scroll) && [...walk(win)].includes(bandsCol), 'both live in the window');
+    assert.ok(![...walk(scroll)].some((x) => x.type?.name === 'FlyBand'), 'the strategy icons stay outside the scroller');
+    assert.equal([...walk(scroll)].filter((x) => x.type?.name === 'FlyOps').length, players.length, 'one ops cell per seat in the scroller');
+    assert.equal([...walk(bandsCol)].filter((x) => x.type?.name === 'FlyBand').length, players.length, 'one strategy cell per seat in the column');
     strips[1].props.onOpen('sargonShip');
     assert.deepEqual(calls, [['sargonShip', 'p2']], 'a disc opens that player\'s bond popup');
+  });
+
+  test('2v2: an opponent\'s flyout row shows no bonds at all — not 「尚未激活盟约」 (user request 2026-11-07)', () => {
+    const players = PUB().players.map((p) => (p.playerId === 'p3' ? { ...p, hidden: true } : p));
+    const open = BondsFlyout({ players, myId: ME, open: true, onToggle() {} });
+    const rows = [...walk(open)].filter((x) => hasClass(x, 'team__fly-row'));
+    assert.equal(rows.length, players.length, 'the row stays (the columns beside it must stay aligned)');
+    assert.equal([...walk(rows[2])].filter((x) => x.type?.name === 'BondStrip').length, 0, 'no strip for a hidden opponent');
+    assert.doesNotMatch(textOf(rows[2]), /尚未激活盟约/);
+    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'BondStrip').length, 1, 'a visible teammate still shows theirs');
   });
 
   test('the popup of a teammate\'s bond: "👁 name 的盟约", their count / layers, members from their board', () => {

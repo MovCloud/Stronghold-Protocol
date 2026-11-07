@@ -15,7 +15,8 @@ import assert from 'node:assert/strict';
 
 import { data } from '../../public/js/data.js';
 import { skinsStore, setSkin, clearSkin, setSkins, availableSkins, hasAnySkinChoices, hasSkinChoices, chosenSkin, parseStoredSkins } from '../../public/js/ui/skins.js';
-import { SkinPreview } from '../../public/js/ui/skinPicker.js';
+import { SkinPreview, outfitRows, outfitPick } from '../../public/js/ui/skinPicker.js';
+import { appearanceEntry } from '../../public/js/ui/skinAssets.js';
 
 const OPERATOR = 'char_498_inside';
 const OTHER = 'char_003_kalts';
@@ -204,5 +205,62 @@ describe('皮肤 picker: the enlarged preview', () => {
 
   test('no art at all renders nothing (a skin with no illustration uses the tile art, so this is the empty case)', () => {
     assert.equal(SkinPreview({ art: null }), null);
+  });
+});
+
+describe('服装: the top-level official-outfit catalogue is a choice', () => {
+  const MANIFEST = {
+    chars: {
+      char_103_angel: { avatar: '/a/angel.png', portrait: '/p/angel.png', portraitE2: '/p/angel_2.png', avatarE2: '/a/angel_2.png', spine: { front: {} } },
+      char_003_kalts: { avatar: '/a/kalts.png', portrait: '/p/kalts.png' },
+    },
+    skins: {
+      char_103_angel_wild_1: { charId: 'char_103_angel', name: '安洁莉娜-野性', portrait: '/of/1.png', illustration: '/of/1i.png' },
+      char_103_angel_wild_2: { charId: 'char_103_angel', name: '安洁莉娜-夏卉', avatar: '/of/2.png' },
+      char_003_kalts_off: { charId: 'char_003_kalts', name: '凯尔希-时装', portrait: '/of/k.png' },
+    },
+  };
+
+  test('rows = 默认外观 + only this operator\'s outfits (portrait → illustration → avatar)', () => {
+    const rows = outfitRows(MANIFEST, 'char_103_angel', { charId: 'char_103_angel' });
+    assert.deepEqual(rows.map((r) => r.name), ['默认外观', '安洁莉娜-野性', '安洁莉娜-夏卉']);
+    assert.equal(rows[0].id, null);
+    assert.equal(rows[0].art, '/p/angel.png');
+    assert.equal(rows[1].art, '/of/1.png');
+    assert.equal(rows[2].art, '/of/2.png', 'no portrait ⇒ avatar');
+    assert.equal(rows[0].fallbackArt, null, 'the 默认 tile is already the operator\'s own art');
+    assert.equal(rows[1].fallbackArt, '/assets/char/skin_avatar/char_103_angel_wild_1.png', 'a deployed avatar copy backs the full art');
+    assert.equal(outfitRows(MANIFEST, 'char_103_angel', null).length, 3, 'the 默认 art still resolves without a chess record');
+    assert.equal(outfitRows(MANIFEST, 'char_999_none', null).length, 0, 'no outfit ⇒ no section');
+    assert.equal(outfitRows({ skins: [] }, 'char_103_angel', null).length, 0, 'a non-record catalogue is ignored');
+  });
+
+  test('outfitPick writes and removes the SAME { [charId]: skinId } map as 外观', () => {
+    assert.deepEqual(outfitPick({}, 'char_103_angel', 'char_103_angel_wild_1'), { char_103_angel: 'char_103_angel_wild_1' });
+    assert.deepEqual(outfitPick({ char_003_kalts: 'x' }, 'char_103_angel', 'char_103_angel_wild_1'), { char_003_kalts: 'x', char_103_angel: 'char_103_angel_wild_1' });
+    assert.deepEqual(outfitPick({ char_003_kalts: 'x', char_103_angel: 'y' }, 'char_103_angel', null), { char_003_kalts: 'x' });
+    assert.deepEqual(outfitPick(null, 'char_103_angel', null), {});
+  });
+
+  test('appearanceEntry resolves both catalogues, and never an outfit of another operator', () => {
+    assert.equal(appearanceEntry(MANIFEST, 'char_103_angel', 'char_103_angel_wild_1').name, '安洁莉娜-野性');
+    assert.equal(appearanceEntry(MANIFEST, 'char_003_kalts', 'char_103_angel_wild_1'), null);
+    assert.equal(appearanceEntry(MANIFEST, 'char_103_angel', 'char_003_kalts_off'), null);
+    assert.equal(appearanceEntry({ chars: { char_103_angel: { skins: { x: { name: 'plugin' } } } } }, 'char_103_angel', 'x').name, 'plugin');
+    assert.equal(appearanceEntry({ skins: [] }, 'char_103_angel', 'x'), null);
+  });
+
+  test('the 服装 row is a radio group wired to the one appearance store (source; the module is hook-driven)', () => {
+    assert.match(PICKER_SRC, /role="radiogroup"/);
+    assert.match(PICKER_SRC, /role="radio" aria-checked=/);
+    assert.match(PICKER_SRC, /onChange\?\.\(outfitPick\(choices, charId, id\)\)/);
+    assert.match(PICKER_SRC, /const on = s\.id \? chosen === s\.id : !chosen && !picked;/);
+  });
+
+  test('a tile whose art cannot load falls back to the avatar copy, then says 素材未安装 and is disabled', () => {
+    assert.match(PICKER_SRC, /if \(fallbackArt && src !== fallbackArt\) \{ setSrc\(fallbackArt\); return; \}/, 'one retry on the deployed avatar copy');
+    assert.match(PICKER_SRC, /t\('素材未安装'\)/, 'the missing copy is named, not a blank stripe');
+    assert.match(PICKER_SRC, /disabled=\$\{missing\}/, 'an outfit without a picture is not selectable');
+    assert.match(PICKER_SRC, /onClick=\$\{missing \? null : onPick\}/, 'and its click does nothing');
   });
 });

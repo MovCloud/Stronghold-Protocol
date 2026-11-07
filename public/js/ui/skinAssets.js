@@ -6,14 +6,21 @@
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const str = (v) => (typeof v === 'string' && v ? v : null);
 
-/** The appearance record of `charId` under `skin`, or null — `chars[charId].skins[skin]`. */
+/**
+ * The appearance record of `charId` under `skin`, or null — `chars[charId].skins[skin]`, else the manifest's top-level
+ * official-outfit catalogue (`skins[skin]`, only when its `charId` is this operator's). Both shapes name the same things
+ * (`avatar`, `portrait`, `illust`/`illustration`, `spine: { front, back? }`), so every caller may use either.
+ */
 export function appearanceEntry(manifest, charId, skin) {
   const id = str(charId), key = str(skin);
   if (!id || !key) return null;
   const chars = isObj(manifest) && isObj(manifest.chars) ? manifest.chars : null;
   const rec = chars && isObj(chars[id]) ? chars[id] : null;
   const skins = rec && isObj(rec.skins) ? rec.skins : null;
-  return skins && isObj(skins[key]) ? skins[key] : null;
+  if (skins && isObj(skins[key])) return skins[key];
+  const top = isObj(manifest) && isObj(manifest.skins) ? manifest.skins[key] : null;
+  const base = id.replace(/_[12]$/, '');
+  return isObj(top) && str(top.charId) === base ? top : null;
 }
 
 /** A chess record wearing this appearance: `{ ...record, skin }` when a skin is chosen, else the record itself. */

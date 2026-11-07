@@ -102,7 +102,8 @@ export function avatarUrl(m, id, opts) {
   if (rec) {
     // the skin is looked up on the OPERATOR's record, whatever form the id named (a `_2` art id resolves to the same one)
     const wanted = wantedSkin(opts);
-    const skin = wanted ? get(get(rec, 'skins'), wanted) : null;
+    // the plugin-written appearance of the operator first, then the manifest's top-level official outfit
+    const skin = wanted ? (get(get(rec, 'skins'), wanted) || officialSkin(m, baseCharId(s), wanted)) : null;
     if (skin) {
       const art = str(e2 && skin.avatarE2) || str(skin.avatar);
       if (art) return art;
@@ -123,9 +124,10 @@ export function portraitUrl(m, id, opts) {
   }
   if (!rec) return null;
   const wanted = wantedSkin(opts);
-  const skin = wanted ? get(get(rec, 'skins'), wanted) : null;
+  const skin = wanted ? (get(get(rec, 'skins'), wanted) || officialSkin(m, baseCharId(s), wanted)) : null;
   if (skin) {
-    const art = str(e2 && skin.portraitE2) || str(skin.portrait) || str(skin.illust);
+    // official outfits name their full art `illustration` (the catalogue has no E2 slots — the outfit replaces E2 too)
+    const art = str(e2 && skin.portraitE2) || str(skin.portrait) || str(skin.illust) || str(skin.illustration);
     if (art) return art;
   }
   return str(e2 && rec.portraitE2) || str(rec.portrait) || null;
@@ -141,8 +143,8 @@ export function illustUrl(m, id, opts) {
   const rec = get(get(m, 'chars'), s) || get(get(m, 'chars'), baseCharId(s));
   if (!rec) return null;
   const wanted = wantedSkin(opts);
-  const skin = wanted ? get(get(rec, 'skins'), wanted) : null;
-  return (skin && str(skin.illust)) || str(rec.illust) || null;
+  const skin = wanted ? (get(get(rec, 'skins'), wanted) || officialSkin(m, baseCharId(s), wanted)) : null;
+  return (skin && (str(skin.illust) || str(skin.illustration))) || str(rec.illust) || null;
 }
 
 export function enemyIconUrl(m, enemyId) {
@@ -178,6 +180,25 @@ export const EMPTY_SKINS = Object.freeze({});
 export function skinsOf(m, charId) {
   const rec = get(get(m, 'chars'), str(charId) || '');
   return rec && isObj(rec.skins) ? rec.skins : EMPTY_SKINS;
+}
+
+/**
+ * An OFFICIAL outfit of `charId`: the manifest's top-level `skins[skinId]` — the 276-outfit catalogue the 服装 row
+ * (ui/skinPicker.js `OutfitSection`) and the namecard look row (ui/seatArt.js `lookOptions`) show. The record carries
+ * `charId`, `name`, `brand`, `avatar`, `portrait`, `illustration` and a Spine `{ front, back? }`, so it is worn exactly
+ * like a `chars[charId].skins` record. Only the outfit's own operator may wear it: an id that belongs to another
+ * operator returns null. The SKIN id is never put through `baseCharId` — 79 catalogue ids themselves end in `_1`/`_2`;
+ * only the operator id may carry the chess `_2` suffix.
+ * @param {any} m manifest
+ * @param {string} charId operator id (base form is accepted)
+ * @param {string} skinId top-level `skins` key
+ * @returns {object|null}
+ */
+export function officialSkin(m, charId, skinId) {
+  const key = str(skinId), id = str(charId);
+  if (!key || !id) return null;
+  const skin = get(get(m, 'skins'), key);
+  return isObj(skin) && str(skin.charId) === id ? skin : null;
 }
 
 /** Whether a skin record names a Spine model (picture-only outfits are wearable too) (docs/SKINS.md). */
@@ -249,7 +270,8 @@ export function spineEntry(m, id, opts) {
   if (ch) {
     const wanted = wantedSkin(opts);
     if (wanted) {
-      const skin = get(get(ch, 'skins'), wanted);
+      // a plugin-written skin, else the top-level official outfit (whose record also carries `spine.front`)
+      const skin = get(get(ch, 'skins'), wanted) || officialSkin(m, baseCharId(s), wanted);
       // B6 / §35.4 [ASSUMED]: an unfinished spine map with no Front uses the complete default body.
       if (skinHasModel(skin)) {
         const sp = (opts && opts.back && isObj(skin.spine.back)) ? skin.spine.back : skin.spine.front;
@@ -314,7 +336,7 @@ export function hasBackSpine(m, id, skinId) {
   const ch = get(get(m, 'chars'), str(id) || '') || get(get(m, 'chars'), baseCharId(id) || '');
   if (!ch) return false;
   const key = typeof skinId === 'string' ? str(skinId) : wantedSkin(skinId);
-  const skin = key ? get(get(ch, 'skins'), key) : null;
+  const skin = key ? (get(get(ch, 'skins'), key) || officialSkin(m, baseCharId(id), key)) : null;
   const src = skinHasModel(skin) ? skin.spine : ch.spine;
   return !!(isObj(src) && validSpine(src.back));
 }
