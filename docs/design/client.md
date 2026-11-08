@@ -559,8 +559,10 @@ design size, a CSS marker (NO. and the numeral, no slogan of our own) its fallba
 draws this sprite (its name and look; activity_table `shopLevelDisplayDataDict` confirms one group per shop level).
 While the match's loadout is locked the bottom bar carries a 「本局已锁定 · 下一局生效」 chip — the top bar's note is cut
 short or hidden on narrow screens and gives way to the hints in 快速配置. The bar holds the tier at the deck's left edge
-as its own state (DeckBarLive), so a scroll across tiers redraws the bar, not the 112 cards. ⓘ opens 「卡片视图说明」,
-the remake's own tips (the official tutorial chapter keeps the name 调度手册). The opening 转场 is the card view's only
+as its own state (DeckBarLive), so a scroll across tiers redraws the bar, not the 112 cards. The top bar's left column is
+the same row in both views — 返回, then ⓘ, then the view switch (the maintainer's decision of 2026-11-08; at ≤1000 px the
+three keep only their glyphs) — and ⓘ opens 「视图说明」, the remake's own tips for both views (the official tutorial
+chapter keeps the name 调度手册). The opening 转场 is the card view's only
 (maintainer's decision, 2026-10-21): the list keeps its 200 ms `lo-in`, and its ≤1000 px roster / detail toggle replays
 nothing. [ASSUMED], with no screenshot or video of the event screen offline: the card frame and colours, the two-row
 flow, the bottom bar, the 快速配置 columns, the 转场 timings, and ONE combined 甄选干员 card per tier where the official

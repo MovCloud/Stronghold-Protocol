@@ -77,6 +77,7 @@ const picker = (c) => c.page.evaluate(() => {
     names: [...grid.querySelectorAll('.cardpick__op[data-char]:not([data-char=""]) .cardpick__name')].map((e) => e.textContent),
     on: [...grid.querySelectorAll('.cardpick__op.is-on')].map((e) => e.dataset.char),
     focus: document.activeElement?.dataset?.char ?? (document.activeElement?.tagName || null),
+    scroll: grid.scrollTop,
     inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5,
     gridScrolls: grid.scrollHeight > grid.clientHeight + 1,
     bodyScrolls: box.querySelector('.modal__body').scrollHeight > box.querySelector('.modal__body').clientHeight + 1,
@@ -109,12 +110,13 @@ describe('名片 seat cards (real server)', { skip: !ENABLED && 'set SP_E2E=1 (C
       await host.open();
       await host.enter('凯尔希');
 
-      // the picker in 个人名片: 随机 is the choice and has the focus; search and rarity filter the tiles
+      // the picker in 个人名片: a card with nothing picked yet starts on a random 立绘 (an operator and one of its
+      // looks), its tile takes the focus as it always did; search and rarity filter the tiles
       await openCardPicker(host);
       let pk = await picker(host);
       assert.ok(pk.tiles > 100, `tiles: ${pk.tiles}`);
-      assert.deepEqual(pk.on, ['']);
-      assert.equal(pk.focus, '', 'the current choice (随机) takes the focus');
+      assert.equal(pk.on.length, 1, 'the seeded random pick is the current choice');
+      assert.equal(pk.focus, pk.on[0], 'the current choice takes the focus, as it always did');
       assert.ok(pk.inside && pk.pageFits && !pk.bodyScrolls, JSON.stringify(pk));
       await host.click('.cardpick__search input');
       await host.page.keyboard.type('斯卡蒂');
@@ -131,12 +133,22 @@ describe('名片 seat cards (real server)', { skip: !ENABLED && 'set SP_E2E=1 (C
       await host.shot('picker');
       await host.page.$eval(`.cardpick__op[data-char="${PICK}"]`, (el) => el.scrollIntoView({ block: 'center' })); // the grid scrolls
       await host.click(`.cardpick__op[data-char="${PICK}"]`);
-      // a named operator keeps the picker open and shows its 外观 row (user request 2026-11-07); only 随机 closes it
+      // a named operator keeps the picker open and shows its 外观 row (user request 2026-11-07); 随机 rolls another
+      // 立绘 without closing it either — 确认 is what closes the picker. The grid stays where
+      // the player left it (user request 2026-11-08): the roll highlights, it does not scroll to the roll.
       await host.page.waitForFunction((id) => {
         const box = document.querySelector('.modal__box.cardpick');
         return !!box && !!box.querySelector('.cardpick__looks')
           && !!box.querySelector(`.cardpick__op[data-char="${id}"].is-on`);
       }, {}, PICK);
+      const beforeRoll = await picker(host);
+      assert.ok(beforeRoll.scroll > 0, `the grid was scrolled before the roll: ${beforeRoll.scroll}`);
+      await host.click('.cardpick__op[data-char=""]');
+      const rolled = await picker(host);
+      assert.ok(rolled, 'the picker stays open after 随机');
+      assert.equal(rolled.scroll, beforeRoll.scroll, 'the roll does not move the grid');
+      assert.equal(rolled.focus, '', 'the focus stays on the 随机 tile');
+      assert.ok(rolled.on.length === 1 && rolled.on[0] !== PICK, `rolled to: ${rolled.on}`);
       // the pick is only a draft until 保存 (关闭 would drop it)
       assert.notEqual(await host.page.evaluate(() => localStorage.getItem('sp.pref.room.card')), JSON.stringify(PICK));
       await host.page.keyboard.press('Escape');

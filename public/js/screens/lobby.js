@@ -52,13 +52,15 @@ import { Emblem } from '../ui/emblem.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, NAME_MAX_LEN, PLAYBACK, modeIdFor, ERR } from '../../../shared/constants.js';
 import { ARCADE_CARD, openArcade } from './arcade.js';
-import { html, Fragment, confirmDialog, Button, Icon, MicroLabel, Modal, Spinner, DifficultyIcon, TextField, AvatarFrame, doctorNo, Tooltip } from '../ui/components.js';
+import { html, Fragment, confirmDialog, Button, Icon, MicroLabel, Modal, Spinner, DifficultyIcon, TextField, AvatarFrame, doctorNo, Tooltip, BackPlate } from '../ui/components.js';
 import { Sprite, Img } from '../ui/gameComponents.js';
 import { uiUrl, chessPortraitUrl } from '../ui/assetUrls.js';
-import { cardOperators, cardContext, cardAvatarUrl, lookOptions, lookUrl, randomCardPick, seatOperator, seatCardSkin } from '../ui/seatArt.js';
-import { useMyCard, setCardOperator, setCardAvatar, setCardBackground, setCardLook, setAvatarLook } from '../ui/playerCard.js';
+import { cardOperators, cardContext, cardAvatarUrl, lookUrl, randomCardPick, seatOperator, seatCardSkin } from '../ui/seatArt.js';
+import { useMyCard, setCardOperator, setCardAvatar, setCardBackground, setCardLook, setAvatarLook, setCardShift } from '../ui/playerCard.js';
 import { CardOperatorPicker, AvatarPicker } from '../ui/opPicker.js';
-import { NameCardPicker, NameCardLayer, namecardOf } from '../ui/namecards.js';
+import { NameCardPicker, NameCardCrop, NameCardLayer, namecardOf } from '../ui/namecards.js';
+import { avatarEntries, avatarName } from '../../../shared/avatarSources.js';
+import { BG_SHIFT_DEFAULT, cardAvatarOperatorId } from '../../../shared/playerCard.js';
 import { TrophyBadge } from '../ui/trophies.js';
 import { skinsStore, SKINS_KEY } from '../ui/skins.js';
 import { AnnouncementBoard, announcementRevision, announcementDismissed, dismissAnnouncement, announcementBanner, parseAnnouncements } from '../ui/announcements.js';
@@ -533,9 +535,7 @@ function MatchSelect({ card, purpose = 'create', difficulty, onDifficulty, onClo
   const queued = queueActive(queue);
   const d = queued && DIFFICULTIES.includes(queue.difficulty) ? queue.difficulty : difficulty;
   const info = difficultyInfo(roomMode, d);
-  const back = html`<button type="button" class="proto-back" onClick=${leave} title=${queued ? t('返回大厅（继续匹配）') : t('返回大厅 (Esc)')} aria-label=${t('返回大厅')}>
-    <${Icon} name="chevronLeft" /><span class="proto-back__home"><${Icon} name="rook" /></span>
-  </button>`;
+  const back = html`<${BackPlate} onClick=${leave} label=${queued ? t('返回大厅（继续匹配）') : t('返回大厅 (Esc)')} />`;
   if (match && queued) {
     return html`<div class=${`proto proto--searching${fx}`} style=${`--d-color:${DIFFICULTY_COLORS[d]}`} data-difficulty=${d} role="dialog" aria-label=${t('多人匹配')}>
       <div class="proto__bg" aria-hidden="true"></div>
@@ -696,23 +696,43 @@ function ProfilePlate({ onClick }) {
  * separate fields: neither preview ever falls back to the other's operator.
  */
 function ProfileDialog({ onClose, queued }) {
-  useData('chess', 'assets');
+  useData('chess', 'assets', 'bonds', 'bands', 'enemies');
   const me = useStore((s) => s.me, shallowEqual);
   const card = useMyCard();
   const chess = data.get('chess');
   const m = data.get('assets');
   const list = useMemo(() => cardOperators(data.list('chess')), [chess]);
+  // the three tables can settle after 素材清单 (useData re-renders, but a memo only recomputes when its deps change):
+  // they must be deps here, else the picker keeps the empty group it built on the first render
+  const bonds = data.get('bonds'), bands = data.get('bands'), enemies = data.get('enemies');
+  const avatarPick = useMemo(() => avatarEntries({ bonds, bands, enemies }, m), [m, bonds, bands, enemies]);
   const cards = useMemo(() => cardContext(list), [list]);
   const localSkins = useStore((s) => s[SKINS_KEY], Object.is, skinsStore);
   const [picking, setPicking] = useState(null); // 'op' | 'avatar' | 'bg'
+  const [cropping, setCropping] = useState(false); // the 立绘 截取 window, opened by a 立绘 pick (ui/namecards.js NameCardCrop)
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(() => ({
-    charId: card.charId, avatar: card.avatar, bg: card.bg, look: card.look, avatarLook: card.avatarLook,
+    charId: card.charId, avatar: card.avatar, bg: card.bg, bgShift: card.bgShift ?? BG_SHIFT_DEFAULT,
+    look: card.look, avatarLook: card.avatarLook,
     name: me?.name || '',
   }));
   const nameRef = useRef(null);
   useLayoutEffect(() => { if (renaming) nameRef.current?.select(); }, [renaming]);
   const pick = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  // A card with nothing picked yet (a first visit): roll once and save it, so the roll is single — the same 立绘 every
+  // time the card is opened, and the same one the allies see (owner decision 2026-11-08: 随机 is a one-off choice, not a
+  // mode, and there is no way back to "random on every visit"). The draft lands on the roll too; every other change
+  // here still goes through 保存.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || card.charId || !list.length) return;
+    seeded.current = true;
+    const p = randomCardPick(m, list);
+    if (!p.charId) return;
+    setCardOperator(p.charId);
+    setCardLook(p.look);
+    pick({ charId: p.charId, look: p.look });
+  }, [list, m, card.charId]);
   const op = draft.charId ? list.find((c) => c.charId === draft.charId) || null : null;
   // the room's own picture (ui/seatArt.js seatOperator): '' shows the operator the seat card assigns by player id
   const portraitOp = seatOperator({ playerId: me?.playerId, card: { charId: draft.charId } }, cards,
@@ -723,6 +743,11 @@ function ProfileDialog({ onClose, queued }) {
     ? (draft.look && lookUrl(m, portraitOp.chess.charId, draft.look, 'portrait')) || chessPortraitUrl(m, portraitOp.chess, { skin: portraitSkin })
     : null;
   const face = cardAvatarUrl(draft.avatar, m, draft.avatarLook);
+  // the picked avatar's name: the game data's name for a source avatar, else the operator behind it
+  const avatarOp = list.find((c) => c.charId === cardAvatarOperatorId(draft.avatar)) || null;
+  const avatarLabel = draft.avatar
+    ? t(avatarName(draft.avatar, { bonds: data.get('bonds'), bands: data.get('bands'), enemies: data.get('enemies') }, avatarOp?.name || ''))
+    : t('默认');
   const nc = namecardOf(draft.bg);
   const save = () => {
     if (queued && draft.name !== (me?.name || '')) {
@@ -734,6 +759,7 @@ function ProfileDialog({ onClose, queued }) {
     setCardOperator(draft.charId);
     setCardAvatar(draft.avatar);
     setCardBackground(draft.bg);
+    setCardShift(draft.bgShift);
     setCardLook(draft.charId ? draft.look : '');
     setAvatarLook(draft.avatar ? draft.avatarLook : '');
     onClose();
@@ -746,14 +772,13 @@ function ProfileDialog({ onClose, queued }) {
       actions=${html`<${Button} variant="primary" onClick=${save} data-testid="profile-save">${t('保存')}<//>
         <${Button} variant="ghost" onClick=${onClose}>${t('关闭')}<//>`}>
     <div class="prof__body">
-      <div class=${`prof__preview${nc ? ' has-nc' : ''}`}>
-        <${NameCardLayer} card=${draft.bg} />
+      <div class="prof__preview">
         ${portrait ? html`<img class="prof__portrait" src=${portrait} alt="" draggable=${false} />`
           : html`<span class="prof__portrait prof__portrait--none" aria-hidden="true"><${Icon} name="user" /></span>`}
       </div>
       <div class="prof__main">
         <div class=${`prof__card${nc ? ' has-nc' : ''}`}>
-          <${NameCardLayer} card=${draft.bg} />
+          <${NameCardLayer} card=${draft.bg} shift=${draft.bgShift} />
           <div class="prof__head">
             <${AvatarFrame} name=${draft.name || t('博士')} src=${face} size="md" self=${true} />
             <span class="prof__who">
@@ -765,9 +790,10 @@ function ProfileDialog({ onClose, queued }) {
         </div>
         <div class="prof__rows">
           ${row(t('博士代号'), draft.name || t('博士'), { onClick: () => setRenaming(true), aria: t('修改博士代号'), test: 'profile-rename' })}
-          ${row(t('头像'), draft.avatar ? t('已选择') : t('默认'), { onClick: () => setPicking('avatar'), aria: t('更换头像'), test: 'profile-avatar' })}
+          ${row(t('头像'), avatarLabel, { onClick: () => setPicking('avatar'), aria: t('更换头像'), test: 'profile-avatar' })}
           ${row(t('名片干员'), op ? op.name : t('随机'), { onClick: () => setPicking('op'), aria: t('更换名片干员'), test: 'profile-op' })}
-          ${row(t('名片底图'), nc ? t(nc.name) : t('不使用底图'), { onClick: () => setPicking('bg'), aria: t('更换底图'), test: 'profile-bg' })}
+          ${row(t('名片底图'), nc ? t(nc.name) : t('不使用底图'),
+            { onClick: () => setPicking('bg'), aria: t('更换底图'), test: 'profile-bg' })}
         </div>
         <p class="prof__note"><${Icon} name="info" />${t('同盟里的博士都会看到这张名片；只保存在这台设备的浏览器里')}</p>
       </div>
@@ -776,19 +802,23 @@ function ProfileDialog({ onClose, queued }) {
       looks=${{ kind: 'portrait', current: draft.look, onLook: (look) => pick({ look }) }}
       onPick=${(id) => {
         if (!id) {
-          // 随机: one operator and its first official skin, then close (the 随机 tile is an action, not a "none" choice)
+          // 随机: apply a random 立绘 (one operator and one of its looks), the picker stays open so one can roll again;
+          // 确认 closes it
           const picked = randomCardPick(m, list);
           pick({ charId: picked.charId, look: picked.look });
-          setPicking(null);
           return;
         }
         // a named operator keeps the picker open: its 外观 row now shows the skins that operator has
         pick({ charId: id, look: '' });
       }} onClose=${() => setPicking(null)} />` : null}
-    ${picking === 'avatar' ? html`<${AvatarPicker} current=${draft.avatar} list=${list} m=${m}
+    ${picking === 'avatar' ? html`<${AvatarPicker} current=${draft.avatar} list=${list} m=${m} entries=${avatarPick}
       looks=${{ kind: 'avatar', current: draft.avatarLook, onLook: (look) => pick({ avatarLook: look }) }}
-      onPick=${(id) => { pick({ avatar: id, avatarLook: '' }); if (!id || lookOptions(m, id, 'avatar').length < 2) setPicking(null); }} onClose=${() => setPicking(null)} />` : null}
-    ${picking === 'bg' ? html`<${NameCardPicker} current=${draft.bg} onPick=${(bg) => pick({ bg: namecardOf(bg) ? bg : '' })} onClose=${() => setPicking(null)} />` : null}
+      onPick=${(id) => pick({ avatar: id, avatarLook: '' })} onClose=${() => setPicking(null)} />` : null}
+    ${cropping ? html`<${NameCardCrop} card=${draft.bg} shift=${draft.bgShift}
+      onApply=${(p) => { pick({ bgShift: p }); setCropping(false); }} onClose=${() => setCropping(false)} />`
+      : picking === 'bg' ? html`<${NameCardPicker} current=${draft.bg}
+        onPick=${(bg) => { const id = namecardOf(bg) ? bg : ''; pick({ bg: id }); if (namecardOf(id)?.kind === 'skin') setCropping(true); }}
+        onClose=${() => setPicking(null)} />` : null}
     ${renaming ? html`<${Modal} open=${true} micro="CALLSIGN" title=${t('博士代号')} onClose=${() => setRenaming(false)} class="name-dialog"
       actions=${html`<${Button} variant="ghost" onClick=${() => setRenaming(false)}>${t('取消')}<//>
         <${Button} variant="primary" disabled=${!isValidName(draft.name)} onClick=${() => setRenaming(false)}>${t('确认')}<//>`}>
@@ -854,13 +884,6 @@ const PROTOCOL_ART = { FUNNY: 'funny', NORMAL: 'normal', HARD: 'hard', ABYSS: 'a
 function ProtocolArt({ difficulty }) {
   useData('assets');
   return html`<${ProtocolScene} difficulty=${difficulty} art=${uiUrl(data.get('assets'), `modeChoice/${PROTOCOL_ART[difficulty]}_rhodes_island`)} />`;
-}
-
-/** The ‹ + dotted rook plate at the top left of the full-screen dialogs: back to the hub (or the dialog below). */
-function BackPlate({ onClick, class: cls = '' }) {
-  return html`<button type="button" class=${`proto-back ${cls}`} onClick=${onClick} title=${t('返回')} aria-label=${t('返回')}>
-    <${Icon} name="chevronLeft" /><span class="proto-back__home"><${Icon} name="rook" /></span>
-  </button>`;
 }
 
 /**

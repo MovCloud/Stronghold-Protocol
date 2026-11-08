@@ -16,6 +16,7 @@ import { chessPortraitUrl } from './assetUrls.js';
 import { cardPortraitOperatorId } from '../../../shared/playerCard.js';
 import { data } from '../data.js';
 import { N_ } from '../../../shared/i18n.js';
+import { parseAvatarId, avatarPath } from '../../../shared/avatarSources.js';
 
 /** 名片干员: the player's own pick (a localStorage pref, sent as room.card). */
 export const CARD_PREF = 'room.card';
@@ -87,7 +88,8 @@ export function lookUrl(m, charId, look = '', kind = 'avatar') {
 
 /**
  * The looks an operator offers on a card: [{ id, name, src }] — 精二 ('' — only when the art has an E2 form), 精一 ('e1';
- * '' when there is no E2 form, the default then) and each skin in the manifest; one entry = nothing to choose.
+ * '' when there is no E2 form, the default then) and each skin in the manifest; one entry means there is nothing to
+ * choose (the picker still shows it as its single tile).
  * @param {any} m @param {string} charId @param {'avatar'|'portrait'} kind
  */
 export function lookOptions(m, charId, kind) {
@@ -103,20 +105,19 @@ export function lookOptions(m, charId, kind) {
 }
 
 /**
- * 随机 for the 名片干员 picker: one operator and its first skin, the pick the 随机 tile applies before it closes.
- * Operators with an official skin are preferred so the tile really lands on a skin; when none has one, any operator
- * with its default art. `rand` is injectable for tests.
+ * 随机 for the 名片干员 picker: the pick the 随机 tile applies, so the picker can be rolled several times before 确认.
+ * Every 立绘 the picker can show is one entry of the pool: an operator with three skins weighs three times as much as
+ * one with a single art, but each 立绘 has the same chance, including the operators without skins (their 精二 / 精一 art).
+ * `rand` is injectable for tests.
  * @param {any} m @param {any[]} list cardOperators @param {() => number} [rand]
  * @returns {{ charId: string, look: string }}
  */
 export function randomCardPick(m, list, rand = Math.random) {
   const pool = Array.isArray(list) ? list.filter((c) => c && typeof c.charId === 'string') : [];
-  if (!pool.length) return { charId: '', look: '' };
-  const withSkin = pool.filter((c) => lookOptions(m, c.charId, 'portrait').some((o) => o.skin));
-  const from = withSkin.length ? withSkin : pool;
-  const c = from[Math.min(from.length - 1, Math.floor(rand() * from.length))];
-  const first = lookOptions(m, c.charId, 'portrait').find((o) => o.skin) || null;
-  return { charId: c.charId, look: first ? first.id : '' };
+  const looks = [];
+  for (const c of pool) for (const o of lookOptions(m, c.charId, 'portrait')) looks.push({ charId: c.charId, look: o.id });
+  if (!looks.length) return { charId: '', look: '' };
+  return looks[Math.min(looks.length - 1, Math.floor(rand() * looks.length))];
 }
 
 /**
@@ -125,6 +126,8 @@ export function randomCardPick(m, list, rand = Math.random) {
  * @param {string} charId @param {any} [m] the art manifest @param {string} [look]
  */
 export function cardAvatarUrl(charId, m = data.get('assets'), look = '') {
+  const p = parseAvatarId(charId);
+  if (p && p.kind !== 'operator') return avatarPath(charId, m); // a source avatar (盟约 / 策略 / 敌方 / 阵营 / 加载图)
   return lookUrl(m, charId, look, 'avatar');
 }
 

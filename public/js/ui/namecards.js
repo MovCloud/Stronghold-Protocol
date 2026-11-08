@@ -5,45 +5,21 @@
 // `skin:<skin id>` (feedback #24, the owner's decision of 2026-10-17): an operator skin's full illustration (assets.json
 // skins[id].illustration, ~4 MB — only the plates that use it load it; the picker shows the skins' half-body art).
 // The pick is kept in the browser (NAMECARD_PREF) and travels with room.card (ui/playerCard.js) so teammates see it.
-// Styles: css/screens/lobby.css (.has-nc / .nc-layer / .nc-pick).
-import { useEffect, useState } from '../../vendor/hooks.module.js';
-import { html, Icon } from './components.js';
+// A 立绘 card also carries its crop anchor (bgShift, shared/playerCard.js): NameCardCrop plans which band of the art the
+// plate shows, horizontal fixed / vertical draggable, and the anchor travels with the card too.
+// Styles: css/screens/lobby.css (.has-nc / .nc-layer / .nc-pick / .nc-crop).
+import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
+import { html, Icon, Button } from './components.js';
 import { data, useData } from '../data.js';
-import { t, N_ } from '../../../shared/i18n.js';
+import { t } from '../../../shared/i18n.js';
 import { OPERATOR_SKINS } from '../../../shared/skins.js';
+import { CAMPS, LOADING } from '../../../shared/avatarSources.js';
+import { BG_SHIFT_DEFAULT, isCardShift } from '../../../shared/playerCard.js';
 
 export const NAMECARD_PREF = 'room.namecard';
 
-/** The loading pictures (one per simulation difficulty). */
-const LOADING = [
-  { key: 'prototype', name: N_('模拟·原型') },
-  { key: 'core', name: N_('模拟·核心') },
-  { key: 'hard', name: N_('模拟·险境') },
-  { key: 'abyss', name: N_('模拟·终极') },
-];
-
-/** The factions with an emblem in the material, each with a tint for the card behind the white emblem. */
-const CAMPS = [
-  { key: 'rhodes', name: N_('罗德岛'), tint: '#1f3a4a' },
-  { key: 'lungmen', name: N_('龙门'), tint: '#5a2a1c' },
-  { key: 'yan', name: N_('炎'), tint: '#6a1f1f' },
-  { key: 'higashi', name: N_('东'), tint: '#5c2a3e' },
-  { key: 'victoria', name: N_('维多利亚'), tint: '#2a3358' },
-  { key: 'kazimierz', name: N_('卡西米尔'), tint: '#4a3b1c' },
-  { key: 'laterano', name: N_('拉特兰'), tint: '#5a4c1e' },
-  { key: 'leithanien', name: N_('莱塔尼亚'), tint: '#3c2a52' },
-  { key: 'columbia', name: N_('哥伦比亚'), tint: '#1f3f58' },
-  { key: 'ursus', name: N_('乌萨斯'), tint: '#3a3a3a' },
-  { key: 'siracusa', name: N_('叙拉古'), tint: '#4a1e2a' },
-  { key: 'iberia', name: N_('伊比利亚'), tint: '#1e3c3c' },
-  { key: 'egir', name: N_('阿戈尔'), tint: '#163a4e' },
-  { key: 'sargon', name: N_('萨尔贡'), tint: '#5a4418' },
-  { key: 'kjerag', name: N_('谢拉格'), tint: '#2c4656' },
-  { key: 'sami', name: N_('萨米'), tint: '#24443a' },
-  { key: 'minos', name: N_('米诺斯'), tint: '#4e3220' },
-  { key: 'bolivar', name: N_('玻利瓦尔'), tint: '#2e4a22' },
-  { key: 'rim', name: N_('雷姆必拓'), tint: '#4a3420' },
-];
+/** The crop anchor clamped to the range shared/playerCard.js validates (an unknown card keeps the default). */
+const clampShift = (v) => (isCardShift(v) ? v : BG_SHIFT_DEFAULT);
 
 /** Every card: { id, kind, name, assetKey, tint? }. */
 export const NAMECARDS = Object.freeze([
@@ -72,15 +48,69 @@ export function namecardSrc(card, m = data.get('assets'), half = false) {
 
 /**
  * The card behind a name plate (the room's seat cards, the 成就统计 card, the top bar's chip): put it inside a
- * `.has-nc` element; nothing for no / an unknown card.
- * @param {{ card: string|null|undefined }} props
+ * `.has-nc` element; nothing for no / an unknown card. `shift` is the 立绘 crop anchor in percent (NameCardCrop):
+ * only the vertical position moves, the horizontal framing is fixed by the plate's shape.
+ * @param {{ card: string|null|undefined, shift?: number }} props
  */
-export function NameCardLayer({ card }) {
+export function NameCardLayer({ card, shift }) {
   useData('assets');
   const nc = namecardOf(card);
   const src = namecardSrc(nc);
   if (!nc || !src) return null;
-  return html`<span class=${`nc-layer nc-layer--${nc.kind}`} style=${`--nc:url("${src}")${nc.tint ? `; --nc-tint:${nc.tint}` : ''}`} aria-hidden="true"></span>`;
+  const p = clampShift(shift);
+  return html`<span class=${`nc-layer nc-layer--${nc.kind}`} style=${`--nc:url("${src}")${nc.tint ? `; --nc-tint:${nc.tint}` : ''}${p !== BG_SHIFT_DEFAULT ? `; --nc-y:${p}%` : ''}`} aria-hidden="true"></span>`;
+}
+
+/**
+ * 立绘截取 (the owner's decision of 2026-11-08): the window that plans which band of an illustration the plate shows.
+ * The horizontal framing stays fixed — the plate is a wide band, so a portrait illustration is always scaled width-fit
+ * and the only thing left to choose is this band — so the window can only be dragged up and down (pointer or the arrow
+ * keys). The strip below is the plate itself, so what one drags is what the room sees; the anchor travels with the card
+ * (shared/playerCard.js bgShift), teammates included.
+ * @param {{ card: string, shift: number, onApply: (p: number) => void, onClose: () => void }} props
+ */
+export function NameCardCrop({ card, shift, onApply, onClose }) {
+  useData('assets');
+  const nc = namecardOf(card);
+  const src = namecardSrc(nc);
+  const [p, setP] = useState(clampShift(shift));
+  const stage = useRef(null);
+  const [drag, setDrag] = useState(false);
+  if (!nc || !src) return null;
+  const move = (clientY) => {
+    const r = stage.current?.getBoundingClientRect();
+    if (!r || !r.height) return;
+    setP(Math.max(0, Math.min(100, Math.round(((clientY - r.top) / r.height) * 100))));
+  };
+  const win = html`<div class=${`nc-crop__win${drag ? ' is-drag' : ''}`} role="slider" tabindex="0"
+    aria-label=${t('上下拖动选择截取范围')} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${p} style=${`top:${p}%`}
+    onPointerDown=${(e) => { e.currentTarget.setPointerCapture?.(e.pointerId); setDrag(true); move(e.clientY); }}
+    onPointerMove=${(e) => { if (drag) move(e.clientY); }}
+    onPointerUp=${() => setDrag(false)} onPointerCancel=${() => setDrag(false)}
+    onKeyDown=${(e) => {
+      const step = e.shiftKey ? 5 : 1;
+      if (e.key === 'ArrowUp') { e.preventDefault(); setP((x) => Math.max(0, x - step)); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); setP((x) => Math.min(100, x + step)); }
+    }}>
+    <span class="nc-crop__grip" aria-hidden="true"></span></div>`;
+  return html`<div class="nc-crop" role="presentation" onMouseDown=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div class="nc-crop__panel" role="dialog" aria-modal="true" aria-label=${t('立绘截取')}>
+      <header class="nc-crop__head"><strong>ILLUSTRATION CROP</strong><span class="nc-crop__title">${t('立绘截取')}</span>
+        <button type="button" class="nc-crop__x" onClick=${onClose} aria-label=${t('关闭')}><${Icon} name="close" /></button></header>
+      <div class="nc-crop__view">
+        <div class="nc-crop__stage" ref=${stage}>
+          <img class="nc-crop__art" src=${src} alt="" draggable=${false} />
+          ${win}
+        </div>
+      </div>
+      <div class="nc-crop__result has-nc"><${NameCardLayer} card=${nc.id} shift=${p} />
+        <span class="nc-crop__result-name">${t('席位名牌')}</span></div>
+      <footer class="nc-crop__foot">
+        <${Button} variant="secondary" size="sm" onClick=${() => setP(BG_SHIFT_DEFAULT)}>${t('恢复默认')}<//>
+        <${Button} variant="primary" onClick=${() => onApply(p)} data-testid="namecard-crop-confirm">${t('确认')}<//>
+      </footer>
+    </div>
+  </div>`;
 }
 
 /** 名片底图 picker: 不使用底图 and every card; picking closes it. Esc / the backdrop close it too. */

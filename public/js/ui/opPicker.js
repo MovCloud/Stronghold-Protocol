@@ -8,6 +8,7 @@ import { cardAvatarUrl, lookOptions } from './seatArt.js';
 import { ownerSkin } from './skins.js';
 import { CARD_SYNC } from './playerCard.js';
 import { t } from '../../../shared/i18n.js';
+import { parseAvatarId, avatarKindName } from '../../../shared/avatarSources.js';
 
 /**
  * @param {{ title: any, micro: string, current: string, list: any[], m: any, faceOf?: (c: any) => (string | null),
@@ -17,36 +18,49 @@ import { t } from '../../../shared/i18n.js';
  *   first tile (autoLabel), which picks ''.
  */
 export function OperatorPicker({ title, micro, current, list, m, faceOf = (c) => chessAvatarUrl(m, c), autoLabel, autoTitle, autoIcon = 'refresh',
-  note = null, onPick, onClose, looks = null }) {
+  note = null, onPick, onClose, looks = null, entries = null }) {
   const [q, setQ] = useState('');
   const [star, setStar] = useState(0);
+  const [kind, setKind] = useState(() => parseAvatarId(current)?.kind || 'operator');
   const needle = q.trim().toLowerCase();
   const shown = list.filter((c) => (!star || c.rarity === star) && (!needle || String(c.name || '').toLowerCase().includes(needle)
     || String(c.appellation || '').toLowerCase().includes(needle)));
-  return html`<${Modal} open=${true} title=${title} micro=${micro} onClose=${onClose} width="min(9.6rem, 94vw)" class="cardpick">
+  const kinds = entries ? [...new Set(entries.map((e) => e.kind))] : [];
+  const group = entries && kind !== 'operator' ? entries.filter((e) => e.kind === kind && (!needle || String(e.name).toLowerCase().includes(needle))) : null;
+  return html`<${Modal} open=${true} title=${title} micro=${micro} onClose=${onClose} width="min(9.6rem, 94vw)" class="cardpick"
+    actions=${html`<${Button} variant="primary" onClick=${onClose} data-testid="avatar-confirm">${t('确认')}<//>`}>
+    ${entries ? html`<div class="cardpick__cats" role="tablist" aria-label=${t('头像分类')}>
+      ${[['operator', t('干员')], ...kinds.map((k) => [k, t(avatarKindName(k))])].map(([k, label]) => html`<button key=${k} type="button" role="tab"
+        aria-selected=${kind === k ? 'true' : 'false'} class=${kind === k ? 'is-on' : ''} onClick=${() => setKind(k)}>${label}</button>`)}
+    </div>` : null}
     <div class="cardpick__bar">
-      <label class="cardpick__search"><${Icon} name="search" /><input type="search" value=${q} placeholder=${t('搜索干员')} onInput=${(e) => setQ(e.currentTarget.value)} /></label>
-      <div class="cardpick__stars" role="radiogroup" aria-label=${t('稀有度')}>
+      <label class="cardpick__search"><${Icon} name="search" /><input type="search" value=${q} placeholder=${kind === 'operator' ? t('搜索干员') : t('搜索')} onInput=${(e) => setQ(e.currentTarget.value)} /></label>
+      ${kind === 'operator' ? html`<div class="cardpick__stars" role="radiogroup" aria-label=${t('稀有度')}>
         ${[[0, t('全部')], [6, '6★'], [5, '5★'], [4, '4★']].map(([v, label]) => html`<button key=${v} type="button" role="radio" aria-checked=${star === v ? 'true' : 'false'}
           class=${star === v ? 'is-on' : ''} onClick=${() => setStar(v)}>${label}</button>`)}
-      </div>
+      </div>` : null}
     </div>
-    ${looks ? html`<${LookBar} m=${m} charId=${current} looks=${looks} />` : null}
-    <div class="cardpick__grid">
+    ${looks && kind === 'operator' ? html`<${LookBar} m=${m} charId=${current} looks=${looks} />` : null}
+    <div class="cardpick__grid" data-testid="avatar-picker">
       <button type="button" class=${`cardpick__op cardpick__op--auto${!current ? ' is-on' : ''}`} onClick=${() => onPick('')} title=${autoTitle}>
         <span class="cardpick__img"><${Icon} name=${autoIcon} /></span><span class="cardpick__name">${autoLabel}</span></button>
-      ${shown.map((c) => html`<button key=${c.charId} type="button" class=${`cardpick__op${current === c.charId ? ' is-on' : ''}`} onClick=${() => onPick(c.charId)} title=${c.name}>
+      ${group ? group.map((e) => html`<button key=${e.id} type="button" class=${`cardpick__op${current === e.id ? ' is-on' : ''}`} data-avatar=${e.id}
+        onClick=${() => onPick(e.id)} title=${t(e.name)}>
+        <span class="cardpick__img"><img src=${e.src} alt="" loading="lazy" draggable=${false} /></span>
+        <span class="cardpick__name">${t(e.name)}</span></button>`) : null}
+      ${kind === 'operator' ? shown.map((c) => html`<button key=${c.charId} type="button" class=${`cardpick__op${current === c.charId ? ' is-on' : ''}`} onClick=${() => onPick(c.charId)} title=${c.name}>
         <span class="cardpick__img"><img src=${faceOf(c)} alt="" loading="lazy" draggable=${false} /></span>
-        <span class="cardpick__name">${c.name}</span>${c.rarity ? html`<span class=${`cardpick__star r${c.rarity}`}>${c.rarity}★</span>` : null}</button>`)}
+        <span class="cardpick__name">${c.name}</span>${c.rarity ? html`<span class=${`cardpick__star r${c.rarity}`}>${c.rarity}★</span>` : null}</button>`) : null}
     </div>
     ${note ? html`<p class="cardpick__note"><${Icon} name="info" />${note}</p>` : null}
   <//>`;
 }
 
-/** The picked operator's looks (精二 / 精一 / skins): nothing when it has only one. */
+/** The picked operator's looks (精二 / 精一 / skins): the row is always there when the operator is known, one tile when
+ *  it has only one look, so the picker looks the same whatever the pick is (the owner's decision 2026-11-08). */
 function LookBar({ m, charId, looks }) {
   const opts = charId ? lookOptions(m, charId, looks.kind) : [];
-  if (opts.length < 2) return null;
+  if (!opts.length) return null;
   const on = opts.some((o) => o.id === looks.current) ? looks.current : '';
   return html`<div class="cardpick__looks" role="radiogroup" aria-label=${t('外观')}>
     <span class="cardpick__looks-label">${t('外观')}</span>
@@ -59,14 +73,16 @@ function LookBar({ m, charId, looks }) {
 
 /**
  * The 头像 picker: an operator's official avatar stands for the doctor (room.card avatar); 默认 = none (the strategy icon,
- * else the name's first letter).
- * @param {{ current: string, list: any[], m: any, onPick: (charId: string) => void, onClose: Function, looks?: any }} props
+ * else the name's first letter). `entries` adds the source groups (shared/avatarSources.js: 盟约 / 策略 / 敌方 / 阵营 /
+ * 加载图) as tabs; picking a tile applies at once, the green 确认 button closes the picker.
+ * @param {{ current: string, list: any[], m: any, entries?: { kind: string, name: string, src: string }[]|null,
+ *   onPick: (charId: string) => void, onClose: Function, looks?: any }} props
  */
-export function AvatarPicker({ current, list, m, onPick, onClose, looks = null }) {
+export function AvatarPicker({ current, list, m, entries = null, onPick, onClose, looks = null }) {
   return html`<${OperatorPicker} title=${t('头像')} micro="AVATAR" current=${current} list=${list} m=${m} faceOf=${(c) => cardAvatarUrl(c.charId, m)} looks=${looks}
     autoLabel=${t('默认')} autoTitle=${t('不使用头像：显示策略图标或名字首字')} autoIcon="user"
     note=${CARD_SYNC ? t('选择后，同盟里的博士都会看到这个头像') : t('目前只有你自己看得到；服务器下次更新后，同盟里的其他博士也能看到你的选择')}
-    onPick=${onPick} onClose=${onClose} />`;
+    onPick=${onPick} onClose=${onClose} entries=${entries} />`;
 }
 
 /** A picker tile's avatar; the name's first character when the art pack has none or it fails to load. */
@@ -79,11 +95,12 @@ function CardThumb({ src, name }) {
 
 /**
  * 名片干员 picker (the lobby's 个人名片): the operators a seat card can show (ui/seatArt.js cardOperators — search by name,
- * rarity tabs) and the 随机 tile (a random operator and its first skin, which closes the picker; the parent decides —
- * a named operator keeps it open so its 外观 row can be picked next). The current choice takes the focus (no on-screen
- * keyboard on a phone). Each tile wears this browser's outfit for that operator (`localSkins`, docs/SKINS.md), as the
- * card will. `looks` (the picked operator's art, ui/seatArt.js lookOptions): the 精二 / 精一 / skin row above the grid,
- * as the room's picker had it before 2026-11-05.
+ * rarity tabs) and the 随机 tile (a random 立绘: every portrait the picker can show is one entry of the pool, so an
+ * operator with skins weighs more while each 立绘 has the same chance; the parent applies it and keeps the picker
+ * open, so one can roll until something is liked — a roll only highlights, it never scrolls the grid). The current
+ * choice takes the focus (no on-screen keyboard on a phone). Each tile wears this browser's outfit for that operator
+ * (`localSkins`, docs/SKINS.md), as the card will. `looks` (the picked operator's art, ui/seatArt.js lookOptions): the
+ * 精二 / 精一 / skin row above the grid, as the room's picker had it before 2026-11-05.
  */
 export function CardOperatorPicker({ current, list, m, localSkins = {}, looks = null, onPick, onClose }) {
   const [q, setQ] = useState('');
@@ -94,7 +111,7 @@ export function CardOperatorPicker({ current, list, m, localSkins = {}, looks = 
   const shown = list.filter((c) => (!star || c.rarity === star)
     && (!needle || [c.name, c.appellation].some((v) => String(v || '').toLowerCase().includes(needle))));
   return html`<${Modal} open=${true} class="cardpick" micro="SEAT CARD OPERATOR" title=${t('名片干员')} width="min(10.4rem, 96vw)"
-      onClose=${onClose} actions=${html`<${Button} variant="ghost" onClick=${onClose}>${t('关闭')}<//>`}>
+      onClose=${onClose} actions=${html`<${Button} variant="primary" onClick=${onClose} data-testid="card-operator-confirm">${t('确认')}<//>`}>
     <div class="cardpick__bar">
       <${TextField} class="cardpick__search" size="sm" icon="search" value=${q} onInput=${setQ} placeholder=${t('搜索干员')} />
       <div class="cardpick__stars" role="radiogroup" aria-label=${t('稀有度')}>
@@ -105,7 +122,7 @@ export function CardOperatorPicker({ current, list, m, localSkins = {}, looks = 
     ${looks ? html`<${LookBar} m=${m} charId=${current} looks=${looks} />` : null}
     <div class="cardpick__grid" data-testid="card-picker">
       <button type="button" class=${`cardpick__op cardpick__op--auto${known ? '' : ' is-on'}`} aria-pressed=${known ? 'false' : 'true'}
-          data-char="" data-autofocus=${known ? undefined : ''} title=${t('随机选择一名干员及其第一款皮肤')} onClick=${() => onPick('')}>
+          data-char="" data-autofocus=${known ? undefined : ''} title=${t('随机选择一张立绘')} onClick=${() => onPick('')}>
         <span class="cardpick__img"><${Icon} name="refresh" /></span><span class="cardpick__name">${t('随机')}</span>
       </button>
       ${shown.map((c) => {

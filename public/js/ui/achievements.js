@@ -302,7 +302,7 @@ function Plate({ me, card, s, p, done, total, gd, onAvatar, onBg }) {
   const face = cardAvatarUrl(card.avatar, gd.m, card.avatarLook) || (opRec ? chessAvatarUrl(gd.m, opRec) : null);
   return html`<div class="ach-plate">
     <div class=${cx('ach-card', card.bg && 'has-nc')}>
-      <${NameCardLayer} card=${card.bg} />
+      <${NameCardLayer} card=${card.bg} shift=${card.bgShift} />
       <button type="button" class="ach-card__ava" onClick=${onAvatar} title=${t('更换头像')} aria-label=${t('更换头像')}>
         <${Img} src=${face} alt="" fallback=${html`<span class="ach-card__glyph">${[...(me?.name || '?')][0]}</span>`} />
         <span class="ach-card__lv" title=${t('等级')}><b class="num">${lv.lv}</b><small>LV</small></span></button>

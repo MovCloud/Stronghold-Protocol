@@ -1020,6 +1020,8 @@
   .lo-top .btn__icon + .btn__label {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
+  /* the view switch keeps its icon: the left column has to fit 返回 + ⓘ + it next to the tabs */
+  .lo-top__left .lo-tbtn__l { display: none; }
 }
 
 /* phones and small tablets (up to 1000 px wide; 0.2.2 — 760 px before the roster became one list with quick choices): the
@@ -1371,9 +1373,10 @@
 
 .lo-tbtn .icon { width: max(calc(.18 * var(--t)), 12px); height: max(calc(.18 * var(--t)), 12px); }
 
-/* the list view's way in: the end of its filter row (the top bar has no room left on a narrow phone in English) */
+/* the view switch: in the top bar's left column, right after ⓘ, in both views (owner request 2026-11-08) — one place,
+   so the two views cannot drift apart. It keeps its label until the phone rule above takes it. */
 
-.lo-viewbtn { margin-left: auto; }
+.lo-top__left .lo-viewbtn { margin-left: .06rem; }
 
 .lo-tbtn__n { min-width: max(calc(.2 * var(--t)), 14px); padding: 0 3px; font-size: max(calc(.12 * var(--t)), 9px); text-align: center; color: #04140f; background: var(--mint-500); }
 
@@ -1789,7 +1792,7 @@
 
 .lo-bbar__lock .icon { flex: none; width: max(calc(.16 * var(--t)), 11px); height: max(calc(.16 * var(--t)), 11px); }
 
-/* ---- ⓘ 卡片视图说明 (the remake's own tips: not the official 调度手册 chapter) ---- */
+/* ---- ⓘ 视图说明 (the remake's own tips: not the official 调度手册 chapter; the same sheet in both views) ---- */
 
 .lo-help { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .1rem .2rem; margin: 0; font-size: max(calc(.16 * var(--t)), 12px); line-height: 1.6; }
 

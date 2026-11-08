@@ -928,6 +928,22 @@
 
 .cardpick__stars button.is-on { background: var(--mint-500); color: var(--text-on-mint); }
 
+.cardpick__cats { flex: none; display: flex; flex-wrap: wrap; gap: .1rem; }
+
+.cardpick__cats button {
+  min-height: .44rem;
+  padding: 0 .16rem;
+  border: 1px solid var(--line-2);
+  background: rgba(0, 0, 0, .3);
+  color: var(--text-lo);
+  font-size: calc(.16 * var(--t));
+  font-weight: 700;
+}
+
+.cardpick__cats button:hover { color: var(--text-hi); }
+
+.cardpick__cats button.is-on { background: var(--mint-500); color: var(--text-on-mint); border-color: var(--mint-500); }
+
 .cardpick__grid {
   flex: 1 1 auto;
   min-height: 0;

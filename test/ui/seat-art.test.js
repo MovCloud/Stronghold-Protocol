@@ -11,11 +11,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CARD_PREF, CARD_KEY, cardStore, setCard, parseStoredCard, cardOperators, cardContext, seatOperator, seatCardSkin, seatArtSrc } from '../../public/js/ui/seatArt.js';
+import { CARD_PREF, CARD_KEY, cardStore, setCard, parseStoredCard, cardOperators, cardContext, seatOperator, seatCardSkin, seatArtSrc, lookOptions, randomCardPick } from '../../public/js/ui/seatArt.js';
 import { chessPortraitUrl } from '../../public/js/ui/assetUrls.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CHESS = Object.values(JSON.parse(readFileSync(path.join(ROOT, 'data/chess.json'), 'utf8')));
+const M = JSON.parse(readFileSync(path.join(ROOT, 'data/assets.json'), 'utf8'));
 
 test('the pickable operators: one per visible, non-自选 charId, the elite form, 6★ first', () => {
   const list = cardOperators(CHESS);
@@ -128,6 +129,22 @@ test('the pick\'s store: a string pref, \'\' for 默认; setCard persists and te
   } finally { off(); }
   assert.deepEqual(seen, ['char_498_inside', '']);
   assert.equal(cardStore.get()[CARD_KEY], '');
+});
+
+test('the 随机 pool: one entry per 立绘, so every 立绘 has the same chance (an operator with skins weighs more)', () => {
+  const list = cardOperators(CHESS);
+  const entries = list.flatMap((c) => lookOptions(M, c.charId, 'portrait').map((o) => ({ charId: c.charId, look: o.id })));
+  assert.ok(entries.length > list.length, 'the skins make more entries than operators');
+  assert.ok(entries.some((e) => e.look && e.look !== 'e1'), 'a skin is an entry of its own');
+  assert.ok(entries.some((e) => e.look === 'e1'), '精一 counts as a 立绘 too');
+  const noSkin = list.filter((c) => !lookOptions(M, c.charId, 'portrait').some((o) => o.skin));
+  assert.ok(noSkin.length > 0 && entries.some((e) => e.charId === noSkin[0].charId), 'an operator without skins is still in the pool');
+  const at = (f) => randomCardPick(M, list, f);
+  assert.deepEqual(at(() => 0), entries[0]);
+  assert.deepEqual(at(() => 0.5), entries[Math.floor(0.5 * entries.length)]);
+  assert.deepEqual(at(() => 1), entries[entries.length - 1], 'rand() = 1 stays inside the pool');
+  assert.deepEqual(randomCardPick(M, [], () => 0.5), { charId: '', look: '' }, 'nothing to pick from');
+  assert.deepEqual(randomCardPick(null, list, () => 0), { charId: '', look: '' }, 'before the data loads');
 });
 
 test('room.css: the seat cards and the picker follow 文字大小, no !important / :has()', () => {

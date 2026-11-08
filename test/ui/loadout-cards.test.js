@@ -2,9 +2,9 @@
 // view (the list stays the default), one operator card (an OperatorImage portrait — the owner's outfit, B6 —, the equipped
 // skill and module, 潜能 as pips through cultivationView, the 已调整 mark, the 替补 ribbon), the 快速配置 columns beside it
 // (the list rows' own handlers), the tier marker (the official shopLevelSprite tag, the CSS marker without it), the
-// bottom bar's tier jumps and lock chip, the ⓘ sheet's own name, and the css rules of the view (text follows 文字大小, no
-// !important, the 转场 only in the card view, no invented slogan). Hook-free views drawn as vnode trees. (The browser
-// side: test/ui/loadout-cards.e2e.test.js.)
+// bottom bar's tier jumps and lock chip, the ⓘ sheet's own name, the card view's own way back to the list, and the css
+// rules of the view (text follows 文字大小, no !important, the 转场 only in the card view, no invented slogan). Hook-free
+// views drawn as vnode trees. (The browser side: test/ui/loadout-cards.e2e.test.js.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -209,9 +209,10 @@ test('the tier marker: the official shopLevelSprite tag of that tier, the CSS ma
 
 test('the ⓘ sheet has its own name, not the official tutorial chapter\'s 调度手册', () => {
   const sheet = DeckHelp({ onClose() {} });
-  assert.equal(sheet.props.title, '卡片视图说明');
-  assert.equal(sheet.props.micro, 'CARD VIEW');
+  assert.equal(sheet.props.title, '视图说明', 'the same sheet in the list view and the card view');
+  assert.equal(sheet.props.micro, 'VIEW');
   assert.ok(!/调度手册|DISPATCH/.test(JSON.stringify(sheet.props.title) + sheet.props.micro));
+  assert.ok(JSON.stringify(sheet.props).includes('列表视图'), 'it explains the list view too');
 });
 
 test('the bottom bar says a locked loadout (its full text the title), with or without 快速配置', () => {
@@ -262,4 +263,19 @@ test('the view\'s css: every text size follows 文字大小 (var(--t)), no !impo
   assert.ok(sizes.length >= 20);
   assert.deepEqual(sizes.filter((v) => !v.includes('var(--t)')), [], 'font sizes through var(--t)');
   assert.ok(!/!important/.test(section));
+});
+
+test('both views switch from the same place: 返回 → ⓘ → the switch, in the top bar\'s left column', () => {
+  const src = readFileSync(path.join(ROOT, 'public/js/screens/loadout.js'), 'utf8');
+  const left = src.slice(src.indexOf('<div class="lo-top__left">'), src.indexOf('</div>`}'));
+  assert.ok(left.length > 0, 'the top bar left column');
+  assert.match(left, /data-testid="loadout-help"/, 'ⓘ in both views, not only the card view');
+  assert.ok(left.indexOf('loadout-help') < left.indexOf('loadout-view'), 'ⓘ first, the switch to its right');
+  assert.match(left, /data-testid=\$\{deck \? 'loadout-view-back' : 'loadout-view-deck'\}/, 'one switch, its testid follows the current view');
+  assert.match(left, /onClick=\$\{\(\) => setView\(deck \? 'list' : 'deck'\)\}/);
+  assert.ok(!/\bonDeck\b/.test(src), 'the filter row no longer carries its own switch');
+  assert.match(left, /<span class="lo-tbtn__l">\$\{deck \? t\('列表视图'\) : t\('卡片视图'\)\}<\/span>/, 'the same button shape as before');
+  assert.match(readFileSync(path.join(ROOT, 'public/css/screens/loadout.css'), 'utf8'), /\.lo-top__left \.lo-viewbtn \{ margin-left: \.06rem; \}/, 'the switch sits right after ⓘ');
+  assert.match(src, /data-testid="loadout-view-list"/, 'the filter popup\'s 显示方式 segment still switches back too');
+  assert.equal((src.match(/data-testid=\$\{deck/g) || []).length, 1, 'one switch, no clash with the popup\'s');
 });

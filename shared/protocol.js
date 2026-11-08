@@ -17,6 +17,7 @@ import { isPluginId } from './plugins/manifest.js';
 import { isTestCommand } from './testMode.js';
 import { PLUGIN_OFFER_SLOTS } from './plugins/limits.js';
 import { isPluginEmoteId } from './plugins/emoteCatalog.js';
+import { isAvatarSourceId, isCardShift } from './playerCard.js';
 
 // ---- tiny validators -------------------------------------------------------
 const isInt = (v, lo = -Infinity, hi = Infinity) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -536,11 +537,15 @@ const isDir = (v) => DIRS.includes(v);
  * ('' clears; format only, the client maps ids to art), `trophies`: a self-reported cumulative trophy count (0 clears;
  * cosmetic only, never used by a match). `look` / `avatarLook` (GitHub feedback #9 / #24): the art of the portrait / the
  * avatar operator — '' its 精二 art (as before), 'e1' its 精一 art, or a skin id of that operator (the server checks it
- * belongs to it: shared/skins.js skinFor). `bg` may be `skin:<skin id>`, the skin's full illustration.
- * A field the message leaves out keeps its stored value.
+ * belongs to it: shared/skins.js skinFor). `bg` may be `skin:<skin id>`, the skin's full illustration. `avatar` may also
+ * be a source avatar `<kind>:<key>` (shared/avatarSources.js) — shape only, the client resolves the picture from the
+ * deployed manifest. `bgShift` is the vertical anchor of the 立绘 底图 crop in percent (0–100, shared/playerCard.js):
+ * the horizontal framing is fixed, only this band of the art is chosen, so the number travels with the card and every
+ * player sees the same crop. A field the message leaves out keeps its stored value.
  */
 export const CARD_LIMITS = Object.freeze({ idLength: 48, trophies: 1_000_000 });
 const isCardCharId = (v) => v === '' || (isStr(v, CARD_LIMITS.idLength) && /^char_[0-9a-z_]+$/.test(v));
+const isCardAvatar = (v) => v === '' || isCardCharId(v) || (isStr(v, CARD_LIMITS.idLength) && isAvatarSourceId(v));
 const isCardLook = (v) => v === '' || v === 'e1' || (isStr(v, CARD_LIMITS.idLength) && /^char_[0-9a-z_]+$/.test(v));
 const isCardBg = (v) => v === '' || (isStr(v, CARD_LIMITS.idLength) && /^[a-z0-9][a-z0-9_:\-\/]*$/i.test(v));
 
@@ -796,8 +801,10 @@ export const C2S_FORK = {
   // band id, absent / null = the AI picks by itself; room.state seats[].band
   'room.setBotBand': { seat: (v) => isInt(v, 0, MAX_PLAYER_CAPACITY - 1), bandId: nullable(isId), $optional: ['bandId'] },
   // the display card (CARD_LIMITS above; server/lobby.js setCard): stored per session, copied to the player's seat
-  'room.card': { charId: isCardCharId, avatar: isCardCharId, bg: isCardBg, trophies: (v) => isInt(v, 0, CARD_LIMITS.trophies),
-    look: isCardLook, avatarLook: isCardLook, $optional: ['charId', 'avatar', 'bg', 'trophies', 'look', 'avatarLook'] },
+  'room.card': { charId: isCardCharId, avatar: isCardAvatar, bg: isCardBg, bgShift: isCardShift,
+    trophies: (v) => isInt(v, 0, CARD_LIMITS.trophies),
+    look: isCardLook, avatarLook: isCardLook,
+    $optional: ['charId', 'avatar', 'bg', 'bgShift', 'trophies', 'look', 'avatarLook'] },
   // 投票移出 (server/match/match/kickVote.js): propose removing an offline teammate under AI takeover (SP_DRAFT / PREP),
   // and answer the open vote (m.public kickVote.id); the proposer's agree:false withdraws it
   'g.kickVote': { targetId: isId },

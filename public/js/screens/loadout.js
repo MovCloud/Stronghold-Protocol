@@ -278,8 +278,8 @@ function Detail({ m, chess, golden, entries, ops = {}, onChange, onOps, onReset,
 
 // ---- filters -------------------------------------------------------------------------------------------------------------
 
-/** The roster's filters; `onDeck` (the list view): a button at the end that switches to the 卡片视图. */
-function Filters({ m, filters, onFilters, bonds, onDeck = null }) {
+/** The roster's filters (the list view): the view switch itself lives in the top bar, beside ⓘ, in both views. */
+function Filters({ m, filters, onFilters, bonds }) {
   const set = (patch) => onFilters({ ...filters, ...patch });
   return html`<div class="lo-filters">
     <div class="lo-frow">
@@ -302,8 +302,6 @@ function Filters({ m, filters, onFilters, bonds, onDeck = null }) {
       </label>
       <button type="button" class=${cx('lo-toggle', filters.changedOnly && 'is-on')} aria-pressed=${filters.changedOnly ? 'true' : 'false'}
         onClick=${() => set({ changedOnly: !filters.changedOnly })}><i class="lo-toggle__box"><${Icon} name="check" /></i>${t('仅看已调整')}</button>
-      ${onDeck ? html`<button type="button" class="lo-tbtn lo-viewbtn" data-testid="loadout-view-deck" onClick=${onDeck}
-        title=${t('切换为卡片视图（物资调配处）')}><${Icon} name="expand" /><span class="lo-tbtn__l">${t('卡片视图')}</span></button>` : null}
     </div>
   </div>`;
 }
@@ -564,21 +562,24 @@ function DeckBarLive({ sink, ...props }) {
 }
 
 /**
- * The ⓘ sheet: how the card view works (msgids, translated where shown). Titled 「卡片视图说明」: these are the remake's
- * own tips, so they do not borrow 调度手册, the name of the official tutorial chapter (玩法说明 → 调度手册, ui/guide.js).
+ * The ⓘ sheet: how the two views work (msgids, translated where shown). Titled 「视图说明」 and opened from ⓘ in the top
+ * bar of both views (the list view and the card view, owner request 2026-11-08): these are the remake's own tips, so they
+ * do not borrow 调度手册, the name of the official tutorial chapter (玩法说明 → 调度手册, ui/guide.js).
  */
-const DECK_HELP = Object.freeze([
+const VIEW_HELP = Object.freeze([
   [N_('卡片视图'), N_('干员按阶级横向排列；点干员卡在左侧打开详情（与列表视图相同）。←/→ 切换干员，Esc 逐层收起。')],
+  [N_('列表视图'), N_('干员按阶级分行排列，点行在右侧打开详情；筛选在上方一行。两个视图共用同一份筛选与保存。')],
+  [N_('视图切换'), N_('左上角 ⓘ 旁的按钮在两个视图之间切换；选择会记住，下次打开仍是这个视图。')],
   [N_('快速配置'), N_('在每张卡旁直接切换技能、模组，或潜能·练度；改动即时保存，点「确认配置」收起。')],
   [N_('干员持有'), N_('标记未持有的干员，开局时由官方替补干员上场；局外设置，下一局生效。')],
   [N_('甄选干员'), N_('5阶、6阶末尾的卡片即自选编队：持有的 6★ 干员或原型干员，只进入你自己的商店。')],
   [N_('道具'), N_('本游戏商店出售的全部装备，点开查看基础 / 进阶效果；两件同名装备合成进阶。')],
-  [N_('筛选与导入导出'), N_('「筛选」按阶级、职业、盟约、名字查找，或切换回列表视图；「更多」里导出 / 导入调配、全部恢复默认。')],
+  [N_('筛选与导入导出'), N_('「筛选」按阶级、职业、盟约、名字查找；「更多」里导出 / 导入调配、全部恢复默认。')],
 ]);
 export function DeckHelp({ onClose }) {
-  return html`<${Modal} open=${true} onClose=${onClose} title=${t('卡片视图说明')} micro="CARD VIEW"
+  return html`<${Modal} open=${true} onClose=${onClose} title=${t('视图说明')} micro="VIEW"
       actions=${html`<${Button} variant="primary" onClick=${onClose}>${t('知道了')}<//>`}>
-    <dl class="lo-help">${DECK_HELP.map(([k, v]) => html`<${Fragment} key=${k}><dt>${t(k)}</dt><dd>${t(v)}</dd><//>`)}</dl>
+    <dl class="lo-help">${VIEW_HELP.map(([k, v]) => html`<${Fragment} key=${k}><dt>${t(k)}</dt><dd>${t(v)}</dd><//>`)}</dl>
   <//>`;
 }
 
@@ -921,7 +922,10 @@ function LoadoutScreen({ st, leaving = false }) {
         ${deck && tab !== 'loadout'
           ? html`<${Button} variant="ghost" size="md" icon="chevronLeft" class="lo-back" onClick=${() => setTab('loadout')} title=${t('返回干员调配')}>${t('干员调配')}<//>`
           : html`<${Button} variant="ghost" size="md" icon="chevronLeft" class="lo-back" onClick=${closeLoadout} aria-label=${t('返回')} title=${t('返回 (Esc)')}>${t('返回')}<//>`}
-        ${deck ? html`<button type="button" class="lo-info" data-testid="loadout-help" onClick=${() => setHelp(true)} aria-label=${t('卡片视图说明')} title=${t('卡片视图说明')}><${Icon} name="info" /></button>` : null}
+        ${tab === 'loadout' ? html`<button type="button" class="lo-info" data-testid="loadout-help" onClick=${() => setHelp(true)} aria-label=${t('视图说明')} title=${t('视图说明')}><${Icon} name="info" /></button>` : null}
+        ${tab === 'loadout' ? html`<button type="button" class="lo-tbtn lo-viewbtn" data-testid=${deck ? 'loadout-view-back' : 'loadout-view-deck'}
+          onClick=${() => setView(deck ? 'list' : 'deck')} title=${deck ? t('切换为列表视图') : t('切换为卡片视图（物资调配处）')}>
+          <${Icon} name=${deck ? 'collapse' : 'expand'} /><span class="lo-tbtn__l">${deck ? t('列表视图') : t('卡片视图')}</span></button>` : null}
       </div>
       ${deck ? html`<div class="lo-top__center">
         ${tab === 'loadout' ? html`<${MicroLabel} tone="mint">${quick ? 'QUICK ASSEMBLE' : 'OPERATOR LOADOUT'}<//>
@@ -1001,7 +1005,6 @@ function LoadoutScreen({ st, leaving = false }) {
         ${inMatch && hasDeadline(infoDeadline) ? html`<${Countdown} deadline=${infoDeadline} size="sm" gauge=${false} label=${t('调配截止')} class="lo-deadline" />` : null}
         ${syncText ? html`<span class=${cx('lo-sync', syncCls)} role="status">${t(syncText)}</span>` : null}
         <span class="lo-count">${t('已调整')} <b class="num">${nChanged}</b><span class="num t-dim">/${roster.length}</span></span>
-        <${Button} variant="ghost" size="sm" onClick=${() => setView('deck')} title=${t('切换为卡片视图（物资调配处）')}>${t('卡片视图')}<//>
         <${Button} variant="ghost" size="sm" data-testid="loadout-export" data-preset-action="export" onClick=${openExport} title=${t('导出完整干员预设')}>${t('导出预设')}<//>
         <${Button} variant="ghost" size="sm" data-testid="loadout-import" data-preset-action="import" disabled=${!ready} onClick=${openImport} title=${t('导入干员预设（兼容旧配置）')}>${t('导入预设')}<//>
         <${Button} variant="secondary" size="sm" icon="refresh" disabled=${!nChanged} onClick=${resetAll}>${t('全部恢复默认')}<//>
@@ -1032,7 +1035,7 @@ function LoadoutScreen({ st, leaving = false }) {
       <${DeckBarLive} sink=${tierSink} deckTab=${deckTab} onDeckTab=${switchDeckTab} counts=${tierCounts} onJump=${jumpTier} diyOpen=${diyOpen} quick=${quick} onConfirm=${() => setQuick(null)} locked=${locked ? lockedText : null} />`
       : html`<main class=${cx('lo-body', narrowDetail && 'is-detail')}>
       <section class="lo-roster">
-        <${Filters} m=${m} filters=${st.filters} bonds=${bonds} onFilters=${(filters) => loadoutStore.set({ filters })} onDeck=${() => setView('deck')} />
+        <${Filters} m=${m} filters=${st.filters} bonds=${bonds} onFilters=${(filters) => loadoutStore.set({ filters })} />
         <div class="lo-list" ref=${gridRef}>
           <${RosterHead} />
           <div class="lo-list__rows" role="list" aria-label=${t('干员列表')}>

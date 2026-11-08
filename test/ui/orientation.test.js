@@ -183,8 +183,9 @@ test('[ORIENTATION] the dialog offers the step, the CSS turns the page, and ever
 
   // the arcade page's labels had no pixel floor: at 1rem = 40 px the back key was 6.9 px (owner report 2026-11-07)
   const arcade = read('public/css/screens/arcade.css');
-  assert.match(arcade, /font-size: max\(calc\(\.17 \* var\(--t\)\), 13px\);/);
-  assert.match(arcade, /\.arcade__back \.icon \{ width: max\(calc\(\.2 \* var\(--t\)\), 14px\); height: max\(calc\(\.2 \* var\(--t\)\), 14px\); \}/);
+  // the back key is the hub's plate (ui/components.js BackPlate), styled once in lobby.css so the screens cannot drift
+  assert.match(arcade, /\.arcade__back \{ cursor: pointer; \}/);
+  assert.match(read('public/css/screens/lobby.css'), /\.proto-back > \.icon \{ width: max\(\.4rem, 22px\); height: max\(\.4rem, 22px\)/, 'the plate keeps its pixel floor there');
   assert.match(arcade, /\.sp-coarse \.arcade__back \{ min-height: max\(32px, calc\(40px \* var\(--sp-ui, 1\)\)\); \}/);
   assert.match(arcade, /\.arcade__title \{ margin: 0; font-size: max\(calc\(\.42 \* var\(--t\)\), 20px\);/);
   assert.match(arcade, /font-size: max\(calc\(\.16 \* var\(--t\)\), 12px\);/);

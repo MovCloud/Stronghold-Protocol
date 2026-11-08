@@ -14,7 +14,7 @@
 // Wired through the store's small UI slice (`ui.arcade`), not a URL route: the router in main.js derives the screen
 // from state (store.js selectRoute), and a room or match always wins over this page.
 
-import { html, Icon, MicroLabel } from '../ui/components.js';
+import { html, Icon, MicroLabel, BackPlate } from '../ui/components.js';
 import { store, useStore } from '../store.js';
 import { t, N_ } from '../../../shared/i18n.js';
 
@@ -93,9 +93,7 @@ export function ArcadeScreen() {
   });
   return html`<div class="arcade">
     <header class="arcade__head">
-      <button type="button" class="arcade__back" onClick=${closeArcade} aria-label=${t('返回大厅')}>
-        <${Icon} name="chevronLeft" /><span>${t('返回大厅')}</span>
-      </button>
+      <${BackPlate} onClick=${closeArcade} class="arcade__back" label=${t('返回大厅')} />
       <div class="arcade__titles">
         <${MicroLabel} tone="mint">ARCADE MODES<//>
         <h1 class="arcade__title">${t('娱乐模式')}</h1>

@@ -267,6 +267,8 @@ import { ARCADE_ADMIN_MODES, COOP_HUNT, DIFFICULTIES, ERR, MAX_SEATS, MAX_SPECTA
 import { checkLoadout, checkLoadoutOps, cultivationCharIds, checkNotOwned, checkDiyPicks, charPotentialChanges, checkSkinSelection, operatorCharIds, isSkinId, isCharId } from '../shared/protocol.js';
 import { EXPERIMENTAL_DEFAULTS, experimentalOptions, isExperimental, sameExperimental } from '../shared/experimental.js';
 import { MAX_PLAYER_CAPACITY, PLAYER_CAPACITY_VERSION, isPlayerCapacity, roomCapacity } from '../shared/playerCapacity.js';
+import { isAvatarId } from '../shared/avatarSources.js';
+import { BG_SHIFT_DEFAULT } from '../shared/playerCard.js';
 import { encode, isErrCode, resetSocketState, sendEncodedMany, sendMessage, sendRaw, sendSession, TokenBucket } from './net.js';
 import { isCompressibleType } from './wsCompression.js';
 import { getData as defaultGetData, lookup } from './data.js';
@@ -425,7 +427,8 @@ function cardCharIds(data) {
   return ids;
 }
 const sameCard = (a, b) => (a?.charId ?? '') === (b?.charId ?? '') && (a?.avatar ?? '') === (b?.avatar ?? '') && (a?.bg ?? '') === (b?.bg ?? '')
-  && (a?.trophies ?? 0) === (b?.trophies ?? 0) && (a?.look ?? '') === (b?.look ?? '') && (a?.avatarLook ?? '') === (b?.avatarLook ?? '');
+  && (a?.trophies ?? 0) === (b?.trophies ?? 0) && (a?.look ?? '') === (b?.look ?? '') && (a?.avatarLook ?? '') === (b?.avatarLook ?? '')
+  && (a?.bgShift ?? BG_SHIFT_DEFAULT) === (b?.bgShift ?? BG_SHIFT_DEFAULT);
 /** A display card's look ('' / 'e1' / a skinId) that `charId` may carry. A skin is display-only, so any well-formed
  * skinId is admitted (the model is resolved client-side and an operator that cannot wear one draws its default model);
  * the operator itself is a known charId, checked against CARD_IDS by setCard. */
@@ -2754,10 +2757,12 @@ export class Lobby {
    * clears it; an unknown operator is BAD_MSG — and copy it to the player's seat (never a spectator's), broadcasting the
    * room state when it changed. An unchanged card costs nothing; a change beyond CARD_CHANGES per CARD_WINDOW_MS is RATE.
    */
-  setCard(session, { charId, avatar, bg, trophies, look, avatarLook }) {
+  setCard(session, { charId, avatar, bg, bgShift, trophies, look, avatarLook }) {
     const room = this.roomOf(session);
     const known = cardCharIds(this.dataFor(room));
-    if ((charId && !known.has(charId)) || (avatar && !known.has(avatar))) return fail(ERR.BAD_MSG, 'unknown operator');
+    // an avatar is an operator id or a source avatar (shared/avatarSources.js: 盟约 / 策略 / 敌方 / 阵营 / 加载图); the
+    // server checks the shape, the client resolves the picture from the deployed manifest
+    if ((charId && !known.has(charId)) || (avatar && !isAvatarId(avatar, known))) return fail(ERR.BAD_MSG, 'unknown operator');
     const prev = session.card || {};
     const next = {};
     const id = charId === undefined ? prev.charId : charId, back = bg === undefined ? prev.bg : bg;
@@ -2767,11 +2772,15 @@ export class Lobby {
     if ((look && !lookFits(id, look)) || (avatarLook && !lookFits(face, avatarLook))) return fail(ERR.BAD_MSG, 'skin of another operator');
     const art = look === undefined ? (lookFits(id, prev.look) ? prev.look : '') : look;
     const faceArt = avatarLook === undefined ? (lookFits(face, prev.avatarLook) ? prev.avatarLook : '') : avatarLook;
+    // the 立绘 底图 crop anchor (shared/playerCard.js): only an adjusted card carries it, so a card nobody has cropped
+    // keeps exactly the room.state it had before the crop window existed
+    const crop = bgShift === undefined ? (prev.bgShift ?? BG_SHIFT_DEFAULT) : bgShift;
     if (id) next.charId = id;
     if (face) next.avatar = face;
     if (id && art) next.look = art;
     if (face && faceArt) next.avatarLook = faceArt;
     if (back) next.bg = back;
+    if (crop !== BG_SHIFT_DEFAULT) next.bgShift = crop;
     if (count > 0) next.trophies = count;
     const card = Object.keys(next).length ? Object.freeze(next) : null;
     if (sameCard(card, session.card)) return OK;

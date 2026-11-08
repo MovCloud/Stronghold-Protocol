@@ -128,6 +128,18 @@ export function MicroLabel({ children, class: cls, tone }) {
 }
 
 /**
+ * The ‹ + dotted rook plate at the top left of the full-screen screens: back to the hub (or the screen below). One key
+ * for every mode entered from the hub, so the arcade page and the dialogs read as the same control
+ * (css/screens/lobby.css .proto-back).
+ * @param {{ onClick: () => void, class?: string, label?: string }} props
+ */
+export function BackPlate({ onClick, class: cls = '', label = t('返回') }) {
+  return html`<button type="button" class=${cx('proto-back', cls)} onClick=${onClick} title=${label} aria-label=${label}>
+    <${Icon} name="chevronLeft" /><span class="proto-back__home"><${Icon} name="rook" /></span>
+  </button>`;
+}
+
+/**
  * Row of chevrons (»»») with an optional flowing animation.
  * @param {{ count?: number, dir?: 'right'|'left', tone?: string, animated?: boolean, class?: string }} props
  */

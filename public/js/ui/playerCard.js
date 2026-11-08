@@ -12,6 +12,7 @@ import { useData } from '../data.js';
 import { peekStatsRecords, selfRowOf } from './stats.js';
 import { CARD_PREF, cardAvatarUrl } from './seatArt.js';
 import { NAMECARD_PREF, namecardOf } from './namecards.js';
+import { BG_SHIFT_DEFAULT } from '../../../shared/playerCard.js';
 import { C2S, C2S_FORK } from '../../../shared/protocol.js';
 
 /** The server takes room.card (a fork extension validated in C2S_FORK): teammates then see one's card. */
@@ -34,11 +35,16 @@ export const AVATAR_PREF = 'room.avatar';
 /** The looks ('' 精二, 'e1' 精一, a skin id) of the 名片干员 and of the 头像 operator. */
 export const CARD_LOOK_PREF = 'room.card.look';
 export const AVATAR_LOOK_PREF = 'room.avatar.look';
+/** The 立绘 底图 crop anchor (ui/namecards.js NameCardCrop): an integer percent, the default when never adjusted. */
+export const NAMECARD_SHIFT_PREF = 'room.namecard.shift';
+
+const shiftOf = (v) => (Number.isInteger(v) && v >= 0 && v <= 100 ? v : BG_SHIFT_DEFAULT);
 
 export const cardStore = createStore({
   charId: str(loadPref(CARD_PREF, '')),
   avatar: str(loadPref(AVATAR_PREF, '')),
   bg: str(loadPref(NAMECARD_PREF, '')),
+  bgShift: shiftOf(loadPref(NAMECARD_SHIFT_PREF, BG_SHIFT_DEFAULT)),
   look: str(loadPref(CARD_LOOK_PREF, '')),
   avatarLook: str(loadPref(AVATAR_LOOK_PREF, '')),
   trophies: null, // read from the stats on first use
@@ -67,6 +73,8 @@ export function setCardLook(look) { savePref(CARD_LOOK_PREF, str(look)); cardSto
 export function setAvatarLook(look) { savePref(AVATAR_LOOK_PREF, str(look)); cardStore.set({ avatarLook: str(look) }); }
 /** @param {string} bg '' = none */
 export function setCardBackground(bg) { const id = namecardOf(bg) ? bg : ''; savePref(NAMECARD_PREF, id); cardStore.set({ bg: id }); }
+/** @param {number} shift the 立绘 crop anchor, 0–100 percent; the default clears it (the server then stores nothing) */
+export function setCardShift(shift) { const p = shiftOf(shift); savePref(NAMECARD_SHIFT_PREF, p); cardStore.set({ bgShift: p }); }
 
 /** One's card, the trophies re-read when a component that shows it mounts. */
 export function useMyCard() {
@@ -78,8 +86,12 @@ export function useMyCard() {
 export function cardMessage(card) {
   const trophies = Number.isSafeInteger(card?.trophies) ? Math.max(0, Math.min(1_000_000, card.trophies)) : 0;
   const charId = str(card?.charId), avatar = str(card?.avatar);
-  return { charId, avatar, bg: namecardOf(card?.bg) ? card.bg : '', trophies,
+  const msg = { charId, avatar, bg: namecardOf(card?.bg) ? card.bg : '', trophies,
     look: charId ? str(card?.look) : '', avatarLook: avatar ? str(card?.avatarLook) : '' };
+  // an unadjusted crop is not sent: the server then stores nothing, so the seat card keeps the shape it had before
+  const p = shiftOf(card?.bgShift);
+  if (p !== BG_SHIFT_DEFAULT) msg.bgShift = p;
+  return msg;
 }
 
 /** Whether a seat's card (room.state seats[].card) already says what `msg` would. */
@@ -87,7 +99,8 @@ export function seatCardMatches(seatCard, msg) {
   const c = seatCard && typeof seatCard === 'object' ? seatCard : {};
   return str(c.charId) === msg.charId && str(c.avatar) === msg.avatar && str(c.bg) === msg.bg
     && (Number.isSafeInteger(c.trophies) ? c.trophies : 0) === msg.trophies
-    && str(c.look) === str(msg.look) && str(c.avatarLook) === str(msg.avatarLook);
+    && str(c.look) === str(msg.look) && str(c.avatarLook) === str(msg.avatarLook)
+    && shiftOf(c.bgShift) === shiftOf(msg.bgShift);
 }
 
 /**

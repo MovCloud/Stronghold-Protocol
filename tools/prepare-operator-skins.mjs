@@ -40,7 +40,7 @@ export function skinManifestMetadata(manifest, assetRoot) {
   return { ...manifest, hash: contentHash(body), stats: { ...stats, files: files.size, bytes: totalBytes(assetRoot, files), skins: Object.keys(manifest.skins || {}).length } };
 }
 
-async function download(url, max = 16 * 1024 * 1024) {
+export async function download(url, max = 16 * 1024 * 1024) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || !['prts.wiki', 'media.prts.wiki', 'static.prts.wiki', 'torappu.prts.wiki'].includes(u.hostname) || u.username || u.password || u.port || u.hash
     || (u.hostname === 'torappu.prts.wiki' && (u.search || !/^\/assets\/char_spine\/char_[A-Za-z0-9_-]+\/(?:[A-Za-z0-9_\/.-]|%23)+\.(?:json|skel|atlas|png)$/.test(u.pathname)))) throw new Error('Untrusted source');
@@ -55,7 +55,7 @@ async function download(url, max = 16 * 1024 * 1024) {
   }
   return Buffer.concat(chunks);
 }
-async function put(path, bytes) {
+export async function put(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
   if (await realpath(dirname(path)) !== resolve(dirname(path))) throw new Error('Refusing artwork through a symlink');
   try {

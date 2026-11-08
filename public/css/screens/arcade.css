@@ -19,25 +19,12 @@
   color: var(--text-100, #e8fff7);
 }
 
-.arcade__head { display: flex; align-items: flex-end; justify-content: space-between; gap: calc(.2 * var(--t)); }
+.arcade__head { display: flex; align-items: center; justify-content: space-between; gap: calc(.2 * var(--t)); }
 
-.arcade__back {
-  display: inline-flex;
-  align-items: center;
-  gap: .05rem;
-  padding: .06rem .1rem;
-  border: 1px solid var(--mint-a20);
-  border-radius: .06rem;
-  background: transparent;
-  color: var(--mint-400);
-  font: inherit;
-  /* plain px floors: the root scale is clamped at 40 px in a short window, which made these .17rem labels 6.9 px (owner
-     report 2026-11-07); the icon keeps its own floor. */
-  font-size: max(calc(.17 * var(--t)), 13px);
-  cursor: pointer;
-}
-.arcade__back:hover, .arcade__back:focus-visible { border-color: var(--mint-400); color: #e8fff7; }
-.arcade__back .icon { width: max(calc(.2 * var(--t)), 14px); height: max(calc(.2 * var(--t)), 14px); }
+/* the back key: the hub's plate (ui/components.js BackPlate → css/screens/lobby.css .proto-back), the same key as the
+   other modes entered from the hub, so the plate is styled once there and the screens cannot drift apart. Only its touch
+   target is kept here. */
+.arcade__back { cursor: pointer; }
 /* a touch target, like the hub's pills */
 .sp-coarse .arcade__back { min-height: max(32px, calc(40px * var(--sp-ui, 1))); }
 

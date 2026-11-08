@@ -1,5 +1,7 @@
 // test/lobby-card.test.js — room.card (名片干员, PR #643 split 6) end to end over WebSocket: the wire check, the
-// whitelist (a chess record's charId or the 自选 owned pool — a stand-in body or an unknown id is refused), storage
+// whitelist (a chess record's charId or the 自选 owned pool — a stand-in body or an unknown id is refused), the avatar
+// field (an operator id or a well-formed `<kind>:<key>` source id of shared/avatarSources.js — shape only, the picture
+// is resolved from the deployed manifest on the client), storage
 // on the session (it follows the player into the next room) and the seat, room.state seats[].card for every member (human seats with a
 // card only), '' clearing it, the documented change budget (CARD_CHANGES per CARD_WINDOW_MS, RATE beyond), and no phase
 // gate (cosmetic: a running match is neither asked nor refused).
@@ -11,6 +13,7 @@ import { StubMatch } from '../server/match/StubMatch.js';
 import { CARD_CHANGES } from '../server/lobby.js';
 import { TestClient } from './helpers/wsClient.js';
 import { ERR } from '../shared/constants.js';
+import { BG_SHIFT_DEFAULT } from '../shared/playerCard.js';
 import { getData } from '../server/data.js';
 import { cardOperators } from '../public/js/ui/seatArt.js';
 
@@ -85,6 +88,51 @@ describe('room.card (lobby, stub match)', () => {
     await ok(host, { t: 'room.addBot' });
     const st = await host.waitFor('room.state', (s) => s.seats.some((x) => x && x.isBot));
     assert.equal(seatOf(st, host.id).card?.charId, OPERATOR);
+  });
+
+  test('the avatar field: a charId or a well-formed <kind>:<key> source id (shared/avatarSources.js) passes the wire check; a malformed key is refused', async () => {
+    const c = await pool.player('AvatarShape');
+    // shape only: the server does not ask whether the key is in the tables or whether the file is on disk — the picture
+    // is resolved from the deployed manifest on the client, the same rule as an unknown but legal skin id.
+    for (const avatar of ['bond:yanShip', 'band:band_bldsk', 'enemy:enemy_1000_gopro_2', 'camp:rhodes', 'loading:core', 'camp:notafaction']) {
+      await ok(c, { t: 'room.card', avatar });
+    }
+    for (const avatar of ['bond', 'bond:../assets', 'loading:core;drop', 'https://example.com/a.png', 7, null]) {
+      await err(c, { t: 'room.card', avatar }, ERR.BAD_MSG);
+    }
+  });
+
+  test('the reserved 头像包 form passes on shape (nothing is registered yet, so the client draws nothing)', async () => {
+    const c = await pool.player('AvatarPack');
+    await ok(c, { t: 'room.card', avatar: 'pack:ark/rockr' });
+  });
+
+  test('a source avatar is stored and echoed like an operator avatar', async () => {
+    const host = await pool.player('AvatarSeat');
+    await createRoom(host);
+    for (const avatar of ['bond:yanShip', 'band:band_bldsk', 'enemy:enemy_1000_gopro_2', 'camp:rhodes', 'loading:core']) {
+      await ok(host, { t: 'room.card', avatar });
+      const st = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.avatar === avatar);
+      assert.equal(seatOf(st, host.id).card.avatar, avatar, 'stored as the client sent it');
+    }
+    // an operator avatar still passes (the old saves keep working)
+    await ok(host, { t: 'room.card', avatar: OPERATOR });
+    const st = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.avatar === OPERATOR);
+    assert.equal(seatOf(st, host.id).card.avatar, OPERATOR);
+  });
+
+  test('the 立绘 crop anchor: an integer percent 0–100 passes, a float / out of range is refused; the default stores nothing', async () => {
+    const host = await pool.player('Crop');
+    await createRoom(host);
+    for (const bgShift of [0, 100, 61]) await ok(host, { t: 'room.card', bgShift });
+    for (const bgShift of [101, -1, 24.5, '24', null]) await err(host, { t: 'room.card', bgShift }, ERR.BAD_MSG);
+    // the default anchor stores nothing: an unadjusted card keeps the shape it had before the crop window existed
+    await ok(host, { t: 'room.card', bg: 'skin:char_103_angel_wild_1', bgShift: BG_SHIFT_DEFAULT });
+    const st = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.bg);
+    assert.ok(!('bgShift' in seatOf(st, host.id).card), 'the default is not stored');
+    await ok(host, { t: 'room.card', bgShift: 61 });
+    const moved = await host.waitFor('room.state', (s) => seatOf(s, host.id)?.card?.bgShift === 61);
+    assert.equal(seatOf(moved, host.id).card.bgShift, 61, 'the anchor travels with the card to the teammates');
   });
 
   test('the server takes every operator the client picker lists (ui/seatArt.js cardOperators), in a room too', async () => {

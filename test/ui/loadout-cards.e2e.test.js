@@ -5,7 +5,7 @@
 // tier tags (or the CSS marker) with the 甄选干员 cards closing tiers 5 / 6, the choice kept across a reopen → a card opens
 // the detail in the drawer, the same card again closes it → 快速配置: S1 on 隐现's card is stored like the list's quick
 // choice → Esc peels back 快速配置, the drawer, then the overlay → a tier jump scrolls the deck → leaving the tab (the
-// 甄选干员 card, 干员持有) closes 快速配置 and the drawer, so one Esc there closes the overlay → ⓘ 卡片视图说明 → 筛选 → 列表
+// 甄选干员 card, 干员持有) closes 快速配置 and the drawer, so one Esc there closes the overlay → ⓘ 视图说明 → 筛选 → 列表
 // goes back; a locked loadout said once, in the bottom bar (not again in the top bar, its sync chip or the drawer). Phone
 // 844×390 (touch): the cards, the drawer over them, a locked loadout said in the bottom bar (with 快速配置 too). The list at 844×390 keeps its own opening: lo-in, no 转场, nothing replayed by the detail toggle.
 // Every page must finish with zero console errors / page errors / failed requests. Screenshots: test/e2e/out/loadout-cards-*.png
@@ -282,14 +282,14 @@ describe('干员调配 卡片视图 (real server, headless Chrome)', { skip: !EN
       await page.evaluate(async () => { (await import('/js/ui/loadoutSync.js')).loadoutStore.set({ sync: 'idle' }); });
       await page.waitForSelector('[data-testid="loadout-deck-locked"]', { hidden: true, timeout: 5000 });
 
-      // ⓘ 卡片视图说明 (not the official chapter's name), then 筛选 → 列表: back to the rows, stored
+      // ⓘ 视图说明 (not the official chapter's name), then 筛选 → 列表: back to the rows, stored
       await clickSel(page, '[data-testid="loadout-help"]');
       await page.waitForSelector('.modal .lo-help', { visible: true });
       const sheet = await page.$eval('.modal', (el) => el.textContent);
-      assert.ok(sheet.includes('卡片视图说明') && !sheet.includes('调度手册'), sheet.slice(0, 80));
+      assert.ok(sheet.includes('视图说明') && !sheet.includes('调度手册'), sheet.slice(0, 80));
       await escape(page);
       await page.waitForSelector('.modal', { hidden: true });
-      assert.ok(await page.$('.lo'), 'Esc closes only the 卡片视图说明');
+      assert.ok(await page.$('.lo'), 'Esc closes only the 视图说明');
       await clickSel(page, '[data-testid="loadout-filter"]');
       await page.waitForSelector('.lo-pop--filter .lo-search input', { visible: true });
       await page.type('.lo-pop--filter .lo-search input', '隐现');
