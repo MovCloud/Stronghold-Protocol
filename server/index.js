@@ -28,6 +28,7 @@ import { computeVanillaContent } from './plugins/identity.js';
 import { createVisualSets } from './plugins/visualSet.js';
 import { createContentSets } from './plugins/contentSets.js';
 import { createPluginPolicy } from './plugins/policy.js';
+import { createPackPolicy } from './pluginPolicy.js';
 import { createRoomSets } from './plugins/roomSets.js';
 import { createMatchHosts } from './match/host/index.js';
 import { createVersionSets } from './versions.js';
@@ -201,7 +202,7 @@ export async function startServer(opts = {}) {
   const scriptMode = process.env.SP_PLUGIN_SCRIPTS;
   let registry, lobby, network, packs, serveStatic, browserBuild, assetIndex = null, views = null, assetCache = null;
   let content = null, visual = null, contents = null, hosts = null, studio = null, trustedRuntime = null, persistence = null;
-  let versions = null, versionHosts = null;
+  let versions = null, versionHosts = null, packPolicy = null;
   let announcementReader = null, announcementSource = null;
   // Admin-published site notices (xinhai chain) and the private player-management dashboard; both optional.
   // The players' feedback board is optional too and shares the dashboard's session for its admin API.
@@ -224,7 +225,10 @@ export async function startServer(opts = {}) {
     log.info(`[content] vanilla ${content.cs.slice(0, 16)} (${Object.keys(content.simFiles).length} code files, ${Object.keys(content.data).length} data files)`);
     // language packs and plugins (docs/PACKS.md, docs/PLUGINS.md): scanned now — the start log names them — and again
     // whenever their folders change
-    packs = createPluginRegistry({ publicDir, dataDir, packsDir, pluginsDir }, { log, scriptHost: host, scriptMode });
+    // the admin's runtime pack switches (server/pluginPolicy.js): paid entries default to disabled — the fork must not
+    // hand paid content to players (NOTICE.md); the persisted state is restored by playerAdmin.start() below
+    packPolicy = createPackPolicy({ paid: opts.paidPacks || [], log });
+    packs = createPluginRegistry({ publicDir, dataDir, packsDir, pluginsDir }, { log, scriptHost: host, scriptMode, policy: packPolicy });
     packs.refresh(true);
     // the content hashes of the art (built in the background once listening) and the manifests served with them
     const indexOptions = assetIndexOptionsFrom(opts, publicDir);
@@ -366,7 +370,7 @@ export async function startServer(opts = {}) {
   const wss = attachWebSocket(server, { network, log, wsCompression, traffic });
   // the private admin dashboard (/admin): mounts nothing when config/player-admin/config.json is absent;
   // `adminConfigFile: null` skips the mount entirely (tests), a path relocates the credentials file.
-  playerAdmin = opts.adminConfigFile === null ? null : await mountPlayerAdmin({ server, network, lobby, registry,
+  playerAdmin = opts.adminConfigFile === null ? null : await mountPlayerAdmin({ server, network, lobby, registry, packs, policy: packPolicy,
     ...(opts.adminConfigFile ? { configFile: path.resolve(ROOT, opts.adminConfigFile) } : {}), announcementFile, publicDir, log });
 
   // The players' feedback board (deploy/stardust/feedback) under the /feedback prefix, so the board link in the game

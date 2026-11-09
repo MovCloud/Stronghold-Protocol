@@ -12,6 +12,16 @@
 .arcade-mode-row button{min-width:74px}
 @media(max-width:760px){.arcade-mode-list{padding:0 15px 16px}}
 
+/* 资源包 (packs): the runtime enable/disable rows (admin.js renderPacks) */
+.pack-list{display:flex;flex-direction:column;gap:10px;padding:0 22px 18px}
+.pack-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:13px 16px}
+.pack-row strong{flex:1 1 8em;min-width:0;font-size:13px;font-weight:600}
+.pack-row button{min-width:74px}
+.pack-id{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)}
+.pack-class{font-size:12px;color:var(--muted)}
+.pack-paid{font-size:12px;font-weight:600;color:var(--red)}
+@media(max-width:760px){.pack-list{padding:0 15px 16px}}
+
 #audit-body td:nth-child(4),#bans-body td:nth-child(2){white-space:normal;overflow-wrap:anywhere;min-width:180px;max-width:420px}
 #feedback-body td:nth-child(2),#feedback-body td:nth-child(3),#feedback-body td:nth-child(6){white-space:normal;overflow-wrap:anywhere;min-width:150px;max-width:420px}
 .pill.planned{color:var(--amber);border-color:#675332;background:#493b2455}

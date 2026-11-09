@@ -929,7 +929,7 @@ function signature({ publicDir, dataDir, packsDir, pluginsDir }) {
  * @param {{ log?: { info: Function, warn: Function }, app?: string, recheckMs?: number }} [opts]
  *   recheckMs: how long a scan stays trusted before the folders are looked at again (default 1000; 0 = every call)
  */
-export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, app = APP_VERSION, recheckMs = 1000, background = false, scriptHost = '0.0.0.0', scriptMode = process.env.SP_PLUGIN_SCRIPTS } = {}) {
+export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, app = APP_VERSION, recheckMs = 1000, background = false, scriptHost = '0.0.0.0', scriptMode = process.env.SP_PLUGIN_SCRIPTS, policy = null } = {}) {
   let sig = null;
   let checkedAt = -Infinity;
   /** @type {ReturnType<typeof scanPlugins> & { packs: Plugin[], index: ReturnType<typeof packIndexOf>, byId: Map<string, Plugin> }} */
@@ -940,6 +940,11 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
   const told = new Set();
   const tell = (fn, line) => { if (!told.has(line)) { told.add(line); fn(line); } };
   const tag = (where) => (where.startsWith('plugins/') ? '[plugins]' : '[packs]');
+  /** The entry as the delivery paths see it (server/pluginPolicy.js): enabled → the raw entry, admin-disabled →
+   * a shallow copy marked disabled, a disabled paid entry → null (never delivered, never in the catalogues).
+   * Applied at the accessor layer, not in the scan: the scan cache is never polluted and the admin panel reads
+   * the raw entries through `snapshot()` plus the policy. */
+  const view = (p) => policy ? policy.view(p) : p;
   /** @type {Set<() => void>} told after every scan that read the folders (onScan) */
   const scanListeners = new Set();
 
@@ -1031,20 +1036,22 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
       return () => scanListeners.delete(fn);
     },
     /** The entry of an id (any class, any status), or null. @param {string} id @returns {Plugin | null} */
-    plugin: (id) => refresh().byId.get(id) || null,
+    plugin: (id) => view(refresh().byId.get(id)) || null,
     /** The installation's art manifest (VanillaAssets): the one the last scan read, else read now (kept by size + mtime). */
     vanillaAssets: () => refresh().vanilla || readVanillaAssets(dirs.dataDir, artCache),
     /** The loaded language entries, optionally of one manifest 1 type. @param {string} [type] @returns {Plugin[]} */
-    list: (type) => refresh().packs.filter((p) => !type || p.type === type),
+    list: (type) => refresh().packs.map(view).filter((p) => p && (!type || p.type === type)),
     /** Every plugin and pack found, optionally of one class. @param {string} [cls] @returns {Plugin[]} */
-    plugins: (cls) => refresh().plugins.filter((p) => !cls || p.class === cls),
+    plugins: (cls) => refresh().plugins.map(view).filter((p) => p && (!cls || p.class === cls)),
     /** The language-pack index body (GET /packs/index.json). */
-    index: () => refresh().index,
+    index: () => packIndexOf(refresh().packs.map(view).filter(Boolean), { app }),
     /**
-     * The catalogue body (GET /plugins/index.json).
+     * The catalogue body (GET /plugins/index.json). Admin-disabled entries are not in it (a disabled paid entry is
+     * filtered out entirely, a disabled other entry is not offered); the script/trusted owner gate's `disabled`
+     * entries stay as before.
      * @param {{ vanilla?: string | null }} [opts] vanilla: the server's vanilla content hash
      */
-    pluginIndex: ({ vanilla = null } = {}) => pluginIndexOf(refresh().plugins, { app, vanilla }),
+    pluginIndex: ({ vanilla = null } = {}) => pluginIndexOf(refresh().plugins.map(view).filter((p) => p && p.disabled?.code !== 'admin'), { app, vanilla }),
     /** Packs and plugins that were not loaded and why, and the warnings of the loaded ones. */
     report: () => { const s = refresh(); return { skipped: s.skipped, warnings: s.warnings }; },
     /**
@@ -1053,7 +1060,7 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
      * @param {string} rel
      */
     servable(id, rel) {
-      const p = refresh().byId.get(id);
+      const p = view(refresh().byId.get(id));
       if (!p || !p.supported || p.layout !== 'folder') return null;
       for (const f of Object.values(p.files)) if (f.rel === rel) return f.abs;
       return null;
@@ -1067,7 +1074,7 @@ export function createPluginRegistry(dirs, { log = { info: noop, warn: noop }, a
      * @returns {(ServedFile & { dir: string, frame: boolean }) | null}
      */
     pluginFile(id, rel) {
-      const p = refresh().byId.get(id);
+      const p = view(refresh().byId.get(id));
       if (!p || p.status !== 'loaded') return null;
       if (p.visual) {
         const f = p.visual.served.get(rel);

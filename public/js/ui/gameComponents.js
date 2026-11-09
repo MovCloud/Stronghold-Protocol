@@ -12,6 +12,7 @@ import { settingsStore } from './settingsStore.js';
 import { appearanceRecord } from './skinAssets.js';
 import { MaterialImage } from './materialImage.js';
 import { useCardAvatar } from './playerCard.js';
+import { cardAvatarUrl, defaultCardPick } from './seatArt.js';
 import {
   uiUrl, chessAvatarUrl, chessPortraitUrl, itemIconUrl, tokenAvatarUrl, enemyIconUrl, bondIconUrl, bandIconUrl,
 } from './assetUrls.js';
@@ -300,11 +301,18 @@ function PickedFace({ playerId, then, fallback }) {
 
 /**
  * Seat-coloured player avatar: band icon when a band is picked, else the player's picked 头像, else glyph/robot;
- * `prefer="avatar"` puts the picked 头像 first (a player's own cards: the draft rows, 协议启动, the settlement).
- * @param {{ player: any, size?: 'sm'|'md', self?: boolean, prefer?: 'band'|'avatar', class?: string }} props
+ * `prefer="avatar"` puts the picked 头像 first (a player's own cards: the draft rows, 协议启动, the settlement). With no
+ * pick, an identity surface (`prefer="avatar"`) shows the deterministic default operator (ui/seatArt.js defaultCardPick)
+ * instead of the strategy icon, so a player on 默认 looks the same on the team row, the waiting room's seat card and the
+ * settlement card (the fork's rule, docs/design/client.md §10); a surface whose subject is the strategy itself keeps the
+ * strategy icon. The robot glyph only when that art is missing. `children` renders inside the box (the team row's
+ * 大本营等级 badge).
+ * @param {{ player: any, size?: 'sm'|'md', self?: boolean, prefer?: 'band'|'avatar', class?: string, children?: any }} props
  */
-export function PlayerAvatar({ player, size = 'md', self = false, prefer = 'band', class: cls }) {
-  const src = player?.bandId ? bandIconUrl(data.get('assets'), player.bandId) : null;
+export function PlayerAvatar({ player, size = 'md', self = false, prefer = 'band', class: cls, children }) {
+  const band = player?.bandId ? bandIconUrl(data.get('assets'), player.bandId) : null;
+  const defAvatar = player?.playerId != null ? cardAvatarUrl(defaultCardPick(player.playerId)?.charId, data.get('assets')) : null;
+  const src = player?.isBot ? defAvatar : (prefer === 'avatar' ? defAvatar || band : band);
   const glyph = [...(player?.name || '').trim()][0] || '?';
   const pending = player?.pendingDeath === true;
   const dead = !pending && (player?.alive === false || player?.status === 'dead');
@@ -316,6 +324,7 @@ export function PlayerAvatar({ player, size = 'md', self = false, prefer = 'band
   return html`<span class=${cx('pavatar', `pavatar--${size}`, self && 'is-self', dead && 'is-dead', left && 'is-left', player?.isBot && 'is-bot',
       player?.connected === false && !player?.isBot && 'is-offline', cls)} style=${`--seat-hue:${hue}`}>
     <span class="pavatar__img">${face}</span>
+    ${children}
     ${pending ? html`<span class="pavatar__rescue" aria-label=${tr('等待救援')}><${Icon} name="hourglass" /></span>` : null}
     ${dead ? html`<span class="pavatar__x" aria-label=${tr('已淘汰')}><${Icon} name="close" /></span>` : null}
     ${left ? html`<span class="pavatar__door" aria-label=${tr('已离开')}><${Icon} name="exit" /></span>` : null}

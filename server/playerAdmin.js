@@ -10,6 +10,7 @@ import { clientAddress, isLocalIp, TokenBucket } from './net.js';
 import { parseAnnouncements, activeAnnouncement } from '../shared/announcements.js';
 import { ANNOUNCEMENT_MAX_BYTES } from './announcements.js';
 import { ARCADE_ADMIN_MODES } from '../shared/constants.js';
+import { isPluginId } from '../shared/plugins/manifest.js';
 import { t } from '../shared/i18n.js';
 
 const derive = promisify(scrypt);
@@ -22,7 +23,7 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 /** Endpoints handled inside handle() itself; plugin registrations may not shadow them. */
 const BUILT_IN_ADMIN_ROUTES = new Set(['/admin/api/login', '/admin/api/session', '/admin/api/snapshot', '/admin/api/announcements',
   '/admin/api/announcement', '/admin/api/announcement/stop', '/admin/api/announcement/delete', '/admin/api/maintenance',
-  '/admin/api/password', '/admin/api/logout', '/admin/api/kick', '/admin/api/ban', '/admin/api/unban']);
+  '/admin/api/packs', '/admin/api/password', '/admin/api/logout', '/admin/api/kick', '/admin/api/ban', '/admin/api/unban']);
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b)
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const cleanText = (value, max, label) => {
@@ -143,8 +144,8 @@ export function playerSnapshot({ network, lobby, registry, now = Date.now() }) {
 }
 
 export class PlayerAdmin {
-  constructor({ network, lobby, registry, config, configFile, announcementFile, publicDir, now = Date.now, log = console }) {
-    Object.assign(this, { network, lobby, registry, config: validateConfig(config), configFile, announcementFile, publicDir, now, log });
+  constructor({ network, lobby, registry, config, configFile, announcementFile, publicDir, packs = null, policy = null, now = Date.now, log = console }) {
+    Object.assign(this, { network, lobby, registry, config: validateConfig(config), configFile, announcementFile, publicDir, packs, policy, now, log });
     this.directory = path.dirname(configFile);
     this.stateFile = path.join(this.directory, 'state.json');
     this.state = { version: 1, bans: [], audit: [] };
@@ -160,7 +161,9 @@ export class PlayerAdmin {
     const { doc } = await jsonFile(this.stateFile, this.state);
     if (doc?.version !== 1 || !Array.isArray(doc.bans) || !Array.isArray(doc.audit) || doc.bans.length > 2000 || doc.audit.length > 1000
         || doc.bans.some(b => !b || typeof b.id !== 'string' || !Array.isArray(b.keys) || !b.keys.every(k => /^[btp]:[a-f0-9]{64}$/.test(k))
-          || !Array.isArray(b.scopes) || !Number.isFinite(b.createdAt) || !Number.isFinite(b.expiresAt))) throw new Error('invalid admin state');
+          || !Array.isArray(b.scopes) || !Number.isFinite(b.createdAt) || !Number.isFinite(b.expiresAt))
+        || (doc.packs !== undefined && (typeof doc.packs !== 'object' || Array.isArray(doc.packs)
+          || Object.entries(doc.packs).some(([k, v]) => !isPluginId(k) || typeof v !== 'boolean')))) throw new Error('invalid admin state');
     this.state = doc;
     this.reindex();
     // 娱乐模式 (arcade): the admin panel's persisted per-mode switches apply before the server starts accepting rooms;
@@ -169,6 +172,11 @@ export class PlayerAdmin {
       for (const mode of ARCADE_ADMIN_MODES) {
         if (typeof doc.arcade[mode.id] === 'boolean') this.lobby.setArcadeMode(mode.id, doc.arcade[mode.id]);
       }
+    }
+    // 资源包 (packs): the admin panel's persisted switches apply before the first catalogue is served
+    // (server/pluginPolicy.js); a missing key keeps the default (paid → disabled, everything else → enabled).
+    if (doc.packs && typeof doc.packs === 'object' && !Array.isArray(doc.packs) && this.policy) {
+      for (const [packId, on] of Object.entries(doc.packs)) if (isPluginId(packId) && typeof on === 'boolean') this.policy.set(packId, on);
     }
     for (const conn of this.network.conns.values()) if (conn.session) this.remember(conn.session, conn);
     await this.seedAnnouncements();
@@ -421,6 +429,34 @@ export class PlayerAdmin {
       { action: 'arcade', mode: mode.id, name: mode.name, open: body.open });
     return { ok: true, arcade: this.lobby.arcadeInfo(), changed };
   }
+  /**
+   * 资源包 (packs): the admin rows — raw entries plus the policy's view (a disabled paid pack must stay visible
+   * to the admin so it can be re-enabled; players never see it, see server/pluginPolicy.js). Paid rows last.
+   */
+  packData() {
+    if (!this.packs || !this.policy) return [];
+    return this.packs.snapshot().plugins.map((p) => this.policy.row(p)).filter(Boolean)
+      .sort((a, b) => (a.paid !== b.paid ? (a.paid ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+  /**
+   * Runtime switch (server/pluginPolicy.js): files stay on disk, only delivery is controlled — the catalogues,
+   * /packs/ and /p/ answer for the next request; bytes an open page already loaded are not recalled (the same
+   * drain semantics as the arcade switch). Persisted in state.json, so it survives a restart.
+   * Enabling a paid pack needs `confirm` — handing paid content to players is the risk this system exists to avoid.
+   * @param {{id?: string, enabled?: boolean, confirm?: boolean}} body
+   */
+  async setPack(body) {
+    if (!this.packs || !this.policy) throw fail(503, '资源包管理未启用');
+    const packId = cleanText(body.id, 32, '资源包 ID');
+    if (!isPluginId(packId)) throw fail(400, '资源包 ID 无效');
+    const entry = this.packs.snapshot().byId.get(packId);
+    if (!entry) throw fail(404, '资源包不存在');
+    if (typeof body.enabled !== 'boolean') throw fail(400, 'enabled 需为布尔值');
+    if (this.policy.isPaid(entry) && body.enabled && body.confirm !== true) throw fail(400, '付费内容包默认禁用，启用需确认合规风险（confirm）');
+    this.policy.set(packId, body.enabled);
+    await this.commit({ ...this.state, packs: this.policy.snapshot() }, { action: 'pack', packId, enabled: body.enabled });
+    return { ok: true, packs: this.packData() };
+  }
   async password(body, req, res) {
     if (!await this.verifyPassword(body.currentPassword)) throw fail(403, '当前管理密码不正确');
     const secret = await credentials(body.newPassword);
@@ -469,6 +505,10 @@ export class PlayerAdmin {
       } else if (pathname === '/admin/api/arcade') {
         // 娱乐模式 (arcade): the completed modes the panel switches, with their effective (build switch AND admin) state
         this.json(req, res, 200, { modes: ARCADE_ADMIN_MODES.map((m) => ({ id: m.id, name: m.name, open: this.lobby.arcadeOpen(m.id) === true })) });
+      } else if (pathname === '/admin/api/packs') {
+        // 资源包 (packs): every installed pack/plugin with the policy's view — paid rows included, so the admin
+        // can see and re-enable them; players never receive a disabled paid entry.
+        this.json(req, res, 200, { packs: this.packData() });
       } else {
         // A GET route has to be registered as one: the built-ins above are hardcoded, and a POST-only route cannot be
         // reached by the console's read requests.
@@ -485,6 +525,7 @@ export class PlayerAdmin {
       '/admin/api/announcement': () => this.publish(body), '/admin/api/announcement/stop': () => this.stopNotice(body),
       '/admin/api/announcement/delete': () => this.deleteAnnouncement(body), '/admin/api/maintenance': () => this.setMaintenance(body),
       '/admin/api/arcade': () => this.setArcade(body),
+      '/admin/api/packs': () => this.setPack(body),
       '/admin/api/password': () => this.password(body, req, res),
       '/admin/api/logout': async () => { this.sessions.delete(hash(this.cookie(req))); this.setCookie(res, '', 0); return { ok: true }; } };
     // Plugin routes (registerAdminRoute) receive the parsed JSON body and the query; permission stays a reserved field.
@@ -503,12 +544,12 @@ export class PlayerAdmin {
 }
 
 /** Mounted separately so a tested live install can keep the existing game server and sockets. */
-export async function mountPlayerAdmin({ server, network, lobby, registry, configFile = path.join(ROOT, 'config/player-admin/config.json'),
+export async function mountPlayerAdmin({ server, network, lobby, registry, packs = null, policy = null, configFile = path.join(ROOT, 'config/player-admin/config.json'),
   announcementFile = path.join(ROOT, 'config/announcements.json'), publicDir = path.join(ROOT, 'public'), log = console, now = Date.now }) {
   let admin = null;
   try {
     const { doc } = await jsonFile(configFile, null);
-    if (doc) { admin = new PlayerAdmin({ network, lobby, registry, config: doc, configFile, announcementFile, publicDir, log, now }); await admin.start(); }
+    if (doc) { admin = new PlayerAdmin({ network, lobby, registry, config: doc, configFile, announcementFile, publicDir, packs, policy, log, now }); await admin.start(); }
   } catch (e) { log.error?.('[player-admin] disabled: ' + e.message); admin = null; }
   const prior = server.listeners('request');
   for (const listener of prior) server.off('request', listener);

@@ -44,7 +44,11 @@
 // card this browser's choice at once, another doctor's the map that seat published (room.state seats[].skins) unless
 // 「显示其他玩家的皮肤」 is off; an outfit this page's appearance plugins do not have draws the default art (ui/seatArt.js
 // seatCardSkin). The picker is one's own picker, so its tiles wear one's own outfits too (like 干员调配's).
-// Without the art pack the card keeps its avatar frame; a bot keeps its robot frame.
+// Without the art pack the card keeps its avatar frame; a bot keeps its robot frame. A player with no 名片 pick — an AI
+// seat, which has no card on the wire, and a human seat on 默认 — gets the deterministic pick from the default pool
+// (ui/seatArt.js defaultCardPick — the fork's rule, docs/design/client.md §10), the same on every client: it is the seat
+// card's 立绘, and for a human seat with no 头像 of their own the plate's avatar too (the same operator as the team row,
+// ui/gameComponents.js PlayerAvatar). The plate's avatar stays the robot frame for a bot.
 // Official versions (DESIGN §35.23, M1; versions.js): a room plays one version (room.state.version; absent = 第二期下半).
 // Another version's name shows beside the mode in the top bar (ui/pluginTag.js VersionTag) and every page loads and checks
 // its data like a gameplay plugin's content set (content.js) — the seat tags read 版本数据载入中 / 就绪 / 校验失败 and
@@ -81,7 +85,7 @@ import { net } from '../net.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating, loadPref, savePref } from '../store.js';
 import { data, useData, getConfig } from '../data.js';
 import { chessPortraitUrl } from '../ui/assetUrls.js';
-import { cardOperators, cardContext, seatOperator, seatCardSkin, seatArtSrc, CARD_PREF, seatPortrait, cardAvatarUrl } from '../ui/seatArt.js';
+import { cardOperators, cardContext, seatOperator, seatCardSkin, seatArtSrc, CARD_PREF, seatPortrait, cardAvatarUrl, defaultCardPick } from '../ui/seatArt.js';
 import { CARD_SYNC, useMyCard, cardMessage, seatCardMatches } from '../ui/playerCard.js';
 import { NameCardLayer } from '../ui/namecards.js';
 import { TrophyBadge } from '../ui/trophies.js';
@@ -355,7 +359,7 @@ function SeatCard({ seat, index, room, facts, myId, myCard, busy, gd, queued, on
   // The host never needs to toggle ready: starting the match readies them (server rule).
   const state = offline ? 'offline' : seat.ready || seat.isBot ? 'ready' : isHostSeat ? 'host' : 'waiting';
   const lit = state === 'ready' || state === 'host';
-  const art = seat.isBot ? null : seatArtSrc([portrait, portraitDefault], badArt);
+  const art = seatArtSrc([portrait, portraitDefault], badArt);
   const card = isMe ? myCard : seat.card && typeof seat.card === 'object' ? seat.card : null;
   const owner = isOwnerSeat(seat);
   // an AI teammate's name without its 「AI·」 prefix on a phone (room.css; botNameParts)
@@ -395,7 +399,7 @@ function SeatCard({ seat, index, room, facts, myId, myCard, busy, gd, queued, on
     <div class=${`rseat__plate${card?.bg ? ' has-nc' : ''}`}>
       ${card?.bg ? html`<${NameCardLayer} card=${card.bg} shift=${card.bgShift} />` : null}
       ${isMe ? html`<span class="rseat__me" role="img" aria-label=${t('你')} title=${t('你')}><${Icon} name="info" /></span>` : null}
-      <${AvatarFrame} size="sm" name=${seat.name} src=${seat.isBot ? null : cardAvatarUrl(card?.avatar, portraits.m, card?.avatarLook)} seat=${index} bot=${seat.isBot} self=${isMe} />
+      <${AvatarFrame} size="sm" name=${seat.name} src=${seat.isBot ? null : (cardAvatarUrl(card?.avatar, portraits.m, card?.avatarLook) || cardAvatarUrl(defaultCardPick(seat.playerId)?.charId, portraits.m))} seat=${index} bot=${seat.isBot} self=${isMe} />
       <span class="rseat__who"><b class="seat__name">${botPrefix ? html`<span class="seat__name-pre">${botPrefix[0]}</span>${botPrefix[1]}` : seat.name || t('博士')}</b>${isMe ? html`<span class="seat__you" aria-hidden="true">${t('你')}</span>` : null}${owner ? html`<${OwnerBadge} seat=${seat} />` : null}${seat.isBot ? null : html`<${TrophyBadge} count=${Number.isSafeInteger(card?.trophies) ? card.trophies : null} class="tbadge--inline" />`}</span>
       <small class="rseat__doc">${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${doctorNo(seat.playerId)}`}</small>
     </div>

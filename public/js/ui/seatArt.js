@@ -10,6 +10,12 @@
 // the event's room and every client draws the same one.
 // The fork's card look (feedback #9 / #24): every card also carries a `look` — '' the 精二 art, 'e1' the 精一 art, or a
 // skin of that operator (lookUrl, lookOptions); the 头像 the same (avatarLook).
+// Default 名片 (fork rule, docs/design/client.md §10): a player with no pick — an AI seat, which the server never sends
+// a card for, and a human seat on 默认 — gets the 5★/6★ pool record `hash32(playerId)` lands on, the same on every
+// client (`defaultCardPick`, one rule for both). One function behind the three surfaces that show a player's identity:
+// the team row's 头像 (ui/gameComponents.js PlayerAvatar), the waiting room's seat card (screens/room.js) and the
+// settlement card (ui/resultAvatar.js); the robot glyph only when that art is missing. A surface whose subject is the
+// strategy itself keeps the strategy icon (ui/gameComponents.js PlayerAvatar `prefer="band"`).
 import { createStore, loadPref, savePref } from '../store.js';
 import { ownerSkin } from './skins.js';
 import { chessPortraitUrl } from './assetUrls.js';
@@ -64,6 +70,28 @@ export function cardOperators(chessList) {
     if (!prev || (c.isGolden && !prev.isGolden)) by.set(c.charId, c);
   }
   return [...by.values()].sort((a, b) => ((b.rarity ?? 0) - (a.rarity ?? 0)) || String(a.name).localeCompare(String(b.name), 'zh'));
+}
+
+/** The default pool: the 5★/6★ whitelist records, ordered by charId so every client orders them the same. */
+export function cardDefaultPool(list) {
+  return (Array.isArray(list) ? list : []).filter((c) => c && typeof c.charId === 'string' && (c.rarity ?? 0) >= 5)
+    .sort((a, b) => (a.charId < b.charId ? -1 : a.charId > b.charId ? 1 : 0));
+}
+
+/**
+ * The 名片 a player with no pick gets (the fork's rule, see the header): the default pool record `hash32(playerId)`
+ * lands on, ordered by charId so a client in another language picks the same one. One rule for an AI seat (no card on
+ * the wire) and for a human seat on 默认, so the same player shows the same operator on the team row's 头像
+ * (ui/gameComponents.js PlayerAvatar), the waiting room's seat card (screens/room.js) and the settlement card
+ * (ui/resultAvatar.js).
+ * @param {any} playerId the room seat's / the match player's id
+ * @param {any[]} [pool] cardDefaultPool() of the cardOperators() whitelist
+ * @returns {any | null} the chess record, null before the data loads
+ */
+export function defaultCardPick(playerId, pool = cardDefaultPool(cardOperators(data.list('chess')))) {
+  const list = Array.isArray(pool) ? pool.filter((c) => c && typeof c.charId === 'string') : [];
+  if (playerId == null || !list.length) return null;
+  return list[hash32(playerId) % list.length];
 }
 
 const str = (v) => (typeof v === 'string' && v ? v : null);
@@ -133,7 +161,8 @@ export function cardAvatarUrl(charId, m = data.get('assets'), look = '') {
 
 /**
  * The seat card's portrait: the operator the player picked (room.state seats[].card, or one's own pick), else one of
- * the 5★/6★ operators chosen by the player id — the same on every client (null before the data loads).
+ * the 5★/6★ operators chosen by the player id — the same on every client (null before the data loads). An AI seat has
+ * no card on the wire, so it gets the same deterministic pick (defaultCardPick, the fork's rule).
  * @param {any} seat room.state seat @param {{ pool: any[], byChar: Map<string, any>, m: any, myId: any, myCard: string, myLook?: string }} ctx
  */
 export function seatPortrait(seat, { pool, byChar, m, myId, myCard, myLook = '' }) {
@@ -144,8 +173,8 @@ export function seatPortrait(seat, { pool, byChar, m, myId, myCard, myLook = '' 
   const mine = seat.playerId === myId && myCard;
   const look = mine ? myLook : typeof seat.card?.look === 'string' ? seat.card.look : '';
   if (rec) return (look && lookUrl(m, rec.charId, look, 'portrait')) || chessPortraitUrl(m, rec);
-  if (!Array.isArray(pool) || !pool.length) return null;
-  return chessPortraitUrl(m, pool[hash32(seat.playerId) % pool.length]);
+  const op = defaultCardPick(seat.playerId, pool);
+  return op ? chessPortraitUrl(m, op) : null;
 }
 
 /**
@@ -161,33 +190,34 @@ export function cardPortraitUrl(charId, m = data.get('assets'), operator = null)
 }
 
 /**
- * What the seat cards draw from: the pickable operators by charId and the default pool (5★/6★, by charId so every
- * client orders it the same).
+ * What the seat cards draw from: the pickable operators by charId, the default pool (5★/6★, by charId so every
+ * client orders it the same) and the whitelist itself.
  * @param {any[]} list cardOperators()
  */
 export function cardContext(list) {
   return {
+    list,
     byChar: new Map(list.map((c) => [c.charId, c])),
-    pool: list.filter((c) => (c.rarity ?? 0) >= 5).sort((a, b) => (a.charId < b.charId ? -1 : a.charId > b.charId ? 1 : 0)),
+    pool: cardDefaultPool(list),
   };
 }
 
 /**
  * The operator on a seat card: the player's pick (one's own seat shows the local pick at once, the others the server's
- * seats[].card), else one of the pool chosen by the player id [ASSUMED, see the header]. null for an empty seat, a bot,
- * or before the data loads.
+ * seats[].card), else one of the pool chosen by the player id [ASSUMED, see the header] — the same rule an AI seat
+ * gets, which has no card on the wire. null for an empty seat or before the data loads.
  * @param {any} seat room.state seat
  * @param {{ byChar: Map<string, any>, pool: any[] }} ctx cardContext()
  * @param {{ myId?: any, myCard?: string }} [own]
  * @returns {{ chess: any, picked: boolean } | null}
  */
 export function seatOperator(seat, { byChar, pool }, { myId, myCard } = {}) {
-  if (!seat || seat.playerId == null || seat.isBot) return null;
+  if (!seat || seat.playerId == null) return null;
   const pick = (seat.playerId === myId ? myCard : seat.card) || '';
   const rec = pick && byChar ? byChar.get(pick) : null;
   if (rec) return { chess: rec, picked: true };
-  if (!Array.isArray(pool) || !pool.length) return null;
-  return { chess: pool[hash32(seat.playerId) % pool.length], picked: false };
+  const op = defaultCardPick(seat.playerId, pool);
+  return op ? { chess: op, picked: false } : null;
 }
 
 /**

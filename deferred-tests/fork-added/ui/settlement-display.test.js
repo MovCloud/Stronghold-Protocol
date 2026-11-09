@@ -11,6 +11,7 @@ import { ResultAvatar } from '../../public/js/ui/resultAvatar.js';
 import { Img, PlayerAvatar } from '../../public/js/ui/gameComponents.js';
 import { OpCard } from '../../public/js/screens/settle.js';
 import { itemIconUrl } from '../../public/js/ui/assetUrls.js';
+import { defaultCardPick, cardAvatarUrl } from '../../public/js/ui/seatArt.js';
 
 const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 function* walk(v) {
@@ -46,8 +47,11 @@ test('settlement uses the saved own avatar, each teammate seat and the existing 
   try {
     assert.equal(image({ player: { playerId: 'me', card: { avatar: theirs } }, self: true }).src, mineArt.avatar);
     assert.equal(image({ player: { playerId: 'teammate' } }).src, theirArt.avatar);
-    assert.equal(image({ player: { playerId: 'unknown' } }).src, null, 'never apply the viewer avatar to another player');
-    assert.equal(image({ player: { playerId: 'teammate', isBot: true }, self: true }).src, null);
+    assert.equal(image({ player: { playerId: 'unknown' } }).src, cardAvatarUrl(defaultCardPick('unknown')?.charId, m),
+      "never apply the viewer avatar to another player; with no pick of their own they show the default pick (the fork's rule)");
+    // an AI seat has no card on the wire, so its 名片 is the deterministic default pick by player id (ui/seatArt.js
+    // defaultCardPick, the fork's rule) — no robot icon any more
+    assert.equal(image({ player: { playerId: 'teammate', isBot: true }, self: true }).src, cardAvatarUrl(defaultCardPick('teammate')?.charId, m));
     cardStore.set({ avatar: '' });
     const legacy = { name: 'Doctor', seat: 0, bandId: 'band_unknown' };
     assert.equal(image({ player: legacy, self: true }).src,

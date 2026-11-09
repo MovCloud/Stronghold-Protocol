@@ -4,7 +4,7 @@ const state = { csrf: null, tab: 'players', offset: 0, snapshot: null, action: n
 const statusNames = { playing: '正在对局', disconnected: '离线留席', matching: '等待匹配', spectating: '观战中', waiting: '房间等待', lobby: '大厅' };
 const difficultyNames = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 const phaseNames = { INFO_CHECK: '开局确认', BAND_DRAFT: '策略选择', PREP: '整备', COMBAT: '作战', UNITE: '联防', SETTLE: '结算', CHOICE: '机变', RESULT: '结束', LOBBY: '等待' };
-const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', arcade: '娱乐模式', passwordChanged: '修改管理密码', feedback: '处理反馈' };
+const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', arcade: '娱乐模式', pack: '资源包开关', passwordChanged: '修改管理密码', feedback: '处理反馈' };
 const modeNames = { solo: '单人对局', coop: '多人对局' };
 const roomStatusNames = { disposed: '已解散', match: '对局中', matching: '等待匹配', waiting: '等待开局' };
 const maintenanceNames = { running: '运行中', maintenance: '维护中', pending: '切换中…', unreachable: '停机中' };
@@ -14,8 +14,9 @@ const scopeNames = { session: '会话', browser: '同一浏览器', ip: '公网 
 const actionLabel = item => item.action === 'maintenance' ? (item.maintenance ? '启用维护模式' : '停用维护模式')
   : item.action === 'feedback' ? (item.op === 'delete' ? '删除反馈' : '处理反馈')
   : item.action === 'arcade' ? `${item.open ? '开放' : '停用'}娱乐模式 · ${item.name || item.mode || ''}`
+  : item.action === 'pack' ? `${item.enabled ? '启用' : '停用'}资源包 · ${item.packId || ''}`
   : (actionNames[item.action] || item.action);
-const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', arcade: '娱乐模式', feedback: '玩家反馈', audit: '操作记录' };
+const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', arcade: '娱乐模式', packs: '资源包', feedback: '玩家反馈', audit: '操作记录' };
 // The feedback board's own vocabulary (deploy/stardust/feedback/policy.mjs); the pill classes reuse the player table's.
 const feedbackCategoryNames = { bug: '缺陷', gameplay: '玩法', ui: '界面', other: '其他' };
 const feedbackStatusNames = { unassigned: '待处理', unplanned: '暂不规划', planned: '已规划', updated: '已更新' };
@@ -75,6 +76,7 @@ function applyTab(tab, title) {
   $('#page-title').textContent = title;
   if (tab === 'announcements') renderAnnouncements().catch(e => notice(e.message, true));
   if (tab === 'arcade') renderArcade().catch(e => notice(e.message, true));
+  if (tab === 'packs') renderPacks().catch(e => notice(e.message, true));
   if (tab === 'feedback') renderFeedback().catch(e => notice(e.message, true));
 }
 
@@ -106,6 +108,42 @@ async function renderArcade() {
     row.append(button);
     box.append(row);
   }
+}
+/**
+ * 资源包 (packs): every installed pack and plugin with the runtime switch (server/pluginPolicy.js). Files stay on
+ * disk — the switch only controls delivery: the catalogues, /packs/ and /p/ answer for the next request, bytes an
+ * open page already loaded are not recalled. Paid entries default to disabled and are filtered out of what players
+ * receive; the panel still lists them (paid rows last), and enabling one needs a confirm — handing paid content to
+ * players is the risk this page exists to avoid (NOTICE.md: the project stays non-commercial).
+ */
+async function renderPacks() {
+  const data = await api('packs');
+  const box = $('#pack-list');
+  box.replaceChildren();
+  for (const pack of data.packs) {
+    const row = elem('div', null, 'pack-row');
+    row.append(elem('strong', pack.name), elem('code', pack.id, 'pack-id'), elem('span', pack.class, 'pack-class'));
+    if (pack.paid) row.append(elem('span', '付费', 'pack-paid'));
+    row.append(elem('span', pack.enabled ? '已启用' : '已停用', 'status-pill ' + (pack.enabled ? 'ok' : 'bad')));
+    const button = elem('button', pack.enabled ? '停用' : '启用', pack.enabled ? 'danger' : 'primary');
+    button.addEventListener('click', async () => {
+      const ask = pack.enabled
+        ? `停用「${pack.name}」？目录与文件请求从下一次请求起不再提供它，已加载的页面不会回退。`
+        : pack.paid
+          ? `启用付费资源包「${pack.name}」？付费内容将直接提供给玩家，请确认合规风险。`
+          : `启用「${pack.name}」？`;
+      if (!confirm(ask)) return;
+      button.disabled = true;
+      try {
+        await api('packs', { id: pack.id, enabled: !pack.enabled, ...(pack.paid && !pack.enabled ? { confirm: true } : {}) });
+        notice(`「${pack.name}」已${pack.enabled ? '停用' : '启用'}。`);
+        await renderPacks();
+      } catch (e) { notice(e.message, true); button.disabled = false; }
+    });
+    row.append(button);
+    box.append(row);
+  }
+  if (!data.packs.length) box.append(elem('p', '没有安装的资源包。', 'muted'));
 }
 /**
  * The maintenance switch is a drain state, not a label: the status line carries the confirmed state (green running /

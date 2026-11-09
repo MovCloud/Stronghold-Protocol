@@ -29,6 +29,7 @@
         <button class="nav-item" data-tab="bans"><span>⊘</span>封禁管理 <span id="ban-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="announcements"><span>◇</span>服务器公告</button>
         <button class="nav-item" data-tab="arcade"><span>▧</span>娱乐模式</button>
+        <button class="nav-item" data-tab="packs"><span>▦</span>资源包</button>
         <button class="nav-item" data-tab="feedback"><span>✎</span>玩家反馈 <span id="feedback-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="audit"><span>≡</span>操作记录</button>
         <!-- plugin panels (window.SP_ADMIN_PANELS) append their nav items and tab sections here at runtime -->
@@ -80,6 +81,12 @@
         <div class="panel-heading"><div><h2>娱乐模式</h2><p class="muted">开放：玩家可以进入该玩法；停用：拒绝该玩法的新房间与新对局，进行中的对局自然打完。</p></div></div>
         <div id="arcade-modes" class="arcade-mode-list"></div>
         <p class="panel-note">开发中或修改中的玩法不在此列表，客户端固定显示黄字「敬请期待」。主线（独立模拟 / 同盟模拟）的维护由「玩家状态」里的维护开关统一处理。</p>
+      </section>
+
+      <section class="tab-panel" id="tab-packs" hidden>
+        <div class="panel-heading"><div><h2>资源包</h2><p class="muted">运行时启停：文件保留在磁盘上，开关只控制下发——目录与 /packs/、/p/ 从下一次请求起生效，已加载的页面不会回退。</p></div></div>
+        <div id="pack-list" class="pack-list"></div>
+        <p class="panel-note">付费资源包默认停用且不会出现在玩家目录里；启用需确认合规风险（本复刻项目不从事商业活动，见 NOTICE.md）。开关写入管理状态文件，重启后保持。</p>
       </section>
 
       <section class="tab-panel" id="tab-feedback" hidden>

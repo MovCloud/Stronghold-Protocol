@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Component, h, options } from '../../public/vendor/preact.module.js';
 import { AvatarPickerView, AvatarVariantsView, OperatorPickerView } from '../../public/js/ui/opPicker.js';
-import { cardAvatarUrl, cardAvatarSkins } from '../../public/js/ui/seatArt.js';
+import { cardAvatarUrl, cardAvatarSkins, cardDefaultPool, defaultCardPick } from '../../public/js/ui/seatArt.js';
 import { installCardSync, cardStore, setCardAvatar } from '../../public/js/ui/playerCard.js';
 import { createStore, loadPref, store } from '../../public/js/store.js';
 import { cleanPlayerCard } from '../../shared/playerCard.js';
@@ -139,7 +139,12 @@ test('settlement portraits prefer the chosen room operator and keep lineup art o
   assert.equal(own.props.class, 'tcard__img is-portrait');
   assert.equal(render(ResultPortrait, { ...props, player: { playerId: 'other' } }).props.src, '/assets/other-portrait.png');
   assert.equal(render(ResultPortrait, { ...props, player: { playerId: 'unknown' } }).props.src, props.fallbackSrc);
-  assert.equal(render(ResultPortrait, { ...props, player: { playerId: 'other', isBot: true } }).props.src, props.fallbackSrc);
+  // a player with no pick gets the deterministic default pick from the default pool (the fork's rule, ui/seatArt.js
+  // defaultCardPick) — the lineup art stays a fallback only for a seat with no card and no pick.
+  // hash32('ai_2') % 2 = 0 lands on char_a, so this bot's plate is the pick's 立绘, not the lineup ace.
+  const botPick = defaultCardPick('ai_2', cardDefaultPool(list));
+  assert.equal(botPick.charId, CHAR, 'the same pick on every client');
+  assert.equal(render(ResultPortrait, { ...props, player: { playerId: 'ai_2', isBot: true } }).props.src, '/assets/portrait.png');
   for (const charId of ['', 'char_unavailable']) {
     cardStore.set({ charId });
     assert.equal(render(ResultPortrait, { ...props, player: { playerId: 'me' }, self: true }).props.src, props.fallbackSrc);

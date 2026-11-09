@@ -1,8 +1,11 @@
 // test/ui/seat-art.test.js — 名片干员 on the room's seat cards (PR #643 split 6, public/js/ui/seatArt.js): the pickable
 // operators (one per charId of the visible, non-自选 chess records, the elite form, 6★ first), the default pool (5★/6★ by
 // charId), the operator a seat shows (one's own local pick at once, a teammate's seats[].card, else one chosen by the
-// player id — the same whatever order the records arrive in; none for a bot or an empty seat), the outfit it wears
-// (seatCardSkin, the maintainer's decision 4 of 2026-10-21), the picture a card falls back to when one fails to load
+// player id — the same whatever order the records arrive in; the default pick (defaultCardPick, the fork's rule) is the
+// one function behind the three identity surfaces: the team row's 头像, the seat card and the settlement card — for an AI
+// seat, which has no card on the wire, and for a human seat on 默认, the outfit it wears (seatCardSkin, the maintainer's
+// decision 4 of 2026-10-21),
+// the picture a card falls back to when one fails to load
 // (seatArtSrc: the outfit, the default portrait, the avatar frame), the pick's store, and room.css following 文字大小
 // without !important. (The server's whitelist: test/lobby-card.test.js; the browser: test/ui/room-cards.e2e.test.js.)
 import { test } from 'node:test';
@@ -11,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CARD_PREF, CARD_KEY, cardStore, setCard, parseStoredCard, cardOperators, cardContext, seatOperator, seatCardSkin, seatArtSrc, lookOptions, randomCardPick } from '../../public/js/ui/seatArt.js';
+import { CARD_PREF, CARD_KEY, cardStore, setCard, parseStoredCard, cardOperators, cardContext, cardDefaultPool, defaultCardPick, seatOperator, seatPortrait, seatCardSkin, seatArtSrc, lookOptions, randomCardPick } from '../../public/js/ui/seatArt.js';
 import { chessPortraitUrl } from '../../public/js/ui/assetUrls.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -63,11 +66,38 @@ test('the operator a seat shows: own pick at once, a teammate\'s seats[].card, e
   }
   const picks = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id) => seatOperator({ playerId: `p_${id}` }, ctx).chess.charId));
   assert.ok(picks.size > 1, 'different players get different defaults');
-  // no portrait for a bot, an empty seat, or before the data loads
-  assert.equal(seatOperator({ playerId: 'ai_1', isBot: true }, ctx), null);
+  // an AI seat has no card on the wire, so it gets the deterministic pick (the fork's rule); null only for an empty
+  // seat or before the data loads
+  const bot = seatOperator({ playerId: 'ai_1', isBot: true }, ctx, { myId: 'p_me', myCard: 'char_498_inside' });
+  assert.equal(bot.picked, false, "an AI seat never shows the viewer's own pick");
+  assert.ok(ctx.pool.includes(bot.chess), 'the pick is a default-pool record');
+  assert.equal(bot.chess, defaultCardPick('ai_1', ctx.pool), 'the one function behind the team row, the seat card and the settlement card');
+  assert.equal(seatOperator({ playerId: 'ai_1', isBot: true }, other).chess.charId, bot.chess.charId, 'the same AI pick on every client');
   assert.equal(seatOperator(null, ctx), null);
   assert.equal(seatOperator({ playerId: 'p_x' }, cardContext([])), null);
   assert.equal(CARD_PREF, 'room.card');
+});
+
+test('the default pick (the fork\'s rule): the same operator for a player with no pick, whatever order the records arrive in', () => {
+  const list = cardOperators(CHESS);
+  const ctx = cardContext(list);
+  assert.equal(defaultCardPick('ai_1', ctx.pool), defaultCardPick('ai_1', ctx.pool), 'the same player always gets the same operator');
+  assert.equal(defaultCardPick('ai_1', cardDefaultPool(cardOperators([...CHESS].reverse()))), defaultCardPick('ai_1', ctx.pool),
+    'ordered by charId, so a client that read the records in another order (or in another language) picks the same one');
+  const ids = new Set(['ai_1', 'ai_2', 'ai_3', 'ai_4', 'ai_5', 'ai_6'].map((id) => defaultCardPick(id, ctx.pool).charId));
+  assert.ok(ids.size > 1, 'different players get different operators');
+  // an AI seat (no card on the wire) and a human seat on 默认 follow the same rule; the three identity surfaces call this
+  // one function: the seat card (seatOperator / seatPortrait), the team row's 头像 (ui/gameComponents.js PlayerAvatar)
+  // and the settlement card (ui/resultAvatar.js)
+  for (const id of ['ai_1', 'p_human']) {
+    const pick = defaultCardPick(id, ctx.pool);
+    assert.ok(ctx.pool.includes(pick), 'a default-pool record');
+    assert.equal(seatOperator({ playerId: id, isBot: id.startsWith('ai_') }, ctx).chess, pick);
+    assert.equal(seatPortrait({ playerId: id, isBot: id.startsWith('ai_') }, { ...ctx, m: M }), chessPortraitUrl(M, pick));
+  }
+  assert.equal(defaultCardPick('ai_1', []), null, 'before the data loads');
+  assert.equal(defaultCardPick(null, ctx.pool), null, 'an empty seat');
+  assert.equal(defaultCardPick('ai_1', [null, { charId: 7 }]), null, 'nothing to pick from');
 });
 
 test('the outfit a seat card wears (decision 4 of 2026-10-21): one\'s own choice at once, another doctor\'s published map, the switch, the fallback', () => {
@@ -111,11 +141,16 @@ test('a picture that fails to load: the outfit gives way to the default portrait
   assert.equal(seatArtSrc([PLAIN, PLAIN], [PLAIN]), null, 'an outfit this page lacks drew the default already: no second try');
   assert.equal(seatArtSrc([null, null]), null);
   assert.equal(seatArtSrc(undefined), null);
-  // screens/room.js: the card gets both pictures and walks them on each failed load
+  // screens/room.js: the card gets both pictures and walks them on each failed load, an AI seat included (the fork's
+  // rule: its 名片 is the deterministic pick, so the seat card no longer excludes bots)
   const room = readFileSync(path.join(ROOT, 'public/js/screens/room.js'), 'utf8');
-  assert.match(room, /const art = seat\.isBot \? null : seatArtSrc\(\[portrait, portraitDefault\], badArt\);/);
+  assert.match(room, /const art = seatArtSrc\(\[portrait, portraitDefault\], badArt\);/);
+  assert.doesNotMatch(room, /const art = seat\.isBot \? null/, 'no bot exception any more');
   assert.match(room, /onError=\$\{\(\) => setBadArt\(\(b\) => \(b\.includes\(art\) \? b : \[\.\.\.b, art\]\)\)\}/);
   assert.match(room, /portraitDefault=\$\{op && skin \? chessPortraitUrl\(data\.get\('assets'\), op\.chess\) : null\}/);
+  // the plate's avatar: the player's own 头像, else the default pick for a player on 默认 (the fork's rule); a bot keeps
+  // its robot frame
+  assert.match(room, /cardAvatarUrl\(defaultCardPick\(seat\.playerId\)\?\.charId, portraits\.m\)/);
 });
 
 test('the pick\'s store: a string pref, \'\' for 默认; setCard persists and tells the store', () => {

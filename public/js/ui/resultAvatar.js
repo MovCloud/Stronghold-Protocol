@@ -1,8 +1,11 @@
-// Settlement art shares the lobby's local choices and each teammate's published room metadata.
+// Settlement art shares the lobby's local choices and each teammate's published room metadata. A player with no 名片 pick
+// — an AI seat, which has no card on the wire, and a human on 默认 — gets the deterministic pick from the default pool
+// (ui/seatArt.js defaultCardPick, the fork's rule): the settlement card is one of the three identity surfaces, so its
+// 头像 shows that operator instead of the strategy icon (ui/gameComponents.js PlayerAvatar `prefer="avatar"`).
 import { html } from './components.js';
 import { PlayerAvatar, Img } from './gameComponents.js';
 import { useMyCard } from './playerCard.js';
-import { cardAvatarUrl, cardOperators, cardPortraitUrl } from './seatArt.js';
+import { defaultCardPick, cardAvatarUrl, cardOperators, cardPortraitUrl } from './seatArt.js';
 import { cardPortraitOperatorId } from '../../../shared/playerCard.js';
 import { OperatorPortrait } from './operatorPortrait.js';
 import { useStore } from '../store.js';
@@ -11,12 +14,12 @@ import { data } from '../data.js';
 function useResultCard(player, self) {
   const mine = useMyCard();
   const roomCard = useStore((s) => s.room?.seats?.find((seat) => seat?.playerId === player?.playerId)?.card || null);
-  return player?.isBot ? null : self ? mine : player?.card ?? roomCard;
+  return player?.isBot ? defaultCardPick(player?.playerId) : self ? mine : player?.card ?? roomCard;
 }
 
 export function ResultAvatar({ player, self = false, ...props }) {
   const card = useResultCard(player, self);
-  return html`<${PlayerAvatar} ...${props} player=${player} self=${self} avatar=${cardAvatarUrl(card?.avatar, data.get('assets'))} />`;
+  return html`<${PlayerAvatar} ...${props} player=${player} self=${self} prefer="avatar" avatar=${cardAvatarUrl(card?.avatar, data.get('assets'))} />`;
 }
 
 /** A chosen room portrait takes precedence; old results and unselected cards keep their lineup ace. */

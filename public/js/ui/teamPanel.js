@@ -1,4 +1,8 @@
-// Left team panel (research 06 §11.1, research 09 §3.1): one row per seat — avatar (band icon once picked), name, LP
+// Left team panel (research 06 §11.1, research 09 §3.1): one row per seat — avatar (the player's picked 名片 头像; the
+// strategy icon only in the row's flyout, which is this fork's deviation from research 06 §11.1 — the official row shows
+// the strategy icon on the avatar once a band is picked; a player with no pick — an AI seat, which has no card on the
+// wire, or a human on 默认 — gets the deterministic default pick by player id, ui/seatArt.js defaultCardPick), the
+// 大本营 (调度中心) level badge, name, LP
 // tower, status glyph (… acting / ✓ ready / ⌛ deciding / ⚔ combat / door left / ✕ dead), AI badge, "you" marker, the
 // field being watched (eye badge), the 预选盟约 glyph (ui/bondPlan.js) and emote bubbles. In a boss round the viewer's pair
 // is framed in green from the round's start (gameLogic teamFrameIds; community report of 2026-10-06, item 51).
@@ -33,7 +37,7 @@
 import { useEffect, useReducer, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
 import { html, Icon, Tooltip, Fragment } from './components.js';
-import { PlayerAvatar, LpTower, GIcon, LocalSprite, UnitThumb, BandIcon } from './gameComponents.js';
+import { PlayerAvatar, Sprite, LpTower, GIcon, LocalSprite, UnitThumb, BandIcon } from './gameComponents.js';
 import { EmoteBubble } from './emotes.js';
 import { STATUS_META, sortedPlayers, teamFrameIds, activeBubbles } from './gameLogic.js';
 import { MissTag, uniteRemaining } from './hud.js';
@@ -242,7 +246,7 @@ export function TeamRow({ p, pub, myId, watching, onWatch, observe, halves, clic
   const { click, dblClick } = clicks;
   return html`<div data-seat=${p.seat} class=${cx('team__row', self && 'is-self', inTeam && 'is-team', watched && 'is-watched', p.alive === false && !p.pendingDeath && 'is-dead', p.pendingDeath && 'is-pending', open && 'is-open', offline && 'is-offline')}>
     <button type="button" class="team__btn" onClick=${() => click(p, self)} onDblClick=${(e) => dblClick(e, p, self)} title=${inTeam && !self ? `${title} · ${t('与你在同一战场')}` : title} aria-label=${title} aria-expanded=${observe && !self && !half ? String(open) : undefined}>
-      <${PlayerAvatar} player=${p} self=${self} />
+      <${PlayerAvatar} player=${p} self=${self} prefer="avatar">${p.shopLevel && !p.pendingDeath && !spMark ? html`<span class="pavatar__level" title=${t('调度中心等级')}><${Sprite} k=${`shopLevelSprite/shop_level_icon_${p.shopLevel}`} fallback=${html`<b class="num">${p.shopLevel}</b>`} /></span>` : null}</${PlayerAvatar}>
       ${inTeam ? html`<span class=${cx('team__frame', !frameArt && 'team__frame--plain')} style=${frameArt ? `--frame:url("${frameArt}")` : undefined} aria-hidden="true"></span>` : null}
       <span class="team__seat num">P${(p.seat ?? 0) + 1}</span>
       ${p.isBot ? html`<span class="team__ai">AI</span>` : null}
