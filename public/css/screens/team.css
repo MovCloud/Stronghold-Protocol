@@ -99,6 +99,9 @@
      measured in ui/teamPanel.js: the window never reaches past the screen's right edge. */
   display: flex;
   align-items: stretch;
+  /* the same 5px gap the scroller uses between its two columns, now between the scroller and the strategy column:
+     without it the operators' and the strategy's backings touch and read as one slab (user report 2026-11-09) */
+  column-gap: 5px;
   width: max-content;
   max-width: min(8.6rem, calc(100vw - var(--team-w2) - .9rem), var(--fly-max, 100vw));
   min-width: 0;
@@ -150,7 +153,8 @@
 /* each column carries its own backing rather than the window doing it: the window has no fill, so the 卡池 spacer row
    stays fully transparent and reads as the divider between pools (owner request 2026-10-25). The 5px padding on both
    sides of every column keeps its icons off the column edge; the scroller's 5px column gap separates the discs from the
-   operators, and the strategy column's own shadow separates it from the scroller. */
+   operators, and the window's 5px column gap separates the scroller from the strategy column (2026-11-09), whose own
+   shadow marks the edge. */
 
 .team__fly-bonds, .team__fly-ops, .team__fly-band { padding: 0 5px; background: rgba(6, 10, 9, .86); }
 
