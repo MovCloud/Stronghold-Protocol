@@ -1,8 +1,19 @@
 // Room display metadata only. Never accept URLs, identity, stats or gameplay settings.
-import { isSkinId } from './skins.js';
+import { isSkinId, skinDenied } from './skins.js';
 import { parseAvatarId } from './avatarSources.js';
 
 export const isCardOperatorId = (v) => typeof v === 'string' && (v === '' || (v.length <= 80 && /^char_[a-zA-Z0-9_]+$/.test(v)));
+
+/**
+ * 皮肤管理 (docs/CONTENT-ADMIN.md §9): a card field that carries a skin id. The stored form is `skin:<id>` for the
+ * 名片底图 and the bare id for the portrait and the avatar; both degrade to the card's default once the admin stops
+ * offering that skin, so the same judgement covers the portrait, the avatar and the background.
+ */
+export function cardSkinDenied(v) {
+  if (typeof v !== 'string') return false;
+  const id = v.startsWith('skin:') ? v.slice(5) : v;
+  return isSkinId(id) && skinDenied(id);
+}
 
 /** Avatar choice: a legacy operator id, or that operator's skin id (char_…@series#n). Never a URL. */
 export function cardAvatarOperatorId(v) {
@@ -44,7 +55,8 @@ export function isCardShift(v) {
  * @param {(id: string) => boolean} [isOperator]
  */
 export function cleanPlayerCard(v, isOperator = () => true) {
-  const id = (s) => isCardPortraitId(s) && s && isOperator(cardPortraitOperatorId(s)) ? s : '';
-  const avatar = isCardAvatarId(v?.avatar) && (isAvatarSourceId(v.avatar) || isOperator(cardAvatarOperatorId(v.avatar))) ? v.avatar : '';
+  const id = (s) => isCardPortraitId(s) && s && isOperator(cardPortraitOperatorId(s)) && !cardSkinDenied(s) ? s : '';
+  const avatar = isCardAvatarId(v?.avatar) && !cardSkinDenied(v.avatar)
+    && (isAvatarSourceId(v.avatar) || isOperator(cardAvatarOperatorId(v.avatar))) ? v.avatar : '';
   return Object.freeze({ charId: id(v?.charId), avatar });
 }

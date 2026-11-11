@@ -1,10 +1,10 @@
 // The feedback board service (deploy/stardust/feedback): real HTTP against an in-process server on an ephemeral port,
-// a temp SQLite file and an injected clock. Owner keys and sessions here are test-only values.
+// a temp SQLite file and an injected clock. Sessions here are test-only values.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,7 +13,6 @@ import { clientKey, parseListQuery } from '../policy.mjs';
 import { openStore } from '../store.mjs';
 
 const ORIGIN = 'https://ark-proto.example.test';
-const KEY = 'test-only-owner-key-7f3a';
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const START = Date.UTC(2026, 9, 16, 12);
 const quiet = { info() {}, warn() {}, error() {} };
@@ -32,21 +31,16 @@ function fixture() {
   for (const [name, data] of Object.entries(files)) writeFileSync(join(pub, name), data);
   writeFileSync(join(pub, 'sub', 'x.js'), 'nope');
   writeFileSync(join(dir, 'server.mjs'), 'outside');
-  mkdirSync(join(dir, 'owner'));
   return dir;
 }
-const writeOwner = (dir, doc) => writeFileSync(join(dir, 'owner', 'owner.json'), typeof doc === 'string' ? doc : JSON.stringify(doc));
-const ownerDoc = (key = KEY) => ({ names: ['服主'], keySha256: sha(key) });
 
 /** A running service; `dir` / `clock` are shared when a test restarts it. Cleanup closes it, then removes `dir`. */
-async function start(t, { dir = null, clock = { t: START }, owner = true, keepDir = false, ...opts } = {}) {
+async function start(t, { dir = null, clock = { t: START }, keepDir = false, ...opts } = {}) {
   const own = !dir;
   dir ??= fixture();
-  if (owner && !existsSync(join(dir, 'owner', 'owner.json'))) writeOwner(dir, ownerDoc());
   const service = createFeedbackServer({ db: join(dir, 'data', 'feedback.sqlite'), origin: ORIGIN, publicDir: join(dir, 'public'),
-    ownerFile: join(dir, 'owner', 'owner.json'), now: () => clock.t, log: quiet, ...opts });
+    now: () => clock.t, log: quiet, ...opts });
   await new Promise((resolve) => service.server.listen(0, '127.0.0.1', resolve));
-  await service.refreshOwner();
   const port = service.server.address().port;
   t.after(async () => { await service.close(); if (own && !keepDir) rmSync(dir, { recursive: true, force: true }); });
   return { service, dir, clock, port, call: (method, path, o) => call(port, method, path, o) };
@@ -87,7 +81,13 @@ async function created(api, doc, opts) {
   assert.equal(r.status, 201, r.text);
   return r.body.item;
 }
-const admin = (api, id, patch, headers = {}) => api.call('POST', `/feedback/api/items/${id}/admin`, { json: patch, headers: { 'x-owner-key': KEY, ...headers } });
+/** The admin console's routes over the same store — the board's only management path. */
+function consoleApi(service, clock, audit = []) {
+  const routes = new Map();
+  const admin = { state: {}, registerAdminRoute: (pathname, opts) => routes.set(pathname, opts), commit: async (state, event) => { audit.push(event); } };
+  registerAdminRoutes(admin, service.store, { now: () => clock.t });
+  return { audit, call: (pathname, body, params) => routes.get(pathname).handler(body, params) };
+}
 const list = (api, query = '', headers = {}) => api.call('GET', `/feedback/api/items${query}`, { headers });
 
 test('create returns the public item and stores cleaned text', async (t) => {
@@ -159,11 +159,9 @@ test('origin, media type, size and method are checked', async (t) => {
   assert.deepEqual([put.status, put.headers.allow, put.body], [405, 'GET, HEAD, POST', { error: 'METHOD_NOT_ALLOWED' }]);
   assert.equal((await api.call('POST', '/feedback/api/health', { json: {} })).status, 405);
   assert.equal((await api.call('PATCH', '/feedback/api/items/1', { json: {} })).status, 405);
-  assert.equal((await api.call('GET', '/feedback/api/items/1/admin')).status, 405);
+  assert.equal((await api.call('DELETE', '/feedback/api/items/1')).status, 405); // management is the console's, not the board API's
+  assert.equal((await api.call('GET', '/feedback/api/items/1/admin')).status, 404);
   assert.equal((await api.call('POST', '/feedback/', { json: {} })).status, 405);
-  // DELETE needs the origin too (before the owner key is even looked at)
-  assert.deepEqual((await api.call('DELETE', '/feedback/api/items/1', { headers: { origin: 'null', 'x-owner-key': KEY } })).body, { error: 'ORIGIN' });
-  assert.deepEqual((await api.call('POST', '/feedback/api/items/1/admin', { json: {}, headers: { origin: undefined, 'x-owner-key': KEY } })).body, { error: 'ORIGIN' });
   assert.equal((await api.call('GET', '/feedback/api/nope')).status, 404);
   assert.equal((await api.call('GET', '/elsewhere')).status, 404);
   assert.equal((await api.call('GET', '/feedback/api/items/0')).status, 404);
@@ -248,7 +246,8 @@ test('list: newest first, keyset pages, filters, counts and bad parameters', asy
   const api = await start(t);
   const cats = ['bug', 'gameplay', 'ui', 'other'];
   for (let i = 1; i <= 25; i++) await created(api, item(i, { category: cats[i % 4] }));
-  for (const [id, status] of [[1, 'planned'], [2, 'planned'], [3, 'updated'], [4, 'unplanned'], [8, 'updated']]) assert.equal((await admin(api, id, { status })).status, 200);
+  const manage = consoleApi(api.service, api.clock);
+  for (const [id, status] of [[1, 'planned'], [2, 'planned'], [3, 'updated'], [4, 'unplanned'], [8, 'updated']]) await manage.call('/admin/api/feedback/item', { id, status });
   const first = await list(api);
   assert.equal(first.status, 200);
   assert.equal(first.headers['cache-control'], 'no-store');
@@ -305,98 +304,43 @@ test('search: Chinese terms, AND, literal % _ \\ and ASCII case', async (t) => {
   assert.deepEqual(await q('amiya'), [ids.author]);
   // only the first five terms count
   assert.deepEqual(await q('进 度 1 0 % 不存在'), [ids.pct]);
-  assert.equal((await admin(api, ids.ui, { reply: '已在 0.3.1 修复' })).status, 200);
+  await consoleApi(api.service, api.clock).call('/admin/api/feedback/item', { id: ids.ui, reply: '已在 0.3.1 修复' });
   assert.deepEqual(await q('0.3.1'), [ids.ui]);
   const counted = await list(api, '?q=%E6%B5%8B%E8%AF%95&status=planned');
   assert.deepEqual([counted.body.items, counted.body.counts.all, counted.body.counts.unassigned], [[], 4, 4]);
 });
 
-test('owner: status, reply, hidden, delete; hidden items stay out of public views', async (t) => {
+test('management (console routes): status, reply, hidden, delete; hidden items stay out of public views', async (t) => {
   const api = await start(t);
   const a = await created(api, item(1)), b = await created(api, item(2));
-  assert.equal((await api.call('GET', '/feedback/api/admin', { headers: { 'x-owner-key': KEY } })).status, 204);
-  assert.deepEqual((await api.call('GET', '/feedback/api/admin')).body, { error: 'OWNER' });
-  assert.deepEqual((await admin(api, a.id, { status: 'planned' }, { 'x-owner-key': 'wrong' })).body, { error: 'OWNER' });
-  assert.equal((await admin(api, a.id, { status: 'planned' }, { 'x-owner-key': undefined })).status, 403);
+  const manage = consoleApi(api.service, api.clock);
   api.clock.t += 1000;
-  let r = await admin(api, a.id, { status: 'planned', reply: '  收到，\r\n下个版本处理  ' });
-  assert.equal(r.status, 200);
-  assert.deepEqual(r.body.item, { ...a, status: 'planned', reply: '收到，\n下个版本处理', replyAt: START + 1000, updatedAt: START + 1000, hidden: false });
+  assert.deepEqual((await manage.call('/admin/api/feedback/item', { id: a.id, status: 'planned', reply: '  收到，\r\n下个版本处理  ' })).item,
+    { ...a, status: 'planned', reply: '收到，\n下个版本处理', replyAt: START + 1000, updatedAt: START + 1000, hidden: false });
   api.clock.t += 1000;
-  r = await admin(api, a.id, { status: 'planned' });
-  assert.equal(r.body.item.updatedAt, START + 1000, 'no change, no update');
-  r = await admin(api, a.id, { reply: '' });
-  assert.deepEqual([r.body.item.reply, r.body.item.replyAt, r.body.item.updatedAt], ['', null, START + 2000]);
-  for (const [patch, field] of [[{ status: 'done' }, 'status'], [{ reply: 'x'.repeat(2001) }, 'reply'], [{ reply: null }, 'reply'], [{ hidden: 'yes' }, 'hidden']]) {
-    assert.deepEqual((await admin(api, a.id, patch)).body, { error: 'INVALID', field });
+  assert.equal((await manage.call('/admin/api/feedback/item', { id: a.id, status: 'planned' })).item.updatedAt, START + 1000, 'no change, no update');
+  assert.deepEqual((await manage.call('/admin/api/feedback/item', { id: a.id, reply: '' })).item,
+    { ...a, status: 'planned', reply: '', replyAt: null, updatedAt: START + 2000, hidden: false });
+  for (const [patch, field] of [[{ status: 'done' }, '状态'], [{ reply: 'x'.repeat(2001) }, '回复'], [{ reply: null }, '回复'], [{ hidden: 'yes' }, '隐藏']]) {
+    await assert.rejects(() => manage.call('/admin/api/feedback/item', { id: a.id, ...patch }), new RegExp(`无效的「${field}」`));
   }
-  assert.equal((await admin(api, a.id, { reply: '字'.repeat(2000) })).status, 200);
-  assert.equal((await admin(api, 999, { status: 'planned' })).status, 404);
-  assert.equal((await admin(api, b.id, { hidden: true })).body.item.hidden, true);
+  assert.equal((await manage.call('/admin/api/feedback/item', { id: a.id, reply: '字'.repeat(2000) })).item.reply.length, 2000);
+  await assert.rejects(() => manage.call('/admin/api/feedback/item', { id: 999 }), /反馈不存在/);
+  assert.equal((await manage.call('/admin/api/feedback/item', { id: b.id, hidden: true })).item.hidden, true);
   // public: gone from list, detail, counts, health and search
   const pub = await list(api);
   assert.deepEqual([pub.body.items.map((x) => x.id), pub.body.counts.all], [[a.id], 1]);
   assert.equal((await api.call('GET', `/feedback/api/items/${b.id}`)).status, 404);
   assert.deepEqual((await api.call('GET', '/feedback/api/health')).body, { ok: true, items: 1 });
   assert.deepEqual((await list(api, '?q=%E6%A0%87%E9%A2%98%202')).body.items, []);
-  // owner: visible with the flag
-  const own = await list(api, '', { 'x-owner-key': KEY });
-  assert.deepEqual(own.body.items.map((x) => [x.id, x.hidden]), [[b.id, true], [a.id, false]]);
-  assert.equal(own.body.counts.all, 2);
-  assert.equal((await api.call('GET', `/feedback/api/items/${b.id}`, { headers: { 'x-owner-key': KEY } })).body.item.hidden, true);
-  // a wrong key on a GET is just the public view
-  assert.equal((await list(api, '', { 'x-owner-key': 'wrong' })).body.items.length, 1);
-  assert.equal((await admin(api, b.id, { hidden: false })).body.item.hidden, false);
-  const del = await api.call('DELETE', `/feedback/api/items/${b.id}`, { headers: { 'x-owner-key': KEY } });
-  assert.deepEqual([del.status, del.text], [204, '']);
-  assert.equal((await api.call('DELETE', `/feedback/api/items/${b.id}`, { headers: { 'x-owner-key': KEY } })).status, 404);
-  assert.equal((await api.call('DELETE', `/feedback/api/items/${a.id}`)).status, 403);
-  assert.equal((await api.call('GET', `/feedback/api/items/${b.id}`, { headers: { 'x-owner-key': KEY } })).status, 404);
-});
-
-test('owner file: missing, invalid, replaced (mtime) and removed', async (t) => {
-  const api = await start(t, { owner: false });
-  const check = async (key = KEY) => (await api.call('GET', '/feedback/api/admin', { headers: { 'x-owner-key': key } })).status;
-  assert.equal(await check(), 503);
-  assert.deepEqual((await api.call('GET', '/feedback/api/admin')).body, { error: 'OWNER_DISABLED' });
-  assert.equal((await api.call('DELETE', '/feedback/api/items/1', { headers: { 'x-owner-key': KEY } })).status, 503);
-  const file = join(api.dir, 'owner', 'owner.json');
-  let mtime = Date.now() / 1000;
-  const put = async (doc) => { writeOwner(api.dir, doc); utimesSync(file, mtime, mtime += 10); return api.service.refreshOwner(); };
-  for (const doc of ['{', '[]', { keySha256: sha(KEY) }, { names: ['服主'], keySha256: sha(KEY), extra: 1 }, { names: ['服主'], keySha256: 'ab' },
-    { names: 'x', keySha256: sha(KEY) }, { names: [''], keySha256: sha(KEY) }, { names: ['​'], keySha256: sha(KEY) }]) {
-    assert.equal(await put(doc), false, JSON.stringify(doc));
-    assert.equal(await check(), 503);
-  }
-  assert.equal(await put(ownerDoc()), true);
-  assert.equal(await check(), 204);
-  assert.equal(await put({ names: [], keySha256: sha('next-test-key').toUpperCase() }), true);
-  assert.equal(await check(), 403);
-  assert.equal(await check('next-test-key'), 204);
-  rmSync(file);
-  assert.equal(await api.service.refreshOwner(), false);
-  assert.equal(await check('next-test-key'), 503);
-});
-
-test('wrong owner keys: 10 per 10 minutes per address', async (t) => {
-  const api = await start(t);
-  await created(api, item(1));
-  assert.equal((await admin(api, 1, { hidden: true })).status, 200);
-  const ip = { 'x-real-ip': '10.6.0.1' };
-  const check = (key, headers = ip) => api.call('GET', '/feedback/api/admin', { headers: { 'x-owner-key': key, ...headers } });
-  for (let i = 0; i < 9; i++) assert.equal((await check(`wrong-${i}`)).status, 403);
-  // a wrong key on a public GET counts too
-  assert.equal((await list(api, '', { 'x-owner-key': 'wrong-9', ...ip })).body.items.length, 0);
-  const r = await check(KEY);
-  assert.deepEqual([r.status, r.body, r.headers['retry-after']], [429, { error: 'RATE_LIMITED', retryAfter: 600 }, '600']);
-  assert.equal((await admin(api, 1, { hidden: false }, ip)).status, 429);
-  assert.equal((await api.call('DELETE', '/feedback/api/items/1', { headers: { 'x-owner-key': KEY, ...ip } })).status, 429);
-  // while limited, a GET with the right key is just public
-  const pub = await list(api, '', { 'x-owner-key': KEY, ...ip });
-  assert.deepEqual([pub.status, pub.body.items], [200, []]);
-  assert.equal((await check(KEY, { 'x-real-ip': '10.6.0.2' })).status, 204);
-  api.clock.t += 10 * MINUTE;
-  assert.equal((await check(KEY)).status, 204);
+  // the console sees the hidden flag
+  const page = await manage.call('/admin/api/feedback', undefined, new URLSearchParams());
+  assert.deepEqual(page.items.map((x) => [x.id, x.hidden]), [[b.id, true], [a.id, false]]);
+  assert.equal(page.counts.all, 2);
+  assert.equal((await manage.call('/admin/api/feedback/item', { id: b.id, hidden: false })).item.hidden, false);
+  assert.deepEqual(await manage.call('/admin/api/feedback/delete', { id: b.id }), { ok: true });
+  await assert.rejects(() => manage.call('/admin/api/feedback/delete', { id: b.id }), /反馈不存在/);
+  assert.equal((await api.call('GET', `/feedback/api/items/${b.id}`)).status, 404);
 });
 
 test('data survives a restart, ids are not reused, nothing identifying is stored', async (t) => {
@@ -407,13 +351,14 @@ test('data survives a restart, ids are not reused, nothing identifying is stored
   const who = { session: sessionOf(4242), ip: '198.51.100.77' };
   await created(one, item(1), who);
   const b = await created(one, item(2), who);
-  assert.equal((await admin(one, 1, { status: 'updated', reply: '已修复' })).status, 200);
-  assert.equal((await one.call('DELETE', `/feedback/api/items/${b.id}`, { headers: { 'x-owner-key': KEY } })).status, 204);
+  const manage = consoleApi(one.service, clock);
+  assert.equal((await manage.call('/admin/api/feedback/item', { id: 1, status: 'updated', reply: '已修复' })).item.reply, '已修复');
+  assert.deepEqual(await manage.call('/admin/api/feedback/delete', { id: b.id }), { ok: true });
   await one.service.close();
   const files = readdirSync(join(dir, 'data'));
   assert.deepEqual(files, ['feedback.sqlite']);
   const raw = readFileSync(join(dir, 'data', 'feedback.sqlite')).toString('latin1');
-  for (const secret of [who.session, who.ip, sha(who.session), KEY, sha(KEY)]) assert.equal(raw.includes(secret), false);
+  for (const secret of [who.session, who.ip, sha(who.session)]) assert.equal(raw.includes(secret), false);
   const two = await start(t, { dir, clock });
   const items = (await list(two)).body.items;
   assert.deepEqual(items.map((x) => [x.id, x.status, x.reply]), [[1, 'updated', '已修复']]);
@@ -509,10 +454,9 @@ test('health and the factory contract', async (t) => {
 
 test('mounted on the game server: the prefix is served, everything else goes back to the previous listener', async (t) => {
   const dir = fixture();
-  writeOwner(dir, ownerDoc());
   const server = http.createServer((_req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('game'); });
   const mounted = mountFeedbackBoard({ server, db: join(dir, 'data', 'feedback.sqlite'), origin: ORIGIN,
-    publicDir: join(dir, 'public'), ownerFile: join(dir, 'owner', 'owner.json'), log: quiet });
+    publicDir: join(dir, 'public'), log: quiet });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   // the game listener is ours, so it has to be closed here: a listening server keeps the test runner alive forever
   t.after(async () => {

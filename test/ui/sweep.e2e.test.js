@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Client, ROOT, hasChrome, startRealServer, problemsOf, sleep } from '../e2e/client.mjs';
 import { VERSIONS, versionSlug } from '../../shared/versions.js';
+import { codexItems } from '../../public/js/screens/loadout.js';
 
 const enabled = process.env.SP_E2E === '1' && hasChrome();
 const shots = process.env.SP_FIX53_SHOTS;
@@ -16,7 +17,8 @@ const expected = (version) => {
   return { bonds: Object.values(read('bonds')).filter((b) => b.bondId).length,
     bands: Object.values(read('bands')).filter((b) => b.bandId).length,
     enemies: Object.values(read('bosses')).filter((b) => b.bossId && !b.hidden).length
-      + Object.values(read('factions').types).filter((f) => f.type).length };
+      + Object.values(read('factions').types).filter((f) => f.type).length,
+    items: codexItems(read('items')).length };
 };
 const shot = async (c, name) => {
   if (!shots) return;
@@ -29,7 +31,7 @@ async function close(c) {
 }
 async function report(c, version, capture = false) {
   const counts = expected(version);
-  for (const [tab, label] of [['bands', '策略'], ['enemies', '敌方'], ['bonds', '盟约']]) {
+  for (const [tab, label] of [['bands', '策略'], ['enemies', '敌方'], ['bonds', '盟约'], ['items', '装备']]) {
     await c.click('.sw-tab', label);
     await c.page.waitForFunction((tab, count) => document.querySelector('.sw-body')?.dataset.tab === tab
       && document.querySelectorAll('.sw-tile').length === count && document.querySelector('.sw-left .sw-hero__name'),
@@ -193,7 +195,7 @@ test('S.W.E.E.P.: paused entry animations keep the report, selections and codex 
           if (mode === 'disabled') style = await c.page.addStyleTag({ content: '* { animation: none !important; transition: none !important; }' });
           if (mode === 'reduced-motion') await c.page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
           await c.click('.lobby-sweep');
-          for (const [tab, label] of [['bands', '策略'], ['bonds', '盟约'], ['enemies', '敌方']]) {
+          for (const [tab, label] of [['bands', '策略'], ['bonds', '盟约'], ['enemies', '敌方'], ['items', '装备']]) {
             await c.click('.sw-tab', label);
             await c.page.waitForFunction((tab) => document.querySelector('.sw-body')?.dataset.tab === tab
               && !!document.querySelector('.sw-detail'), {}, tab);

@@ -84,6 +84,7 @@ import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 import { recordError, installTrafficMeter } from './diag.js';
 import { installContent, installContentSet } from './content.js';
+import { installSkinGate } from './ui/skinGate.js';
 import { cosmetics } from './cosmetics.js';
 import { sanitizeVersions, roomVersion, isDefaultVersion, matchFrameVersion } from './versions.js';
 
@@ -648,6 +649,11 @@ async function boot() {
 
   // the language (and its UI translations) before the first render: no Chinese flash for an English player
   const langReady = initLang().catch((err) => console.warn('[app] language setup failed', err));
+  // 皮肤管理 (docs/CONTENT-ADMIN.md §9): which skins this installation offers. Applied to this browser's own stored
+  // choice before the first render, so the picker never shows a skin the server stopped offering and the sync sends the
+  // corrected choice. After the language, so its notice is in the player's language; a server without the gate (or a
+  // failed fetch) leaves the page exactly as it was.
+  const gateReady = langReady.then(() => installSkinGate({ toast })).catch(() => null);
   // This installation's own site link (feedback group / 反馈板), delegated to /data/site.json (ui/siteConfig.js).
   // Applied before the first render so the lobby shows the configured values; a missing file keeps the shipped defaults.
   const siteReady = loadSiteConfig();
@@ -662,7 +668,7 @@ async function boot() {
     }
     net.setName(name);
   });
-  await Promise.all([waitForFonts(1200), connectWhenReady, langReady, Promise.race([siteReady, new Promise((resolve) => setTimeout(resolve, 1200))])]);
+  await Promise.all([waitForFonts(1200), connectWhenReady, langReady, gateReady, Promise.race([siteReady, new Promise((resolve) => setTimeout(resolve, 1200))])]);
   const root = document.getElementById('app');
   render(html`<${App} />`, root);
 

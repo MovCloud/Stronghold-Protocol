@@ -14,7 +14,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { constants as fsConstants } from 'node:fs';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { getData, loadData } from './data.js';
 import { ROOT, listenAddress, bindCandidates, serveDirs, makeLogger, parseTrustProxy, assetIndexOptionsFrom, assetOriginFrom, assetSourceFrom, versionsFrom, parseRoomCode, announcementBoardFileFrom } from './http/config.js';
 import { WS_MAX_PAYLOAD, createSessionStack, attachWebSocket } from './http/websocket.js';
@@ -33,6 +33,11 @@ import { createRoomSets } from './plugins/roomSets.js';
 import { createMatchHosts } from './match/host/index.js';
 import { createVersionSets } from './versions.js';
 import { versionById } from '../shared/versions.js';
+// 内容管理 (docs/CONTENT-ADMIN.md): the runtime documents the panel writes. index.js reads the enabled set once here,
+// which is why the panel says a change takes effect after a restart.
+import { RUNTIME_DIR, VERSIONS_FILE, WILD_FILE, SKINS_FILE, registryIds, validateVersions } from './contentConfig.js';
+import { createSkinGate } from './skinGate.js';
+import { synthesizeWild } from './contentMerge.js';
 import { t } from '../shared/i18n.js';
 import { createTrustedRuntime } from './plugins/trustedRuntime.js';
 import { trustedHostAllowed } from './plugins/trusted.js';
@@ -127,6 +132,29 @@ async function seedAnnouncementFiles(seedDir, targets, log) {
 }
 
 /**
+ * The panel's runtime documents (docs/CONTENT-ADMIN.md), read once at boot — which is why the panel says a change
+ * takes effect after a restart. A missing file is the default (every registered version); an invalid one is reported
+ * and ignored rather than refusing to start, because the panel can still fix it. `SP_VERSIONS` wins over the file, so
+ * the enabled card is read-only when the environment decided the set.
+ * @param {{ dir?: string, ids?: readonly string[], envEnabled?: boolean, log?: object }} o
+ * @returns {Promise<{ versionsFile: string, wildFile: string, ids: readonly string[], envEnabled: boolean, enabled: string[]|null }>}
+ */
+export async function contentAdminOptions({ dir = RUNTIME_DIR, ids = registryIds(), envEnabled = false, log = console } = {}) {
+  const versionsFile = path.join(dir, VERSIONS_FILE);
+  const state = { versionsFile, wildFile: path.join(dir, WILD_FILE), skinsFile: path.join(dir, SKINS_FILE), ids, envEnabled, enabled: null };
+  if (envEnabled) return state;
+  try {
+    const doc = JSON.parse(await readFile(versionsFile, 'utf8'));
+    const errors = validateVersions(doc, ids);
+    if (errors.length) log.warn(`[content] ${VERSIONS_FILE} ignored: ${errors.join('; ')}`); // i18n-ignore: operator log
+    else state.enabled = [...doc.enabled];
+  } catch (e) {
+    if (e.code !== 'ENOENT') log.warn(`[content] ${VERSIONS_FILE} unreadable: ${e.message}`); // i18n-ignore: operator log
+  }
+  return state;
+}
+
+/**
  * Build and start the HTTP + WebSocket server.
  * @param {{
  *   port?: number, host?: string, quiet?: boolean, log?: object,
@@ -201,12 +229,12 @@ export async function startServer(opts = {}) {
   }
   const scriptMode = process.env.SP_PLUGIN_SCRIPTS;
   let registry, lobby, network, packs, serveStatic, browserBuild, assetIndex = null, views = null, assetCache = null;
-  let content = null, visual = null, contents = null, hosts = null, studio = null, trustedRuntime = null, persistence = null;
+  let content = null, visual = null, contents = null, hosts = null, studio = null, trustedRuntime = null, persistence = null, contentAdmin = null;
   let versions = null, versionHosts = null, packPolicy = null;
   let announcementReader = null, announcementSource = null;
   // Admin-published site notices (xinhai chain) and the private player-management dashboard; both optional.
   // The players' feedback board is optional too and shares the dashboard's session for its admin API.
-  let announcements = null, playerAdmin = null, feedbackBoard = null;
+  let announcements = null, playerAdmin = null, feedbackBoard = null, skinGate = null;
   const announcementFile = opts.announcementsFile === null ? null
     : path.resolve(ROOT, opts.announcementsFile || process.env.SP_ANNOUNCEMENTS_FILE || 'config/announcements.json');
   // The lobby board lives outside the image when the installation names a file; the shipped data file stays the default.
@@ -247,7 +275,15 @@ export async function startServer(opts = {}) {
     hosts = createMatchHosts({ contents, log, options: { transport, maxWorkers: Math.max(1, policy.get().maxSets), ...(opts.matchHost || {}) } });
     // the official versions (DESIGN §35.23, M1): which ones (the option, else SP_VERSIONS …), their content, and — only
     // when one beyond 第二期下半 is enabled — the match hosts their rooms play in (counted apart from the plugin hosts)
-    const versionCfg = versionsFrom(opts, log);
+    // 内容管理 (docs/CONTENT-ADMIN.md): the panel's runtime file decides the set when neither the option nor the
+    // environment already did. versionsFrom gives the option priority, so nothing is passed when SP_VERSIONS is set.
+    contentAdmin = await contentAdminOptions({ envEnabled: String(process.env.SP_VERSIONS ?? '').trim() !== '', log });
+    // 狂野模式 (docs/CONTENT-ADMIN.md §5): runtime/wild.json is synthesized into data/versions/wild/ at boot. No file
+    // means no wild set; an unresolvable reference refuses the boot instead of serving half a data set.
+    const wild = await synthesizeWild({ log });
+    if (wild && !wild.ok) throw new Error(`[content] wild ${t('合成失败')}: ${wild.errors.join('; ')}`); // i18n-ignore: operator log
+    const runtimeEnabled = contentAdmin.enabled && !(opts.versions && opts.versions.enabled);
+    const versionCfg = versionsFrom(runtimeEnabled ? { ...opts, versions: { ...(opts.versions || {}), enabled: contentAdmin.enabled } } : opts, log);
     versions = createVersionSets({ enabled: versionCfg.enabled, defaultId: versionCfg.default, dataDir, vanilla: content, defaultData: data, log });
     // (the test options of matchHost apply to both pools, but never the version pool's kind or its own SP_MAX_VERSION_HOSTS)
     versionHosts = versions.nonDefault.length
@@ -298,6 +334,15 @@ export async function startServer(opts = {}) {
     announcementSource = announcementOpts.source;
     announcementReader = createAnnouncementReader({ filePath: announcementOpts.filePath, announcementUrl: announcementOpts.announcementUrl,
       pollMs: announcementOpts.pollMs, log });
+    // 皮肤管理 (docs/CONTENT-ADMIN.md §9): runtime/skins.json decides which skins players may use. Read once here — the
+    // panel says a change takes effect after a restart — and installed into shared/skins.js, where one judgement covers
+    // the operator's appearance, the card's portrait, its background and the operator picker. The persisted sessions are
+    // cleaned now, the one moment nothing races them; a player whose choice changed is told at the next login by the
+    // client, which applies the same gate to its own stored choice (the browser is the true source).
+    skinGate = createSkinGate({ entries: packs.snapshot().plugins });
+    let skinReset = 0;
+    for (const s of registry.byPlayerId.values()) skinReset += skinGate.cleanSession(s)?.size ?? 0;
+    if (skinReset) log.info(`[skins] ${skinReset} denied skin choice(s) restored to the default appearance`); // i18n-ignore: operator log
   } catch (e) {
     await persistence?.close();
     await announcements?.stop();
@@ -364,14 +409,17 @@ export async function startServer(opts = {}) {
     trustProxy: network.opts.trustProxy, studio, trustedRuntime, emergency: () => network.emergency, announcementReader, announcementSource, announcements, announcementBoardFile,
     // An explicit site-notice store opts the installation into the public schedule projection on /api/announcement
     // (server/publicApi.js); the default keeps the §45 managed-agent projection there.
-    announcementScheduleApi: opts.announcementsFile != null });
+    announcementScheduleApi: opts.announcementsFile != null, skinGate });
   const server = http.createServer(requestHandler);
   server.on('clientError', answerClientError);
   const wss = attachWebSocket(server, { network, log, wsCompression, traffic });
   // the private admin dashboard (/admin): mounts nothing when config/player-admin/config.json is absent;
   // `adminConfigFile: null` skips the mount entirely (tests), a path relocates the credentials file.
   playerAdmin = opts.adminConfigFile === null ? null : await mountPlayerAdmin({ server, network, lobby, registry, packs, policy: packPolicy,
-    ...(opts.adminConfigFile ? { configFile: path.resolve(ROOT, opts.adminConfigFile) } : {}), announcementFile, publicDir, log });
+    // 重启 (the panel's button): the same graceful close as SIGTERM, then exit — the supervisor restarts this process,
+    // which re-reads runtime configuration. A process nobody supervises stays down; playerAdmin asks for confirmation.
+    restart: async () => { await close(); process.exit(0); },
+    ...(opts.adminConfigFile ? { configFile: path.resolve(ROOT, opts.adminConfigFile) } : {}), announcementFile, publicDir, content: contentAdmin, log });
 
   // The players' feedback board (deploy/stardust/feedback) under the /feedback prefix, so the board link in the game
   // page works without a second service or nginx. It needs the site origin the browser sends; without one the board
@@ -383,14 +431,13 @@ export async function startServer(opts = {}) {
     // Only a deploy that asked for the board (an option or one of its env vars) is worth a warning when its
     // origin is missing.
     if (!origin) {
-      if (opts.feedbackBoard || process.env.FEEDBACK_DB || process.env.FEEDBACK_OWNER_FILE || process.env.FEEDBACK_BACKUP_DIR)
+      if (opts.feedbackBoard || process.env.FEEDBACK_DB || process.env.FEEDBACK_BACKUP_DIR)
         log.warn('[feedback] disabled: no origin to check (set FEEDBACK_ORIGIN)');
     } else {
       try {
         feedbackBoard = mountFeedbackBoard({ server, admin: playerAdmin?.admin ?? null,
           db: process.env.FEEDBACK_DB ? path.resolve(ROOT, process.env.FEEDBACK_DB) : path.join(ROOT, '.state', 'feedback.sqlite'),
-          origin, ownerFile: process.env.FEEDBACK_OWNER_FILE || opts.ownerFile || null,
-          backupDir: process.env.FEEDBACK_BACKUP_DIR || null, trustProxy: network.opts.trustProxy, log });
+          origin, backupDir: process.env.FEEDBACK_BACKUP_DIR || null, trustProxy: network.opts.trustProxy, log });
         log.info(`[feedback] mounted on /feedback: ${feedbackBoard.store.visibleCount()} visible items`);
       } catch (e) { log.error('[feedback] disabled: ' + e.message); }
     }

@@ -155,6 +155,10 @@
 
 .sw-text__h { margin: 0 0 .04rem; font-size: max(calc(.21 * var(--t)), 13px); color: var(--mint-300, #8ff0d2); }
 
+.sw-text p + .sw-text__h { margin-top: .14rem; }
+
+.sw-text__flavor { margin-top: .12rem; font-size: max(calc(.17 * var(--t)), 11px); font-style: italic; color: rgba(238, 242, 241, .6); }
+
 .sw-text .sw-text__bonds { margin-top: .12rem; display: flex; flex-wrap: wrap; align-items: center; gap: .08rem; font-size: max(calc(.16 * var(--t)), 11px); color: #c7cfcd; }
 
 .sw-chip { display: inline-flex; align-items: center; gap: .05rem; padding: .02rem .1rem .02rem .05rem; font-size: max(calc(.16 * var(--t)), 11px); color: #eef2f1;
@@ -276,6 +280,8 @@ button.sw-eth:hover { border-color: #fff; }
 
 .sw-tile__hp { position: absolute; right: 3px; top: 3px; padding: 0 .05rem; font-size: max(calc(.13 * var(--t)), 9px); font-weight: 800; line-height: 1.35; color: var(--mint-400); background: rgba(0, 0, 0, .6); }
 
+.sw-tile__price { position: absolute; right: 3px; top: 3px; padding: 0 .05rem; font-size: max(calc(.13 * var(--t)), 9px); font-weight: 800; line-height: 1.35; color: #f2d27a; background: rgba(0, 0, 0, .6); }
+
 /* 盟约: a dark glyph on a lit disc */
 
 .sw-disc { display: grid; place-items: center; width: 64%; aspect-ratio: 1; margin-bottom: 10%; border-radius: 50%;
@@ -304,6 +310,14 @@ button.sw-eth:hover { border-color: #fff; }
 .sw-glyph img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 .08rem rgba(255, 255, 255, .55)); }
 
 .sw-glyph .icon { width: 70%; height: 70%; }
+
+/* 装备: the item icon on the tile, its price badge at the top right */
+
+.sw-item { display: grid; place-items: center; width: 68%; aspect-ratio: 1; margin-bottom: 8%; }
+
+.sw-item img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 .06rem rgba(255, 255, 255, .35)); }
+
+.sw-item .icon { width: 70%; height: 70%; color: rgba(255, 255, 255, .6); }
 
 .sw-allcodex { display: flex; align-items: center; gap: .16rem; width: 100%; margin: 0 0 .1rem; padding: .14rem .22rem; font: inherit; text-align: left; color: #eef2f1; cursor: pointer;
   background: linear-gradient(90deg, rgba(24, 29, 28, .86), rgba(24, 29, 28, .62)); border: 1px solid rgba(255, 255, 255, .12); }

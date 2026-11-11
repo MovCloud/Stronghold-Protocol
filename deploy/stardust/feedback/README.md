@@ -1,14 +1,15 @@
 # 玩家反馈板（/feedback）
 
-玩家提交 Bug 反馈和建议的公开留言板：登录口令门后的所有玩家都能看到全部条目，服主可以回复、设置状态、隐藏或删除。
+玩家提交 Bug 反馈和建议的公开留言板：登录口令门后的所有玩家都能看到全部条目。页面只有阅读与提交，没有管理入口；回复、
+状态、隐藏、删除在后台面板的「玩家反馈」tab 里做（挂载在游戏服务器上时）——独立部署没有管理入口。
 独立的小服务（Node 24 ESM、原生 `node:http`、无框架、无 npm 依赖），数据存在一个 SQLite 文件里（Node 内置
 `node:sqlite`，服主批准的「不引入数据库」规则例外）。只跑在边缘机 OpenResty 后面。
 
 | 文件 | 内容 |
 | --- | --- |
-| `server.mjs` | HTTP 路由、Origin/会话/服主检查、页面和静态文件；`createFeedbackServer(options)` 工厂，直接执行时启动服务 |
+| `server.mjs` | HTTP 路由、Origin/会话检查、页面和静态文件；挂载到游戏服务器时注册后台面板的管理路由；`createFeedbackServer(options)` 工厂，直接执行时启动服务 |
 | `store.mjs` | SQLite：表结构与迁移、列表/搜索/计数、每日备份 |
-| `policy.mjs` | 文本清洗与长度、内存限流、服主密钥文件 |
+| `policy.mjs` | 文本清洗与长度、内存限流 |
 | `public/` | 前端页面（`index.html` 和平铺的静态文件，由主助手维护） |
 | `test/feedback.test.mjs` | `node --test` 用例（进程内真实 HTTP、临时库、注入时钟） |
 
@@ -17,8 +18,8 @@
 - 分类（固定）：`bug` Bug 反馈、`gameplay` 玩法建议、`ui` 界面与体验、`other` 其他。
 - 状态（固定）：`unassigned` 未分配（默认）、`unplanned` 无计划、`planned` 已计划、`updated` 已更新。
 - 条目 JSON：`{ id, category, title, body, author, client, status, reply, replyAt, createdAt, updatedAt }`，时间为毫秒；
-  `author` / `reply` 为 `''` 表示匿名 / 未回复，`replyAt` 无回复时为 `null`。服主视图多一个 `hidden`。
-- 不保存 IP、会话签名或它们的任何哈希；限流状态只在内存里，重启即清空。日志只有启动、数量和内部错误，不记录 IP、密钥、会话或正文。
+  `author` / `reply` 为 `''` 表示匿名 / 未回复，`replyAt` 无回复时为 `null`。管理视图（后台面板）多一个 `hidden`。
+- 不保存 IP、会话签名或它们的任何哈希；限流状态只在内存里，重启即清空。日志只有启动、数量和内部错误，不记录 IP、会话或正文。
 - 数据库：`FEEDBACK_DB`（默认 `/data/feedback.sqlite`），WAL + `synchronous=FULL`，`schema_version` 表记录迁移。id 用
   AUTOINCREMENT，删除的 id 不会再分配。
 - 备份：设置 `FEEDBACK_BACKUP_DIR` 后，启动时若当天（UTC）备份不存在就 `VACUUM INTO` 生成
@@ -48,10 +49,9 @@ CRLF 和单独的 CR 变 LF，去掉 C0/C1 控制字符（保留 LF 和 TAB）�
 | `GET /feedback/api/items?status=&category=&q=&before=&limit=` | `{ items, next, counts }`，新的在前，`before=<id>` 翻页，`limit` 默认 20、超过 50 按 50；`counts` 只受分类和搜索影响，不受状态影响；`status` / `category` 为空或 `all` 表示不过滤 |
 | `GET /feedback/api/items/:id` | `{ item }`；隐藏的条目对玩家是 404 |
 | `POST /feedback/api/items` | JSON `{ category, title, body, author?, client? }` → 201 `{ item }` |
-| `GET /feedback/api/admin` | 服主密钥有效 204，否则 403 `OWNER`；没有有效服主文件 503 `OWNER_DISABLED` |
-| `POST /feedback/api/items/:id/admin` | 服主：JSON `{ status?, reply?, hidden? }` → 200 `{ item }`（服主视图） |
-| `DELETE /feedback/api/items/:id` | 服主：204 |
 | `GET /feedback/api/health` | `{ ok: true, items: <可见条目数> }` |
+
+管理不在板 API 上：状态 / 回复 / 隐藏 / 删除只有后台面板的路由（`registerAdminRoutes`，走 admin 会话）。
 
 搜索 `q`：清洗后最多 64 个码点（超过 400），按空白拆分，取前 5 个词，全部命中才算（AND）；每个词在标题、正文、回复、
 署名里做子串匹配（`LIKE … ESCAPE '\'`，`%` `_` `\` 按字面），ASCII 不区分大小写；一两个汉字也能搜（所以不用 FTS）。
@@ -61,12 +61,11 @@ CRLF 和单独的 CR 变 LF，去掉 C0/C1 控制字符（保留 LF 和 TAB）�
 | 状态 | `error` |
 | --- | --- |
 | 400 | `INVALID`（带 `field`：字段名，或查询参数 `status` `category` `q` `before` `limit`）、`BAD_JSON`、`BAD_REQUEST` |
-| 403 | `ORIGIN`（POST/DELETE 的 `Origin` 不等于 `FEEDBACK_ORIGIN`，或 `Sec-Fetch-Site` 存在且不是 `same-origin`）、`OWNER` |
+| 403 | `ORIGIN`（POST 的 `Origin` 不等于 `FEEDBACK_ORIGIN`，或 `Sec-Fetch-Site` 存在且不是 `same-origin`） |
 | 404 / 405 | `NOT_FOUND` / `METHOD_NOT_ALLOWED`（带 `Allow`） |
 | 409 | `DUPLICATE`（带 `id`：24 小时内已有同样标题+正文的条目，含隐藏条目；不消耗限额） |
 | 413 / 415 | `TOO_LARGE`（请求体超过 16 KiB）/ `UNSUPPORTED_MEDIA_TYPE`（不是 `application/json`） |
 | 429 | `RATE_LIMITED`（带 `retryAfter` 秒和 `Retry-After` 头） |
-| 503 | `OWNER_DISABLED` |
 
 API 响应 `Cache-Control: no-store`；页面带 `Content-Security-Policy`（`default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`），所有响应带
 `X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`。
@@ -76,25 +75,21 @@ API 响应 `Cache-Control: no-store`；页面带 `Content-Security-Policy`（`de
 - 每个门禁会话（`X-Ark-Session`）：10 分钟 3 条，24 小时 15 条；没有门禁在前方时（直接访问服务）这个窗口按客户端地址计，
   缺失或格式不对的值不再被拒绝；
 - 每个客户端地址（IPv4 按单个地址，IPv6 按 /64）：24 小时 30 条；
-- 全站：1 小时 120 条；
-- 服主密钥输错：每个地址 10 分钟 10 次，超过后 `/api/admin` 和服主写操作返回 429，GET 列表/详情按普通玩家处理。
+- 全站：1 小时 120 条。
 
-## 服主
+## 管理
 
-请求头 `X-Owner-Key: <服主密钥>`。密钥文件与游戏的 `SP_OWNER_FILE` 同格式、同校验（`server/ownerFile.js`）：
-`{ "names": [...], "keySha256": "<64 位十六进制>" }`，不允许其他键；这里只用 `keySha256`（SHA-256 后
-`timingSafeEqual` 比较）。由 `FEEDBACK_OWNER_FILE` 指定，每 5 秒在请求之外检查一次 mtime/大小/inode，变了就重读；
-未设置、文件不存在或格式不对时服主功能关闭。挂载**目录**而不是文件（编辑器保存会换 inode）。文件和密钥不会写进日志。
+页面没有登录入口（2026-11-10 起），板 API 也没有管理路径：状态、回复、隐藏、删除只在后台面板的「玩家反馈」tab 里做，
+走 admin 会话（`adminPermission: 'feedback'`），并写审计。独立部署（不挂游戏服务器）只能读和提交。
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `FEEDBACK_ORIGIN` | 必填 | 站点 origin，例如 `https://ark-proto.stardust.matce.cn`；POST/DELETE 的 `Origin` 必须完全相同 |
+| `FEEDBACK_ORIGIN` | 必填 | 站点 origin，例如 `https://ark-proto.stardust.matce.cn`；POST 的 `Origin` 必须完全相同 |
 | `FEEDBACK_HOST` | `127.0.0.1` | 监听地址（镜像里设为 `0.0.0.0`，靠端口只发布到宿主机回环） |
 | `FEEDBACK_PORT` | `3150` | 端口 |
 | `FEEDBACK_DB` | `/data/feedback.sqlite` | 数据库文件（目录自动创建） |
-| `FEEDBACK_OWNER_FILE` | 空 | 服主文件 |
 | `FEEDBACK_BACKUP_DIR` | 空 | 备份目录；空则不备份 |
 
 ## nginx
@@ -116,7 +111,6 @@ location 里只要写了任何 `proxy_set_header`，server 级的就不再继承
 ```bash
 docker build -t ark-feedback:<tag> deploy/stardust/feedback
 install -d -o 1000 -g 1000 -m 700 <数据目录>                 # SQLite 与每日备份
-install -d -o 1000 -g 1000 -m 700 <服主文件目录>             # 放 owner.json（与游戏 SP_OWNER_FILE 同一份），uid 1000 可读
 docker compose --env-file feedback.env -f compose.feedback.yaml up -d
 ```
 
@@ -129,5 +123,5 @@ docker compose --env-file feedback.env -f compose.feedback.yaml up -d
 node --test deploy/stardust/feedback/test/*.test.mjs
 ```
 
-覆盖创建与校验、会话/Origin/媒体类型/大小/方法、各项限额、重复、列表分页筛选计数、搜索、隐藏与服主操作、服主文件变化、
-密钥错误限流、重启持久化、备份轮换、静态文件白名单/版本哈希/CSP 与路径穿越。
+覆盖创建与校验、会话/Origin/媒体类型/大小/方法、各项限额、重复、列表分页筛选计数、搜索、隐藏与后台面板的管理操作
+（状态/回复/隐藏/删除）、重启持久化、备份轮换、静态文件白名单/版本哈希/CSP 与路径穿越。

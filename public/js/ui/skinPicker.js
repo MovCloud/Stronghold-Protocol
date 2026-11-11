@@ -7,6 +7,7 @@ import { Img } from './gameComponents.js';
 import { chessPortraitUrl } from './assetUrls.js';
 import { skinsOf, skinHasModel, registeredDynamicArt } from '../assets.js';
 import { hasAnySkinChoices } from './skins.js';
+import { skinDenied } from '../../../shared/skins.js';
 import { t, N_ } from '../../../shared/i18n.js';
 
 const syncLabels = { idle: N_('未连接'), pending: N_('等待同步'), sending: N_('正在同步'), synced: N_('外观已同步'), locked: N_('下一局生效'), error: N_('同步失败') };
@@ -35,9 +36,11 @@ export function SkinSection({ m, charId, record, choices = {}, sync = 'idle', on
   // registry, public/js/skinRegistry.js) carries pictures only, and the renderer then falls back to the operator's own
   // model (assets.js spineEntry) — its pictures are the point. Neither pictures nor a model → listed, not offered.
   const wearable = (s) => skinHasModel(s) || !!(s && (s.avatar || s.avatarE2 || s.portrait || s.portraitE2 || s.illust));
-  const list = Object.entries(map).map(([id, s]) => ({ id, name: (s && s.name) || id, group: (s && s.group) || '', art: (s && s.portrait) || (s && s.illust) || null, wearable: wearable(s) }));
+  // 皮肤管理 (docs/CONTENT-ADMIN.md §9): a skin the admin stopped offering is not offered here — the row is absent,
+  // not drawn disabled, and a stored choice of it no longer marks anything (ui/skinGate.js rewrote the storage).
+  const list = Object.entries(map).filter(([id]) => !skinDenied(id)).map(([id, s]) => ({ id, name: (s && s.name) || id, group: (s && s.group) || '', art: (s && s.portrait) || (s && s.illust) || null, wearable: wearable(s) }));
   // the choice is only shown once the manifest still holds that skin (a plugin removed it → back to the default look)
-  const chosen = typeof choices?.[charId] === 'string' && choices[charId] && map[choices[charId]] ? choices[charId] : null;
+  const chosen = typeof choices?.[charId] === 'string' && choices[charId] && map[choices[charId]] && !skinDenied(choices[charId]) ? choices[charId] : null;
   // any stored choice — an official outfit included — means the operator is not on its default look, so this section's
   // 默认 tile stays unmarked (the 服装 row shows the outfit that is actually worn)
   const picked = typeof choices?.[charId] === 'string' && choices[charId] ? choices[charId] : null;
@@ -113,7 +116,7 @@ export function outfitRows(m, charId, record = null) {
   const catalog = m && m.skins && typeof m.skins === 'object' && !Array.isArray(m.skins) ? m.skins : null;
   if (!catalog || !id) return [];
   const outfits = Object.entries(catalog)
-    .map(([skinId, s]) => (s && typeof s === 'object' && s.charId === id
+    .map(([skinId, s]) => (s && typeof s === 'object' && s.charId === id && !skinDenied(skinId)
       ? { id: skinId, name: s.name || skinId, art: s.portrait || s.illustration || s.illust || s.avatar || null,
         fallbackArt: `/assets/char/skin_avatar/${skinId}.png` }
       : null))

@@ -162,14 +162,15 @@ const wantsTraffic = (query) => /(?:^|&)traffic(?:=(?:1|true|yes))?(?:&|$)/i.tes
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void}
  */
 export function createRequestHandler({ serveStatic, health, log, trustProxy = 'auto', studio = null, csp = null, trustedRuntime = null, emergency = () => null, assetCache = null,
-  announcementReader = null, announcementSource = null, announcements = null, announcementScheduleApi = false, announcementBoardFile = null }) {
+  announcementReader = null, announcementSource = null, announcements = null, announcementScheduleApi = false, announcementBoardFile = null,
+  skinGate = null }) {
   // The operator board replaces the shipped data file on the same public URL; unset keeps the static file.
   const readAnnouncementBoard = announcementBoardFile ? createAnnouncementBoardReader(announcementBoardFile, log) : null;
   // Read-only public APIs (server/publicApi.js, xinhai chain): room status, ping and the popup projection. The
   // schedule projection owns /api/announcement only when the installation explicitly runs the site-notice store;
   // otherwise the §45 managed-agent projection (server/announcement.js) keeps the path.
   const publicApi = createPublicApi({ lobby: health.lobby, announcements, trustProxy, sendJson, sendError,
-    ownsAnnouncement: announcementScheduleApi });
+    ownsAnnouncement: announcementScheduleApi, skinGate });
   // In-flight ordinary assets/runtime responses (SiderLock): an emergency trip releases them too, so a cold
   // visitor cannot retain its old streaming budget.
   const publicResponses = new Set();

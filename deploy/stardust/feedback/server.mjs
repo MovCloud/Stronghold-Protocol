@@ -1,6 +1,7 @@
-// The players' feedback board (/feedback): bug reports and suggestions, public to every logged-in player; the owner
-// replies, sets a status, hides or deletes. Native node:http, no framework, no npm dependency; storage in store.mjs,
-// input rules / limits / owner key in policy.mjs, the page in public/ (README.md in this directory).
+// The players' feedback board (/feedback): bug reports and suggestions, public to every logged-in player. The page only
+// reads and submits; management (status, reply, hidden, delete) is the admin console's, which runs under the admin
+// session. Native node:http, no framework, no npm dependency; storage in store.mjs, input rules / limits in policy.mjs,
+// the page in public/ (README.md in this directory).
 //
 // Behind OpenResty: nginx enforces the site's password gate on every path and sets the trusted X-Real-IP and
 // X-Ark-Session (the signature part of the gate cookie: stable per login, not a player identity). The session header is
@@ -12,7 +13,7 @@ import { isIP } from 'node:net';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { itemView, openStore } from './store.mjs';
-import { WindowLimiter, clientKey, createOwnerKey, parseListQuery, validateNew, validatePatch } from './policy.mjs';
+import { WindowLimiter, clientKey, parseListQuery, validateNew, validatePatch } from './policy.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -24,8 +25,6 @@ export const POST_LIMITS = Object.freeze({
   ip: [{ max: 30, window: DAY }],
   global: [{ max: 120, window: HOUR }],
 });
-/** Wrong owner keys per client address. */
-export const OWNER_FAIL_LIMIT = Object.freeze({ max: 10, window: 10 * MINUTE });
 export const DUPLICATE_WINDOW = DAY;
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const ASSET_TYPES = new Map([
@@ -34,7 +33,7 @@ const ASSET_TYPES = new Map([
 ]);
 const SESSION_RE = /^[A-Za-z0-9_-]{43}$/;
 const LOOPBACK = /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/;
-const ITEM_RE = /^\/feedback\/api\/items\/([1-9]\d{0,15})(\/admin)?$/;
+const ITEM_RE = /^\/feedback\/api\/items\/([1-9]\d{0,15})$/;
 
 /**
  * public/: the page (index.html, `__ASSET_VERSION__` → a hash of every top-level file) and the flat asset allowlist
@@ -92,16 +91,16 @@ const etagMatch = (header, etag) => typeof header === 'string'
   && header.split(',').some((v) => v.trim().replace(/^W\//, '') === etag);
 
 /**
- * @param {{ db?: string, origin: string, ownerFile?: string | null, ownerPollMs?: number, backupDir?: string | null,
- *   backupKeep?: number, backupCheckMs?: number, publicDir?: string, now?: () => number,
+ * @param {{ db?: string, origin: string, backupDir?: string | null, backupKeep?: number, backupCheckMs?: number,
+ *   publicDir?: string, now?: () => number,
  *   trustProxy?: 'auto' | boolean,
  *   log?: { info: Function, warn: Function, error: Function } }} options
  * @returns {{ server: http.Server, store: object, handle: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>,
- *   version: string, refreshOwner: () => Promise<boolean>,
+ *   version: string,
  *   backup: () => { name: string, created: boolean, removed: number } | null, visibleCount: () => number, close: () => Promise<void> }}
  */
 export function createFeedbackServer({
-  db = '/data/feedback.sqlite', origin, ownerFile = null, ownerPollMs = 5000, backupDir = null, backupKeep = 14,
+  db = '/data/feedback.sqlite', origin, backupDir = null, backupKeep = 14,
   backupCheckMs = HOUR, publicDir = join(ROOT, 'public'), now = Date.now, trustProxy = true, log = console,
 } = /** @type {any} */ ({})) {
   let allowedOrigin;
@@ -109,12 +108,10 @@ export function createFeedbackServer({
   if (!allowedOrigin || allowedOrigin !== origin) throw new Error('feedback: FEEDBACK_ORIGIN must be an origin like https://example.org');
   const site = loadPublic(publicDir);
   const store = openStore(db, { now });
-  const owner = createOwnerKey({ file: ownerFile, pollMs: ownerPollMs, log });
   const limits = {
     session: new WindowLimiter({ rules: POST_LIMITS.session }),
     ip: new WindowLimiter({ rules: POST_LIMITS.ip }),
     global: new WindowLimiter({ rules: POST_LIMITS.global }),
-    ownerFail: new WindowLimiter({ rules: [OWNER_FAIL_LIMIT], maxKeys: 10_000 }),
   };
 
   const backup = () => {
@@ -153,27 +150,6 @@ export function createFeedbackServer({
     const fetchSite = req.headers['sec-fetch-site'];
     if (req.headers.origin !== allowedOrigin || (fetchSite !== undefined && fetchSite !== 'same-origin')) throw new HttpError(403, 'ORIGIN');
   };
-
-  /** 'none' (no key), 'disabled' (no valid owner file), 'limited' (+ wait), 'invalid' (counted) or 'valid'. */
-  function ownerState(req, ip) {
-    const values = req.headersDistinct['x-owner-key'];
-    if (!values || (values.length === 1 && values[0] === '')) return { state: 'none' };
-    if (!owner.active()) return { state: 'disabled' };
-    const wait = limits.ownerFail.wait(ip, now());
-    if (wait) return { state: 'limited', wait };
-    if (values.length === 1 && values[0].length <= 1024 && owner.verify(values[0])) return { state: 'valid' };
-    limits.ownerFail.hit(ip, now());
-    return { state: 'invalid' };
-  }
-  /** The owner or an HttpError: 503 without a valid owner file, 429 while the address is limited, else 403. */
-  function requireOwner(req, ip) {
-    if (!owner.active()) throw new HttpError(503, 'OWNER_DISABLED');
-    const { state, wait } = ownerState(req, ip);
-    if (state === 'valid') return;
-    if (state === 'limited') throw limited(wait);
-    if (state === 'disabled') throw new HttpError(503, 'OWNER_DISABLED');
-    throw new HttpError(403, 'OWNER');
-  }
 
   function page(req, res) {
     methods(req, ['GET', 'HEAD']);
@@ -229,45 +205,20 @@ export function createFeedbackServer({
       methods(req, ['GET', 'HEAD']);
       return json(req, res, 200, { ok: true, items: store.visibleCount() });
     }
-    if (path === '/feedback/api/admin') {
-      methods(req, ['GET', 'HEAD']);
-      requireOwner(req, ip);
-      return json(req, res, 204, null);
-    }
     if (path === '/feedback/api/items') {
       methods(req, ['GET', 'HEAD', 'POST']);
       if (req.method === 'POST') return createItem(req, res, ip);
       const parsed = parseListQuery(url.searchParams);
       if ('field' in parsed) throw new HttpError(400, 'INVALID', { field: parsed.field });
-      const admin = ownerState(req, ip).state === 'valid';
-      const { rows, next } = store.list({ ...parsed.query, admin });
-      const counts = store.counts({ ...parsed.query, admin });
-      return json(req, res, 200, { items: rows.map((row) => itemView(row, admin)), next, counts });
+      const { rows, next } = store.list(parsed.query);
+      return json(req, res, 200, { items: rows.map((row) => itemView(row)), next, counts: store.counts(parsed.query) });
     }
     const match = ITEM_RE.exec(path);
     if (!match || !Number.isSafeInteger(Number(match[1]))) throw new HttpError(404, 'NOT_FOUND');
-    const id = Number(match[1]);
-    if (match[2]) {
-      methods(req, ['POST']);
-      checkOrigin(req);
-      requireOwner(req, ip);
-      const checked = validatePatch(await readJSON(req));
-      if ('field' in checked) throw new HttpError(400, 'INVALID', { field: checked.field });
-      const row = store.update(id, checked.patch, now());
-      if (!row) throw new HttpError(404, 'NOT_FOUND');
-      return json(req, res, 200, { item: itemView(row, true) });
-    }
-    methods(req, ['GET', 'HEAD', 'DELETE']);
-    if (req.method === 'DELETE') {
-      checkOrigin(req);
-      requireOwner(req, ip);
-      if (!store.remove(id)) throw new HttpError(404, 'NOT_FOUND');
-      return json(req, res, 204, null);
-    }
-    const admin = ownerState(req, ip).state === 'valid';
-    const row = store.get(id);
-    if (!row || (row.hidden && !admin)) throw new HttpError(404, 'NOT_FOUND');
-    return json(req, res, 200, { item: itemView(row, admin) });
+    methods(req, ['GET', 'HEAD']);
+    const row = store.get(Number(match[1]));
+    if (!row || row.hidden) throw new HttpError(404, 'NOT_FOUND');
+    return json(req, res, 200, { item: itemView(row) });
   }
 
   /** handle() with the error mapping, so a mount on another server can answer a /feedback request the same way. */
@@ -297,13 +248,12 @@ export function createFeedbackServer({
   let closing = null;
   const close = () => closing ??= new Promise((resolveClose) => {
     if (backupTimer) clearInterval(backupTimer);
-    owner.close();
     const done = () => { store.close(); resolveClose(); };
     if (!server.listening) return done();
     server.close(done);
     server.closeIdleConnections();
   });
-  return { server, store, handle: handleRequest, version: site.version, refreshOwner: owner.refresh, backup,
+  return { server, store, handle: handleRequest, version: site.version, backup,
     visibleCount: store.visibleCount, close };
 }
 
@@ -312,8 +262,8 @@ const ADMIN_FIELDS = { status: '状态', reply: '回复', hidden: '隐藏', q: '
 const ADMIN_STATUSES = { unassigned: '待处理', unplanned: '暂不规划', planned: '已规划', updated: '已更新' };
 
 /**
- * The admin console's view of the same store (public/admin): read the list, set status / reply / hidden, delete. These
- * routes run under the admin session, not the owner key, so the board's own login dialog is not needed there.
+ * The admin console's view of the same store (public/admin): read the list, set status / reply / hidden, delete. This is
+ * the board's only management path — it runs under the admin session, and the public page has no management UI.
  * `admin` is only used through the plugin hook — this module never imports server/playerAdmin.js.
  * Messages are in Chinese because admin.js renders `error` as it is.
  */
@@ -359,7 +309,7 @@ export function registerAdminRoutes(admin, store, { now = Date.now } = {}) {
  * Mounted on the game server under the /feedback prefix, so the board link in the game page works without a second
  * service or a reverse proxy (data/site.json → public/js/ui/siteBoards.js). Requests outside the prefix go back to the
  * listeners that were registered before, exactly like mountPlayerAdmin does. `admin` is optional: without it the page
- * and the owner-key API still work, only the console tab is missing.
+ * still works, only the console tab is missing.
  */
 export function mountFeedbackBoard({ server, admin = null, registerRoutes = true, ...options } = {}) {
   const service = createFeedbackServer(options);
@@ -384,7 +334,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!env.FEEDBACK_ORIGIN) throw new Error('FEEDBACK_ORIGIN is required (e.g. https://ark-proto.stardust.matce.cn)');
   const service = createFeedbackServer({
     db: env.FEEDBACK_DB || '/data/feedback.sqlite', origin: env.FEEDBACK_ORIGIN,
-    ownerFile: env.FEEDBACK_OWNER_FILE || null, backupDir: env.FEEDBACK_BACKUP_DIR || null,
+    backupDir: env.FEEDBACK_BACKUP_DIR || null,
   });
   const host = env.FEEDBACK_HOST || '127.0.0.1';
   service.server.listen(port, host, () => console.log(`[feedback] listening on ${host}:${port}, ${service.visibleCount()} visible items, assets ${service.version}`));

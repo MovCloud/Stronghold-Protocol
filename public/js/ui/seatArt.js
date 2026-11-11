@@ -20,6 +20,7 @@ import { createStore, loadPref, savePref } from '../store.js';
 import { ownerSkin } from './skins.js';
 import { chessPortraitUrl } from './assetUrls.js';
 import { cardPortraitOperatorId } from '../../../shared/playerCard.js';
+import { skinDenied } from '../../../shared/skins.js';
 import { data } from '../data.js';
 import { N_ } from '../../../shared/i18n.js';
 import { parseAvatarId, avatarPath } from '../../../shared/avatarSources.js';
@@ -128,7 +129,9 @@ export function lookOptions(m, charId, kind) {
   const out = e2 ? [{ id: '', name: N_('精英二'), src: e2 }, { id: 'e1', name: N_('精英一'), src: str(c[kind]) }]
     : [{ id: '', name: N_('精英一'), src: str(c[kind]) }];
   const skins = m.skins && typeof m.skins === 'object' ? m.skins : {};
-  for (const [id, s] of Object.entries(skins)) if (s && s.charId === charId && str(s[kind])) out.push({ id, name: s.name || id, src: s[kind], skin: true });
+  // 皮肤管理 (docs/CONTENT-ADMIN.md §9): a stopped skin is not offered here either — the same judgement as the 外观
+  // grid and the 服装 row, so the 名片 look, the 头像 and the 随机 pool all agree with the picker.
+  for (const [id, s] of Object.entries(skins)) if (s && s.charId === charId && str(s[kind]) && !skinDenied(id)) out.push({ id, name: s.name || id, src: s[kind], skin: true });
   return out;
 }
 

@@ -4,10 +4,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
 import { credentials, atomicJson, mountPlayerAdmin, playerSnapshot } from '../server/playerAdmin.js';
+import { registryIds } from '../server/contentConfig.js';
 import { startServer } from '../server/index.js';
 import { TestClient } from './helpers/wsClient.js';
 
@@ -56,9 +58,9 @@ async function fixture(t) {
   const origin = `http://127.0.0.1:${server.address().port}`;
   const { salt, passwordHash } = await credentials(PASSWORD);
   await atomicJson(configFile, { version: 1, username: 'admin', publicOrigin: origin, salt, passwordHash });
-  const mount = async () => {
+  const mount = async (extra = {}) => {
     const mounted = await mountPlayerAdmin({ server, ...fakes(), configFile, announcementFile,
-      publicDir: join(dir, 'public'), log: quietLog });
+      publicDir: join(dir, 'public'), log: quietLog, ...extra });
     t.after(() => mounted.unmount());
     return mounted;
   };
@@ -186,6 +188,28 @@ test('each announcement channel picks its own winner, so a popup is never blocke
     'earliest start wins among equal levels inside the same channel');
 });
 
+test('restart reports its preconditions and hands the process over to the restart hook', async (t) => {
+  const { origin, mount } = await fixture(t);
+  let restarts = 0;
+  await mount({ restart: () => { restarts++; } });
+  const { cookie, csrf } = await login(origin);
+  const info = await (await call(origin, '/admin/api/restart', { cookie })).json();
+  assert.equal(info.enabled, true);
+  assert.equal(info.supervised, process.pid === 1 || /^(?:1|true|yes)$/i.test(String(process.env.SP_SUPERVISED ?? '')),
+    'the route reports the same supervisor detection the handler applies');
+  assert.equal(info.activeMatches, 0);
+  // without `force` an unsupervised process is refused: nothing would start it again
+  if (!info.supervised) {
+    const refused = await call(origin, '/admin/api/restart', { method: 'POST', cookie, csrf, body: {} });
+    assert.equal(refused.status, 409);
+    assert.match(await refused.text(), /守护进程/);
+  }
+  const accepted = await call(origin, '/admin/api/restart', { method: 'POST', cookie, csrf, body: { force: true } });
+  assert.equal(accepted.status, 200, await accepted.text());
+  await new Promise((resolve) => setTimeout(resolve, 400)); // the handler hands over only after the response is flushed
+  assert.equal(restarts, 1);
+});
+
 test('the runtime maintenance override drains: new rooms and starts refuse, presence.state reaches everyone', async (t) => {
   const srv = await startServer({ host: '127.0.0.1', port: 0, quiet: true, workers: 0, store: null,
     adminConfigFile: null, announcementsFile: null });
@@ -261,4 +285,83 @@ test('the 娱乐模式 switches drain per mode: new rooms and starts of that mod
   assert.equal(srv.lobby.setArcadeMode('hunt2v2', false), true);
   assert.equal((await b.request({ t: 'room.create', mode: 'versus', difficulty: 'NORMAL' })).code, 'MODE_DISABLED');
   assert.equal(srv.lobby.setArcadeMode('hunt2v2', true), true);
+});
+
+test('内容管理: the runtime documents are read, written with CAS and audited', async (t) => {
+  const { origin, mount, dir } = await fixture(t);
+  const unwired = await mount();
+  const first = await login(origin);
+  assert.equal((await call(origin, '/admin/api/content/versions', { cookie: first.cookie })).status, 503, 'the routes need the boot wiring');
+  await unwired.unmount();
+
+  const content = { versionsFile: join(dir, 'runtime/versions.json'), wildFile: join(dir, 'runtime/wild.json'), ids: registryIds(), envEnabled: false };
+  const admin = await mount({ content });
+  const { cookie, csrf } = await login(origin);
+  const before = await (await call(origin, '/admin/api/content/versions', { cookie })).json();
+  assert.deepEqual(before.enabled, registryIds(), 'no file is the whole registry');
+  assert.equal(before.revision, 0);
+  assert.equal(before.envLocked, false);
+
+  const wrote = await (await call(origin, '/admin/api/content/versions', { method: 'POST', cookie, csrf,
+    body: { enabled: ['act2autochess'], expectedRevision: 0 } })).json();
+  assert.equal(wrote.ok, true);
+  assert.equal(wrote.revision, 1);
+  assert.equal(wrote.restartRequired, true, 'the enabled set is decided at boot, so the panel says a restart applies it');
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'runtime/versions.json'), 'utf8')).enabled, ['act2autochess']);
+  assert.equal(admin.admin.state.audit[0].action, 'contentVersions');
+
+  assert.equal((await call(origin, '/admin/api/content/versions', { method: 'POST', cookie, csrf,
+    body: { enabled: registryIds(), expectedRevision: 0 } })).status, 409, 'a stale revision is refused');
+  const replay = await (await call(origin, '/admin/api/content/versions', { method: 'POST', cookie, csrf,
+    body: { enabled: ['act2autochess'], expectedRevision: 1 } })).json();
+  assert.equal(replay.changed, false, 'the same payload is not applied twice');
+  assert.equal((await call(origin, '/admin/api/content/versions', { method: 'POST', cookie, csrf,
+    body: { enabled: [], expectedRevision: 1 } })).status, 400, 'disabling everything would leave nothing to serve');
+
+  const wild = await (await call(origin, '/admin/api/content/wild', { cookie })).json();
+  assert.equal(wild.revision, 0);
+  assert.deepEqual(wild.sources, registryIds());
+  assert.ok(wild.tables.bonds.length && wild.tables.bonds.every((r) => r.conflict), '仅显示冲突 is on by default');
+  const row = wild.tables.bonds.find((r) => r.id === 'kjeragShip');
+  assert.ok(row && row.entries.act1autochess && row.entries.act2autochess, 'the expanded row keeps one entry per source');
+  assert.equal(wild.synthesis.ok, false, 'the four sources cannot synthesize together (cross-table summons)');
+  assert.equal(wild.synthesis.errors.length, 3);
+
+  // §6: the candidate document is synthesized before it is written, so a selection that cannot merge never reaches
+  // runtime/wild.json. The four sources together are exactly such a case (cross-table summons).
+  const blocked = await call(origin, '/admin/api/content/wild', { method: 'POST', cookie, csrf,
+    body: { patch: { picks: { bonds: { kjeragShip: 'off' } } }, expectedRevision: 0 } });
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.json()).error, /不同的表/);
+  assert.equal((await (await call(origin, '/admin/api/content/wild', { cookie })).json()).revision, 0);
+  assert.ok(!existsSync(join(dir, 'runtime', 'wild.json')), 'a refused save leaves no document');
+
+  // Narrowing the sources to one activity period makes the same row saveable: that merge is clean.
+  const picked = await (await call(origin, '/admin/api/content/wild', { method: 'POST', cookie, csrf,
+    body: { patch: { sources: ['act2autochess', 'act2autochess@V2_1'], picks: { bonds: { kjeragShip: 'off' } } },
+      expectedRevision: 0 } })).json();
+  assert.equal(picked.revision, 1);
+  assert.equal((await (await call(origin, '/admin/api/content/wild?search=kjeragShip', { cookie })).json()).tables.bonds[0].effective, null,
+    'off resolves to nothing');
+
+  const preset = await (await call(origin, '/admin/api/content/wild', { method: 'POST', cookie, csrf,
+    body: { preset: { kind: 'pin', version: 'act2autochess@V2_1', filter: { conflictOnly: false } }, expectedRevision: 1 } })).json();
+  assert.equal(preset.ok, true);
+  assert.equal(preset.revision, 2);
+  assert.equal((await (await call(origin, '/admin/api/content/wild?search=kjeragShip', { cookie })).json()).tables.bonds[0].effective, 'act2autochess@V2_1',
+    'the preset works over the filtered view');
+  assert.equal((await call(origin, '/admin/api/content/wild', { method: 'POST', cookie, csrf,
+    body: { patch: { picks: { bonds: { nope: 'auto' } } }, expectedRevision: 2 } })).status, 400);
+
+  // the documents live under runtime/: a restart reads them back
+  await admin.unmount();
+  const again = await mount({ content });
+  const back = (await login(origin)).cookie;
+  const read = await (await call(origin, '/admin/api/content/wild?search=kjeragShip', { cookie: back })).json();
+  assert.equal(read.revision, 2);
+  assert.equal(read.tables.bonds[0].effective, 'act2autochess@V2_1');
+  assert.deepEqual(read.sources, ['act2autochess', 'act2autochess@V2_1'], 'only the validated document is on disk');
+  assert.equal(read.synthesis.ok, true, 'the saved document is the one that can synthesize');
+  assert.deepEqual((await (await call(origin, '/admin/api/content/versions', { cookie: back })).json()).enabled, ['act2autochess']);
+  assert.ok(again.admin.state.audit.some((a) => a.action === 'contentWild'), 'the write is audited');
 });

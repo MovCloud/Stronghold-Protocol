@@ -90,8 +90,6 @@
 .arcade__card-badge--ready { color: var(--mint-400); }
 .arcade__card-badge--off { color: #ff9a9a; }
 
-.arcade__foot { margin-top: auto; padding-top: calc(.2 * var(--t)); font-size: max(calc(.13 * var(--t)), 11px); color: rgba(232, 255, 247, .45); }
-
 /* The lobby's 4th hub entry (screens/lobby.js HubEntry, card id 'arcade'): a violet tint so it reads as "not the official
    rule set", while keeping the hub-entry layout and hover from lobby.css. */
 .hub-entry--arcade { background: linear-gradient(160deg, #2b2544, #14121f); border-color: rgba(178, 160, 255, .45); }

@@ -12,6 +12,11 @@ import { ANNOUNCEMENT_MAX_BYTES } from './announcements.js';
 import { ARCADE_ADMIN_MODES } from '../shared/constants.js';
 import { isPluginId } from '../shared/plugins/manifest.js';
 import { t } from '../shared/i18n.js';
+import { buildCatalog, filterRows, tableStats, wildView } from './contentCatalog.js';
+import { defaultVersions, defaultWild, defaultSkins, presetPatch, versionsMutation, wildMutation, skinsMutation } from './contentConfig.js';
+import { skinGroups, packSkins } from './skinGate.js';
+import { mergeWild } from './contentMerge.js';
+import { getVersionData } from './data.js';
 
 const derive = promisify(scrypt);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,10 +25,18 @@ const FILE_MAX_BYTES = 2 * 1024 * 1024;
 const hash = value => createHash('sha256').update(String(value)).digest('hex');
 const id = () => randomBytes(16).toString('hex');
 const fail = (status, message) => Object.assign(new Error(message), { status });
+/**
+ * Whether something outside this process starts it again after it exits: the image's CMD makes node PID 1, and a unit
+ * file or wrapper can set SP_SUPERVISED=1. Without one a 重启 stops the server for good, so the panel warns first.
+ */
+export function restartSupervised({ pid = process.pid, env = process.env } = {}) {
+  return pid === 1 || /^(?:1|true|yes)$/i.test(String(env.SP_SUPERVISED ?? ''));
+}
 /** Endpoints handled inside handle() itself; plugin registrations may not shadow them. */
 const BUILT_IN_ADMIN_ROUTES = new Set(['/admin/api/login', '/admin/api/session', '/admin/api/snapshot', '/admin/api/announcements',
   '/admin/api/announcement', '/admin/api/announcement/stop', '/admin/api/announcement/delete', '/admin/api/maintenance',
-  '/admin/api/packs', '/admin/api/password', '/admin/api/logout', '/admin/api/kick', '/admin/api/ban', '/admin/api/unban']);
+  '/admin/api/restart', '/admin/api/packs', '/admin/api/password', '/admin/api/logout', '/admin/api/kick', '/admin/api/ban',
+  '/admin/api/unban', '/admin/api/content/versions', '/admin/api/content/wild', '/admin/api/content/skins']);
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b)
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const cleanText = (value, max, label) => {
@@ -144,8 +157,8 @@ export function playerSnapshot({ network, lobby, registry, now = Date.now() }) {
 }
 
 export class PlayerAdmin {
-  constructor({ network, lobby, registry, config, configFile, announcementFile, publicDir, packs = null, policy = null, now = Date.now, log = console }) {
-    Object.assign(this, { network, lobby, registry, config: validateConfig(config), configFile, announcementFile, publicDir, packs, policy, now, log });
+  constructor({ network, lobby, registry, config, configFile, announcementFile, publicDir, packs = null, policy = null, restart = null, content = null, now = Date.now, log = console }) {
+    Object.assign(this, { network, lobby, registry, config: validateConfig(config), configFile, announcementFile, publicDir, packs, policy, restart, content, now, log });
     this.directory = path.dirname(configFile);
     this.stateFile = path.join(this.directory, 'state.json');
     this.state = { version: 1, bans: [], audit: [] };
@@ -415,6 +428,131 @@ export class PlayerAdmin {
     await this.commit(this.state, { action: 'maintenance', maintenance: body.maintenance });
     return { ok: true, maintenance: !!this.lobby.maintenance?.(), changed: changed !== false };
   }
+  /** The rooms whose match is live — what a 重启 interrupts. */
+  activeMatchCount() {
+    let count = 0;
+    for (const room of this.lobby.rooms?.values?.() ?? []) if (room.match) count++;
+    return count;
+  }
+  /**
+   * 重启 (the panel's button next to 维护): drain first, record the audit row, then hand over to `restart`
+   * (server/index.js's `close()` + exit) after the response has been flushed. The supervisor — Docker's restart
+   * policy or a unit file — starts a fresh process, which re-reads runtime configuration such as a new wild-mode
+   * selection. Nothing supervised means the server stays down, and live matches are lost without a checkpoint, so
+   * both cases need `force`; the panel's dialog already asked.
+   * @param {{force?: boolean}} body
+   */
+  async restartServer(body = {}) {
+    if (typeof this.restart !== 'function') throw fail(503, '重启接口未启用');
+    const force = body.force === true;
+    const supervised = restartSupervised();
+    if (!supervised && !force) throw fail(409, '未检测到守护进程：重启后不会自动拉起，请确认后再试');
+    const activeMatches = this.activeMatchCount();
+    if (activeMatches > 0 && !force) throw fail(409, `仍有 ${activeMatches} 场对局进行中：重启会中断它们，请确认后再试`);
+    this.lobby.setMaintenanceOverride?.(true);
+    await this.commit(this.state, { action: 'restart', forced: force, activeMatches });
+    // let the response reach the browser before the process goes away
+    setTimeout(() => { Promise.resolve(this.restart()).catch((e) => this.log.error?.('[player-admin] restart failed', e)); }, 250);
+    return { ok: true, restarting: true, supervised, activeMatches };
+  }
+  /**
+   * 内容管理 (docs/CONTENT-ADMIN.md): the two runtime documents the panel writes. Both are read once at boot, so a
+   * change takes effect after a restart — the panel says so, and the 重启 button next to 维护 is how it happens.
+   * An env-narrowed SP_VERSIONS wins over the panel (the panel shows it read-only), so `envEnabled` is reported.
+   */
+  async contentVersions() {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const { doc } = await jsonFile(this.content.versionsFile, null);
+    const current = doc ?? defaultVersions(this.content.ids);
+    return { registered: [...this.content.ids], enabled: current.enabled, revision: current.revision,
+      envLocked: !!this.content.envEnabled };
+  }
+  /** `enabled` is the whole set the panel sends, not a delta; the write is CAS-guarded and audited. */
+  async setContentVersions(body = {}) {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const current = await jsonFile(this.content.versionsFile, null);
+    const result = versionsMutation(current, body, { ids: this.content.ids });
+    if (!result.ok) throw fail(result.cas ? 409 : 400, result.errors.join('；'));
+    if (result.changed) {
+      await atomicJson(this.content.versionsFile, result.document, current.raw);
+      await this.commit(this.state, { action: 'contentVersions', enabled: result.document.enabled, revision: result.document.revision });
+    }
+    return { ok: true, changed: result.changed, revision: result.document.revision, restartRequired: true };
+  }
+  /**
+   * The wild rows: the catalog is cached per source set, so a read is cheap even with the whole table open. The
+   * synthesis status comes along with it (§6): a source set that cannot merge cannot be saved, so the panel sees the
+   * reason on load instead of discovering it by trying to save.
+   */
+  async contentWild(query = {}) {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const { doc } = await jsonFile(this.content.wildFile, null);
+    const current = doc ?? defaultWild(this.content.ids);
+    const catalog = buildCatalog(current.sources, { ids: this.content.ids, log: this.log });
+    const merged = mergeWild(current, (versionId) => getVersionData(versionId, { log: this.log }),
+      { ids: this.content.ids, log: this.log });
+    return { ...wildView(current, catalog, query), stats: tableStats(catalog),
+      synthesis: { ok: merged.ok, errors: merged.errors, dropped: merged.dropped.length } };
+  }
+  /**
+   * A POST carries either a row patch or a batch preset; both go through the same validation and the same CAS.
+   * The candidate document is synthesized before it is written (docs/CONTENT-ADMIN.md §6): a selection that cannot
+   * merge must not reach runtime/wild.json, because the failure would only show at boot and force a redeploy. The
+   * boot check stays as the last line of defence.
+   */
+  async setContentWild(body = {}) {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const current = await jsonFile(this.content.wildFile, null);
+    const doc = current.doc ?? defaultWild(this.content.ids);
+    // The catalog is built for the sources the request targets, so membership and the synthesis check agree.
+    const sources = Array.isArray(body.patch?.sources) ? body.patch.sources : doc.sources;
+    const catalog = buildCatalog(sources, { ids: this.content.ids, log: this.log });
+    let patch = body.patch;
+    if (body.preset) {
+      const rows = {};
+      for (const [type, table] of Object.entries(catalog.tables)) rows[type] = filterRows(table, body.preset.filter);
+      patch = presetPatch(rows, { preset: body.preset.kind, version: body.preset.version, order: catalog.order });
+      if (!patch) throw fail(400, '未知的批量预设');
+    }
+    const result = wildMutation(current, { patch, expectedRevision: body.expectedRevision },
+      { ids: this.content.ids, membership: catalog.membership });
+    if (!result.ok) throw fail(result.cas ? 409 : 400, result.errors.join('；'));
+    if (result.changed) {
+      const merged = mergeWild(result.document, (versionId) => getVersionData(versionId, { log: this.log }),
+        { ids: this.content.ids, log: this.log });
+      if (!merged.ok) throw fail(400, `${t('合成校验未通过')}: ${merged.errors.join('；')}`);
+      await atomicJson(this.content.wildFile, result.document, current.raw);
+      await this.commit(this.state, { action: 'contentWild', patch, revision: result.document.revision });
+    }
+    return { ok: true, changed: result.changed, revision: result.document.revision, restartRequired: true };
+  }
+  /**
+   * 皮肤管理 (docs/CONTENT-ADMIN.md §9): the gate as the panel reads it — one group per operator, the default
+   * appearance first (fixed, no checkbox), then the official table, then the packs. Read once at boot like the rest
+   * of 内容管理, so a change takes effect after a restart.
+   */
+  async contentSkins() {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const current = await jsonFile(this.content.skinsFile, null);
+    const doc = current.doc ?? defaultSkins();
+    return skinGroups(doc, { pack: packSkins(this.packs?.snapshot?.()?.plugins ?? []) });
+  }
+  /**
+   * The whole map the panel sends, not a delta (§9): a skin the panel leaves out is offered. Only the shape is
+   * checked — a plugin skin can disappear with its pack and the gate has to survive that, exactly as a stored
+   * registry choice does — so there is nothing here to validate against a live catalogue.
+   */
+  async setSkins(body = {}) {
+    if (!this.content) throw fail(503, '内容管理未启用');
+    const current = await jsonFile(this.content.skinsFile, null);
+    const result = skinsMutation(current, body);
+    if (!result.ok) throw fail(result.cas ? 409 : 400, result.errors.join('；'));
+    if (result.changed) {
+      await atomicJson(this.content.skinsFile, result.document, current.raw);
+      await this.commit(this.state, { action: 'contentSkins', disabled: result.document.disabled, revision: result.document.revision });
+    }
+    return { ok: true, changed: result.changed, revision: result.document.revision, restartRequired: true };
+  }
   /**
    * 娱乐模式 (arcade) per-mode open switch (server/lobby.js setArcadeMode): closing refuses that mode's NEW rooms and
    * starts while its running matches finish naturally. Persisted in state.json, so it survives a restart.
@@ -502,6 +640,17 @@ export class PlayerAdmin {
         this.json(req, res, 200, { announcements: data.rows.map(({ ...n }) => n), current: data.current, popupCurrent: data.popupCurrent });
       } else if (pathname === '/admin/api/maintenance') {
         this.json(req, res, 200, { maintenance: !!this.lobby.maintenance?.() });
+      } else if (pathname === '/admin/api/restart') {
+        this.json(req, res, 200, { enabled: typeof this.restart === 'function', supervised: restartSupervised(),
+          activeMatches: this.activeMatchCount() });
+      } else if (pathname === '/admin/api/content/versions') {
+        // 内容管理 (docs/CONTENT-ADMIN.md): the enabled set the panel switches; effective after a restart.
+        this.json(req, res, 200, await this.contentVersions());
+      } else if (pathname === '/admin/api/content/wild') {
+        this.json(req, res, 200, await this.contentWild(query));
+      } else if (pathname === '/admin/api/content/skins') {
+        // 皮肤管理 (docs/CONTENT-ADMIN.md §9): the gate the panel reads; effective after a restart.
+        this.json(req, res, 200, await this.contentSkins());
       } else if (pathname === '/admin/api/arcade') {
         // 娱乐模式 (arcade): the completed modes the panel switches, with their effective (build switch AND admin) state
         this.json(req, res, 200, { modes: ARCADE_ADMIN_MODES.map((m) => ({ id: m.id, name: m.name, open: this.lobby.arcadeOpen(m.id) === true })) });
@@ -524,6 +673,10 @@ export class PlayerAdmin {
     const handlers = { '/admin/api/kick': () => this.kick(body), '/admin/api/ban': () => this.ban(body), '/admin/api/unban': () => this.unban(body),
       '/admin/api/announcement': () => this.publish(body), '/admin/api/announcement/stop': () => this.stopNotice(body),
       '/admin/api/announcement/delete': () => this.deleteAnnouncement(body), '/admin/api/maintenance': () => this.setMaintenance(body),
+      '/admin/api/restart': () => this.restartServer(body),
+      '/admin/api/content/versions': () => this.setContentVersions(body),
+      '/admin/api/content/wild': () => this.setContentWild(body),
+      '/admin/api/content/skins': () => this.setSkins(body),
       '/admin/api/arcade': () => this.setArcade(body),
       '/admin/api/packs': () => this.setPack(body),
       '/admin/api/password': () => this.password(body, req, res),
@@ -544,12 +697,12 @@ export class PlayerAdmin {
 }
 
 /** Mounted separately so a tested live install can keep the existing game server and sockets. */
-export async function mountPlayerAdmin({ server, network, lobby, registry, packs = null, policy = null, configFile = path.join(ROOT, 'config/player-admin/config.json'),
-  announcementFile = path.join(ROOT, 'config/announcements.json'), publicDir = path.join(ROOT, 'public'), log = console, now = Date.now }) {
+export async function mountPlayerAdmin({ server, network, lobby, registry, packs = null, policy = null, restart = null, configFile = path.join(ROOT, 'config/player-admin/config.json'),
+  announcementFile = path.join(ROOT, 'config/announcements.json'), publicDir = path.join(ROOT, 'public'), content = null, log = console, now = Date.now }) {
   let admin = null;
   try {
     const { doc } = await jsonFile(configFile, null);
-    if (doc) { admin = new PlayerAdmin({ network, lobby, registry, config: doc, configFile, announcementFile, publicDir, packs, policy, log, now }); await admin.start(); }
+    if (doc) { admin = new PlayerAdmin({ network, lobby, registry, config: doc, configFile, announcementFile, publicDir, packs, policy, restart, content, log, now }); await admin.start(); }
   } catch (e) { log.error?.('[player-admin] disabled: ' + e.message); admin = null; }
   const prior = server.listeners('request');
   for (const listener of prior) server.off('request', listener);

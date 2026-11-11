@@ -1,25 +1,23 @@
 // 卫戍协议 · 反馈 (deploy/stardust/feedback, 2026-10-16): the public board's page. A plain ES module, no build step.
 // ESR 115 / older Safari: no top-level await, no <dialog> (a plain modal), no :has() in the CSS. Every text a player
 // typed is inserted with textContent, never as HTML.
-// The owner (服主) uses the same key as the game (localStorage sp.ownerKey, public/js/ownerKey.js): when it is kept and
-// the server accepts it, the page turns into its admin view (status, reply, hide, delete).
+// The page is public-only: players read and submit, they never manage. Management (status, reply, hide, delete) is in
+// the admin console's 玩家反馈 tab (public/admin/admin.js), which runs under the admin session.
 
 const API = '/feedback/api';
 const CATEGORIES = [['bug', 'Bug 反馈'], ['gameplay', '玩法建议'], ['ui', '界面与体验'], ['other', '其他']];
 const STATUSES = [['unassigned', '未分配'], ['unplanned', '无计划'], ['planned', '已计划'], ['updated', '已更新']];
 const CATEGORY_LABEL = Object.fromEntries(CATEGORIES);
 const STATUS_LABEL = Object.fromEntries(STATUSES);
-const LIMITS = { title: [2, 80], body: [5, 4000], author: [0, 24], reply: [0, 2000] };
-const OWNER_KEY = 'sp.ownerKey';
+const LIMITS = { title: [2, 80], body: [5, 4000], author: [0, 24] };
 const NAME_KEY = 'sp.name';
-const ADMIN_OFF = 'sp.feedbackAdminOff'; // sessionStorage: the owner left the admin view in this tab
 const LONG_BODY = 280; // code points; longer bodies start folded
 
 const $ = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const cp = (s) => Array.from(s || '').length;
 
-/** @type {{ status: string, category: string, q: string, items: any[], next: number|null, counts: any, loading: boolean, admin: boolean, error: string, seq: number }} */
-const state = { status: '', category: '', q: '', items: [], next: null, counts: null, loading: false, admin: false, error: '', seq: 0 };
+/** @type {{ status: string, category: string, q: string, items: any[], next: number|null, counts: any, loading: boolean, error: string, seq: number }} */
+const state = { status: '', category: '', q: '', items: [], next: null, counts: null, loading: false, error: '', seq: 0 };
 
 // ---- small DOM helper -------------------------------------------------------------------------------------------------
 /** @param {string} tag @param {Record<string, any>} [attrs] @param {...any} kids */
@@ -42,10 +40,6 @@ const store = {
   get(area, key) { try { return globalThis[area]?.getItem(key) || ''; } catch { return ''; } },
   set(area, key, value) { try { if (value) globalThis[area]?.setItem(key, value); else globalThis[area]?.removeItem(key); } catch { /* unavailable */ } },
 };
-const ownerKey = () => {
-  const v = store.get('localStorage', OWNER_KEY).trim();
-  return v && v.length <= 128 && !store.get('sessionStorage', ADMIN_OFF) ? v : '';
-};
 
 // ---- API --------------------------------------------------------------------------------------------------------------
 class ApiError extends Error {
@@ -53,13 +47,11 @@ class ApiError extends Error {
   constructor(status, data) { super(data?.error || 'HTTP_' + status); this.status = status; this.data = data || {}; }
 }
 
-/** @param {string} path @param {{ method?: string, body?: any, admin?: boolean }} [opts] */
-async function api(path, { method = 'GET', body, admin = state.admin } = {}) {
+/** @param {string} path @param {{ method?: string, body?: any }} [opts] */
+async function api(path, { method = 'GET', body } = {}) {
   /** @type {Record<string, string>} */
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const key = admin ? ownerKey() : '';
-  if (key) headers['X-Owner-Key'] = key;
   let res;
   try {
     res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
@@ -86,9 +78,7 @@ function errorText(err) {
       return '提交太频繁了，请' + (s >= 3600 ? Math.ceil(s / 3600) + ' 小时' : s >= 60 ? Math.ceil(s / 60) + ' 分钟' : s + ' 秒') + '后再试。';
     }
     case 'DUPLICATE': return '已经有一条相同内容的反馈了（#' + err.data.id + '）。';
-    case 'INVALID': return ({ title: '标题需要 2–80 个字。', body: '内容需要 5–4000 个字。', author: '署名最多 24 个字。', category: '请选择分类。', reply: '回复最多 2000 个字。', status: '状态无效。' })[err.data.field] || '内容不符合要求。';
-    case 'OWNER': return '服主密钥不正确。';
-    case 'OWNER_DISABLED': return '服务器没有配置服主密钥。';
+    case 'INVALID': return ({ title: '标题需要 2–80 个字。', body: '内容需要 5–4000 个字。', author: '署名最多 24 个字。', category: '请选择分类。' })[err.data.field] || '内容不符合要求。';
     case 'ORIGIN': return '请从本站页面提交。';
     default: return err?.status >= 500 ? '服务器暂时出错，请稍后再试。' : '操作失败（' + (code || err?.status || '未知') + '）。';
   }
@@ -219,17 +209,6 @@ function renderFooter() {
   }
 }
 
-/** Replaces an item everywhere it is shown (list and the pinned one). */
-function replaceItem(item) {
-  state.items = state.items.map((it) => (it.id === item.id ? item : it));
-  for (const node of document.querySelectorAll('[data-item="' + item.id + '"]')) node.replaceWith(card(item, node.classList.contains('card--pinned')));
-}
-function removeItem(id) {
-  state.items = state.items.filter((it) => it.id !== id);
-  for (const node of document.querySelectorAll('[data-item="' + id + '"]')) node.remove();
-  if (pinnedId === id) $('pinned').hidden = true;
-}
-
 /** @param {any} item @param {boolean} [pinned] */
 function card(item, pinned = false) {
   const long = cp(item.body) > LONG_BODY || (item.body.match(/\n/g) || []).length > 6;
@@ -239,11 +218,10 @@ function card(item, pinned = false) {
     onclick: (e) => { const folded = body.classList.toggle('is-folded'); e.currentTarget.textContent = folded ? '展开全文' : '收起'; },
   }) : null;
   const permalink = location.pathname + '#' + item.id;
-  const node = h('article', { class: 'card panel' + (pinned ? ' card--pinned' : '') + (item.hidden ? ' card--hidden' : ''), dataset: { item: String(item.id) }, id: pinned ? null : 'item-' + item.id },
+  const node = h('article', { class: 'card panel' + (pinned ? ' card--pinned' : ''), dataset: { item: String(item.id) }, id: pinned ? null : 'item-' + item.id },
     h('div', { class: 'card__head' },
       h('span', { class: 'chip chip--cat chip--' + item.category, text: CATEGORY_LABEL[item.category] || item.category }),
       h('span', { class: 'chip chip--status chip--' + item.status, text: STATUS_LABEL[item.status] || item.status }),
-      item.hidden ? h('span', { class: 'chip chip--hidden', text: '已隐藏' }) : null,
       h('a', { class: 'card__id', href: permalink, title: '这条反馈的链接', text: '#' + item.id })),
     h('h3', { class: 'card__title', text: item.title }),
     body, toggle,
@@ -252,82 +230,17 @@ function card(item, pinned = false) {
       item.client ? [h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'card__client', text: item.client })] : null),
     item.reply ? h('div', { class: 'reply' },
       h('div', { class: 'reply__head' }, h('span', { class: 'reply__who', text: '服主回复' }), item.replyAt ? timeEl(item.replyAt) : null),
-      h('p', { class: 'reply__body', text: item.reply })) : null,
-    state.admin ? adminBox(item) : null);
+      h('p', { class: 'reply__body', text: item.reply })) : null
+  );
   return node;
 }
 
-// ---- admin ------------------------------------------------------------------------------------------------------------
-/** @param {any} item */
-function adminBox(item) {
-  const reply = /** @type {HTMLTextAreaElement} */ (h('textarea', { rows: 3, maxlength: 2000, placeholder: '回复（公开显示，可留空）' }));
-  reply.value = item.reply || '';
-  const busy = (on) => { for (const b of box.querySelectorAll('button, textarea')) /** @type {any} */ (b).disabled = on; };
-  const act = async (body, done) => {
-    busy(true);
-    try {
-      const data = await api('/items/' + item.id + '/admin', { method: 'POST', body });
-      replaceItem(data.item);
-      if (done) toast(done, 'ok');
-      refreshCounts();
-    } catch (err) {
-      busy(false);
-      toast(errorText(err), 'err');
-    }
-  };
-  const box = h('div', { class: 'admin' },
-    h('div', { class: 'admin__row' },
-      h('span', { class: 'admin__label', text: '状态' }),
-      h('div', { class: 'seg seg--sm' }, STATUSES.map(([value, label]) => h('button', {
-        type: 'button', class: 'seg__btn seg__btn--' + value, 'aria-pressed': String(item.status === value), text: label,
-        onclick: () => { if (item.status !== value) act({ status: value }, '已改为「' + label + '」'); },
-      })))),
-    h('div', { class: 'admin__row admin__row--reply' }, reply),
-    h('div', { class: 'admin__row admin__row--actions' },
-      h('button', { type: 'button', class: 'btn btn--sm btn--primary', text: '保存回复', onclick: () => {
-        if (cp(reply.value.trim()) > LIMITS.reply[1]) { toast('回复最多 2000 个字。', 'err'); return; }
-        act({ reply: reply.value.trim() }, reply.value.trim() ? '回复已保存' : '回复已清除');
-      } }),
-      h('button', { type: 'button', class: 'btn btn--sm', text: item.hidden ? '取消隐藏' : '隐藏', onclick: () => act({ hidden: !item.hidden }, item.hidden ? '已取消隐藏' : '已隐藏（其他人看不到）') }),
-      h('button', { type: 'button', class: 'btn btn--sm btn--danger', text: '删除', onclick: async () => {
-        if (!confirm('永久删除 #' + item.id + '「' + item.title + '」？此操作不能撤销。')) return;
-        busy(true);
-        try {
-          await api('/items/' + item.id, { method: 'DELETE' });
-          removeItem(item.id);
-          toast('已删除 #' + item.id, 'ok');
-          refreshCounts();
-        } catch (err) {
-          busy(false);
-          toast(errorText(err), 'err');
-        }
-      } })));
-  return box;
-}
-
-/** Recounts the tabs after an admin change without reloading the list. */
+/** Recounts the tabs after a new item without reloading the list. */
 async function refreshCounts() {
   const p = new URLSearchParams({ limit: '1' });
   if (state.category) p.set('category', state.category);
   if (state.q.trim()) p.set('q', state.q.trim());
   try { state.counts = (await api('/items?' + p.toString())).counts; renderTabs(); } catch { /* keep the old numbers */ }
-}
-
-async function checkAdmin() {
-  if (!ownerKey()) return false;
-  try {
-    await api('/admin', { admin: true });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function setAdmin(on) {
-  state.admin = on;
-  $('admin-badge').hidden = !on;
-  $('admin-toggle').textContent = on ? '退出管理模式' : '服主登录';
-  document.body.classList.toggle('is-admin', on);
 }
 
 // ---- pinned item (#123 links) -----------------------------------------------------------------------------------------
@@ -434,42 +347,6 @@ form.addEventListener('submit', async (e) => {
   submit.textContent = '提交';
 });
 
-// owner login
-const ownerForm = /** @type {HTMLFormElement} */ ($('owner-form'));
-$('admin-toggle').addEventListener('click', async () => {
-  if (state.admin) {
-    store.set('sessionStorage', ADMIN_OFF, '1');
-    setAdmin(false);
-    renderList();
-    load(true);
-    return;
-  }
-  store.set('sessionStorage', ADMIN_OFF, '');
-  if (await checkAdmin()) { setAdmin(true); load(true); return; }
-  ownerForm.reset();
-  $('owner-error').textContent = '';
-  openModal('owner');
-});
-ownerForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const key = /** @type {HTMLInputElement} */ (ownerForm.elements.namedItem('key')).value.trim();
-  if (!key) return;
-  const err = $('owner-error');
-  const previous = store.get('localStorage', OWNER_KEY);
-  store.set('localStorage', OWNER_KEY, key);
-  try {
-    await api('/admin', { admin: true });
-    closeModal('owner');
-    setAdmin(true);
-    toast('已进入管理模式', 'ok');
-    load(true);
-  } catch (ex) {
-    store.set('localStorage', OWNER_KEY, previous);
-    err.textContent = errorText(ex);
-    /** @type {HTMLInputElement} */ (ownerForm.elements.namedItem('key')).select();
-  }
-});
-
 // ---- filters ----------------------------------------------------------------------------------------------------------
 const qInput = /** @type {HTMLInputElement} */ ($('q'));
 const catSelect = /** @type {HTMLSelectElement} */ ($('category'));
@@ -496,8 +373,5 @@ qInput.value = state.q;
 catSelect.value = state.category;
 renderTabs();
 renderFooter();
-checkAdmin().then((admin) => {
-  setAdmin(admin);
-  load(true);
-  showPinned();
-});
+load(true);
+showPinned();

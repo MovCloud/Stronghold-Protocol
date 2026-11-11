@@ -1,10 +1,13 @@
+import { msg, t } from '../../shared/i18n.js';
+import { versionById } from '../../shared/versions.js';
+
 const $ = selector => document.querySelector(selector);
 const state = { csrf: null, tab: 'players', offset: 0, snapshot: null, action: null, generation: 0, loading: false,
   feedback: null, feedbackPages: [null], feedbackIndex: 0 };
 const statusNames = { playing: '正在对局', disconnected: '离线留席', matching: '等待匹配', spectating: '观战中', waiting: '房间等待', lobby: '大厅' };
 const difficultyNames = { FUNNY: '标准模拟', NORMAL: '险境模拟', HARD: '绝境模拟', ABYSS: '终极模拟' };
 const phaseNames = { INFO_CHECK: '开局确认', BAND_DRAFT: '策略选择', PREP: '整备', COMBAT: '作战', UNITE: '联防', SETTLE: '结算', CHOICE: '机变', RESULT: '结束', LOBBY: '等待' };
-const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', arcade: '娱乐模式', pack: '资源包开关', passwordChanged: '修改管理密码', feedback: '处理反馈' };
+const actionNames = { kick: '踢出玩家', ban: '封禁玩家', unban: '解除封禁', announcement: '发布公告', stopAnnouncement: '结束公告', deleteAnnouncement: '删除公告', maintenance: '维护模式', restart: '重启服务器', arcade: '娱乐模式', pack: '资源包开关', passwordChanged: '修改管理密码', feedback: '处理反馈' };
 const modeNames = { solo: '单人对局', coop: '多人对局' };
 const roomStatusNames = { disposed: '已解散', match: '对局中', matching: '等待匹配', waiting: '等待开局' };
 const maintenanceNames = { running: '运行中', maintenance: '维护中', pending: '切换中…', unreachable: '停机中' };
@@ -16,7 +19,7 @@ const actionLabel = item => item.action === 'maintenance' ? (item.maintenance ? 
   : item.action === 'arcade' ? `${item.open ? '开放' : '停用'}娱乐模式 · ${item.name || item.mode || ''}`
   : item.action === 'pack' ? `${item.enabled ? '启用' : '停用'}资源包 · ${item.packId || ''}`
   : (actionNames[item.action] || item.action);
-const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', arcade: '娱乐模式', packs: '资源包', feedback: '玩家反馈', audit: '操作记录' };
+const tabTitles = { players: '玩家状态', matches: '对局列表', bans: '封禁管理', announcements: '服务器公告', arcade: '娱乐模式', packs: '资源管理', content: '内容管理', feedback: '玩家反馈', audit: '操作记录' };
 // The feedback board's own vocabulary (deploy/stardust/feedback/policy.mjs); the pill classes reuse the player table's.
 const feedbackCategoryNames = { bug: '缺陷', gameplay: '玩法', ui: '界面', other: '其他' };
 const feedbackStatusNames = { unassigned: '待处理', unplanned: '暂不规划', planned: '已规划', updated: '已更新' };
@@ -24,7 +27,36 @@ const feedbackPillClass = { unassigned: 'waiting', unplanned: 'lobby', planned: 
 const date = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 const elem = (tag, text, className) => { const node = document.createElement(tag); if (text != null) node.textContent = String(text); if (className) node.className = className; return node; };
 const cell = (...nodes) => { const td = elem('td'); td.append(...nodes); return td; };
-function notice(text, error = false) { const n = $('#notice'); n.textContent = text; n.className = 'notice' + (error ? ' error' : ''); n.hidden = !text; }
+/**
+ * Notices are toasts, not a status line at the top of the page: the panels are long and the operator is usually scrolled
+ * down inside a card, so a message written above the fold is never seen. The card floats at the top of the current view,
+ * does not block the page, and dismisses itself (or on click).
+ */
+const TOAST_MS = { info: 4000, error: 8000 };
+const MAX_TOASTS = 4;
+const toastTimers = new Map();
+
+function dismissToast(card) {
+  clearTimeout(toastTimers.get(card));
+  toastTimers.delete(card);
+  card.remove();
+}
+
+/** Dismiss the toasts, all of them or only one kind. */
+function dismissToasts(kind = null) {
+  for (const card of [...$('#toasts').children]) if (!kind || card.classList.contains(kind)) dismissToast(card);
+}
+
+function notice(text, error = false) {
+  const host = $('#toasts');
+  if (!text) { dismissToasts(); return; }
+  const kind = error ? 'error' : 'info';
+  const card = elem('div', text, `toast ${kind}`);
+  card.addEventListener('click', () => dismissToast(card));
+  host.append(card);
+  toastTimers.set(card, setTimeout(() => dismissToast(card), TOAST_MS[kind]));
+  while (host.children.length > MAX_TOASTS) dismissToast(host.children[0]);
+}
 async function api(path, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
@@ -76,7 +108,8 @@ function applyTab(tab, title) {
   $('#page-title').textContent = title;
   if (tab === 'announcements') renderAnnouncements().catch(e => notice(e.message, true));
   if (tab === 'arcade') renderArcade().catch(e => notice(e.message, true));
-  if (tab === 'packs') renderPacks().catch(e => notice(e.message, true));
+  if (tab === 'packs') { renderPacks().catch(e => notice(e.message, true)); renderSkins().catch(e => notice(e.message, true)); }
+  if (tab === 'content') renderContent().catch(e => notice(e.message, true));
   if (tab === 'feedback') renderFeedback().catch(e => notice(e.message, true));
 }
 
@@ -145,6 +178,447 @@ async function renderPacks() {
   }
   if (!data.packs.length) box.append(elem('p', '没有安装的资源包。', 'muted'));
 }
+
+/**
+ * 内容管理 (docs/CONTENT-ADMIN.md §4, §6, §7): a build-time editor — every write lands in runtime/*.json and only
+ * takes effect after a restart, so each card says so. UI copy goes through msg() so tools/i18n.mjs can extract it;
+ * uiText() renders a msg() in the current language.
+ */
+const uiText = (m) => t(m.msgid, m.params);
+
+// Row identity is (type, id) only (§4.2): two rows that read the same with the same effect stay two rows, because a
+// content-hash merge would let "take one version out" drop content another version still provides.
+const contentTables = [
+  { type: 'bonds', title: msg('盟约') },
+  { type: 'bands', title: msg('策略') },
+  { type: 'items', title: msg('装备') },
+  { type: 'operators', title: msg('干员') }
+];
+const contentState = { versions: null, wild: null, wildPatch: null, skins: null, skinsDisabled: new Set(), skinsBase: new Set(), collapsed: new Set() };
+
+/** The version's readable name (shared/versions.js `label`): the ids alone (act2autochess@V2_1) read as nothing to a
+ * maintainer, so every view shows the label and keeps the id as the technical detail. */
+const versionLabel = (id) => {
+  const entry = versionById(id);
+  return entry ? t(entry.label) : String(id);
+};
+/** The 干员 matrix cell's readable name (§4.2): the bond's 中文名 from the catalog; the id stays only as the stored key. */
+const bondLabel = (row, key, bondId) => row.bondNames?.[key] || String(bondId);
+// The skin card lists default first, then official, then pack (§7): a default skin is always open, so it has no switch.
+const skinSourceOrder = { default: 0, official: 1, pack: 2 };
+const skinStatNames = { operators: msg('干员'), skins: msg('皮肤'), disabled: msg('已禁用'), open: msg('对玩家开放') };
+const presetNames = { pin: msg('1A 冲突以所选版本为准'), exclude: msg('1B 摘出去') };
+
+const setStatus = (node, text, kind) => { node.textContent = text; node.className = 'status-pill ' + kind; };
+
+function checkbox(label, checked, disabled) {
+  const box = elem('input');
+  box.type = 'checkbox';
+  box.checked = !!checked;
+  box.disabled = !!disabled;
+  const wrap = elem('label', null, 'checkbox-label');
+  wrap.append(box, elem('span', label));
+  return { box, el: wrap };
+}
+
+/**
+ * 版本卡片 (§6): one row per registered version in registry order, the checkbox is the build switch. envLocked means
+ * SP_CONTENT_VERSIONS overrides the document, so the card reads but cannot write.
+ */
+async function renderVersions() {
+  const data = await api('content/versions');
+  contentState.versions = data;
+  const ids = data.ids || data.registered || [];
+  const enabled = new Set(data.enabled || []);
+  const locked = !!data.envLocked;
+  const list = $('#versions-list');
+  list.replaceChildren();
+  if (locked) list.append(elem('p', uiText(msg('版本由环境变量锁定，此卡片只读。')), 'panel-note'));
+  for (const id of ids) {
+    const row = elem('div', null, 'content-row');
+    const box = elem('input');
+    box.type = 'checkbox';
+    box.checked = enabled.has(id);
+    box.disabled = locked;
+    box.dataset.id = id;
+    box.setAttribute('aria-label', uiText(msg('启用版本 {id}', { id: versionLabel(id) })));
+    const pill = elem('span', box.checked ? uiText(msg('已启用')) : uiText(msg('未启用')), 'status-pill ' + (box.checked ? 'ok' : 'bad'));
+    box.addEventListener('change', () => setStatus(pill, box.checked ? uiText(msg('已启用')) : uiText(msg('未启用')), box.checked ? 'ok' : 'bad'));
+    row.append(box, elem('strong', versionLabel(id)), elem('code', id, 'mono'), pill);
+    list.append(row);
+  }
+  setStatus($('#versions-status'), locked ? uiText(msg('只读（环境变量）')) : uiText(msg('已加载')), locked ? 'pending' : 'ok');
+  $('#versions-revision').textContent = `revision ${data.revision}`;
+  $('#versions-save').disabled = locked || !ids.length;
+}
+
+async function saveVersions() {
+  const data = contentState.versions;
+  if (!data || data.envLocked) return;
+  const enabled = [...$('#versions-list').querySelectorAll('input[type="checkbox"]')].filter(b => b.checked).map(b => b.dataset.id);
+  const result = await api('content/versions', { enabled, expectedRevision: data.revision });
+  notice(uiText(result.restartRequired ? msg('已保存，重启后生效') : msg('已保存。')));
+  await renderVersions();
+}
+
+/** The wild operation bar (§4.2): 仅显示冲突 is on by default, plus 按名称检索 and 按版本筛选. */
+function wildFilter() {
+  return {
+    conflictOnly: $('#wild-conflict-only').checked,
+    search: $('#wild-search').value.trim().slice(0, 80),
+    version: $('#wild-version').value || null
+  };
+}
+
+const emptyWildPatch = () => ({ picks: { bonds: {}, bands: {}, items: {} }, operators: {} });
+
+function patchDirty(patch) {
+  if (!patch) return false;
+  return Object.values(patch.picks).some(p => Object.keys(p).length) || Object.values(patch.operators).some(o => (o.off || []).length);
+}
+
+// A pending change wins over what the document says, so a row keeps showing the operator's choice across a re-read.
+const pendingPick = (table, row) => contentState.wildPatch?.picks?.[table.type]?.[row.id] ?? null;
+const pendingOff = (row) => contentState.wildPatch?.operators?.[row.id]?.off ?? row.selection ?? [];
+
+function updateWildSave() {
+  const data = contentState.wild;
+  const presetReady = !!data && !!wildFilter().version;
+  $('#wild-save').disabled = !data || !data.synthesis?.ok || !patchDirty(contentState.wildPatch);
+  $('#wild-preset-pin').disabled = !presetReady;
+  $('#wild-preset-exclude').disabled = !presetReady;
+}
+
+async function renderWild() {
+  const filter = wildFilter();
+  const query = new URLSearchParams();
+  if (!filter.conflictOnly) query.set('conflictOnly', '0');
+  if (filter.search) query.set('search', filter.search);
+  if (filter.version) query.set('version', filter.version);
+  const data = await api('content/wild?' + query);
+  contentState.wild = data;
+  contentState.wildPatch = contentState.wildPatch || emptyWildPatch();
+  renderWildVersionOptions(data);
+  renderSynthesis(data);
+  renderWildTables(data);
+  const ok = !!data.synthesis?.ok;
+  setStatus($('#wild-status'), ok ? uiText(msg('已加载')) : uiText(msg('无法合成')), ok ? 'ok' : 'bad');
+  $('#wild-revision').textContent = `revision ${data.revision}`;
+  updateWildSave();
+}
+
+function renderWildVersionOptions(data) {
+  const select = $('#wild-version');
+  const current = select.value;
+  select.replaceChildren();
+  const all = elem('option', uiText(msg('全部版本')));
+  all.value = '';
+  select.append(all);
+  for (const id of data.sources || []) { const option = elem('option', versionLabel(id)); option.value = id; select.append(option); }
+  select.value = current;
+}
+
+/** §4.2: a failing synthesis shows above the tables, because the tables alone would look like a normal read. */
+function renderSynthesis(data) {
+  const box = $('#wild-synthesis');
+  const synthesis = data.synthesis || {};
+  box.replaceChildren();
+  if (synthesis.ok) { box.hidden = true; return; }
+  box.hidden = false;
+  box.append(elem('p', uiText(msg('当前来源集合无法合成，需先收窄版本。')), 'synthesis-title'));
+  for (const error of synthesis.errors || []) box.append(elem('p', error, 'synthesis-error'));
+  box.append(elem('p', uiText(msg('已丢弃 {n} 条引用。', { n: synthesis.dropped || 0 })), 'muted'));
+}
+
+/**
+ * One version's 细则 for a row (§4.2): the title on its own bold line, the body on the lines below it unbolded. The
+ * em-dash form the panel used before read as one long run of text.
+ */
+function entryBody(row, version, title = '') {
+  const entry = row.entries?.[version] || {};
+  const box = elem('div', null, 'entry-body');
+  const head = [title, entry.name].filter(Boolean).join(' ');
+  if (head) box.append(elem('strong', head));
+  if (entry.desc) box.append(elem('span', entry.desc, 'entry-line'));
+  return box;
+}
+
+function effectiveLabel(table, row) {
+  if (table.type === 'operators') {
+    const off = pendingOff(row);
+    return off.length ? uiText(msg('已摘出 {n} 条', { n: off.length })) : uiText(msg('全部保留'));
+  }
+  if (!row.conflict) return uiText(msg('唯一来源'));
+  if (row.identical) return uiText(msg('实现相同'));
+  const current = pendingPick(table, row) ?? row.effective;
+  if (current === 'off') return uiText(msg('已摘出'));
+  return current ? uiText(msg('以 {id} 为准', { id: versionLabel(current) })) : uiText(msg('自动（最新）'));
+}
+
+function renderWildTables(data) {
+  const box = $('#wild-tables');
+  box.replaceChildren();
+  for (const table of contentTables) {
+    const rows = data.tables?.[table.type] || [];
+    const stats = data.stats?.[table.type] || {};
+    const group = elem('div', null, 'content-group');
+    // Each 分类 can be folded away (§4.2): with every group open the panel runs half a page deep, so the heading is
+    // the control that gets you to the next category. The fold lives in contentState, so a re-render keeps it.
+    const heading = elem('h3', null, 'group-head');
+    heading.setAttribute('role', 'button');
+    heading.setAttribute('tabindex', '0');
+    const counts = [uiText(msg('{rows} 行 · {conflicts} 冲突', { rows: rows.length, conflicts: stats.conflicts ?? 0 }))];
+    if (stats.identical) counts.push(uiText(msg('{n} 实现相同', { n: stats.identical })));
+    heading.append(elem('span', '▸', 'caret'), elem('span', uiText(table.title), 'group-title'),
+      elem('span', counts.join(' · '), 'muted'));
+    const bodyBox = elem('div', null, 'group-body');
+    const fold = () => {
+      const closed = group.classList.toggle('collapsed');
+      heading.setAttribute('aria-expanded', String(!closed));
+      if (closed) contentState.collapsed.add(table.type); else contentState.collapsed.delete(table.type);
+    };
+    heading.addEventListener('click', fold);
+    heading.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fold(); } });
+    if (contentState.collapsed.has(table.type)) { group.classList.add('collapsed'); heading.setAttribute('aria-expanded', 'false'); }
+    else heading.setAttribute('aria-expanded', 'true');
+    group.append(heading, bodyBox);
+    if (!rows.length) { bodyBox.append(elem('p', uiText(msg('当前筛选下没有行。')), 'muted')); box.append(group); continue; }
+    const headRow = elem('tr');
+    for (const title of [uiText(msg('名称')), uiText(msg('出现版本')), uiText(msg('当前生效'))]) headRow.append(elem('th', title));
+    const thead = elem('thead'); thead.append(headRow);
+    const body = elem('tbody');
+    for (const row of rows) { const [tr, detail] = wildRow(table, row); body.append(tr, detail); }
+    const tableEl = elem('table'); tableEl.append(thead, body);
+    const wrap = elem('div', null, 'table-wrap'); wrap.append(tableEl);
+    bodyBox.append(wrap);
+    box.append(group);
+  }
+}
+
+/** Clicking a row expands it: a conflict row gets one radio per source (§4.1), a single-source row only shows its 细则. */
+function wildRow(table, row) {
+  const tr = elem('tr');
+  const effectiveCell = elem('td', effectiveLabel(table, row));
+  tr.append(elem('td', row.name || row.id), elem('td', row.versions.map(versionLabel).join(', ')), effectiveCell);
+  const detail = elem('tr', null, 'row-detail');
+  const detailCell = elem('td');
+  detailCell.colSpan = 3;
+  detail.hidden = true;
+  detail.append(detailCell);
+  tr.addEventListener('click', () => { detail.hidden = !detail.hidden; });
+  if (table.type === 'operators') detailCell.append(operatorMatrix(table, row, effectiveCell));
+  else if (row.conflict && !row.identical) detailCell.append(pickRadios(table, row, effectiveCell));
+  else detailCell.append(entryBody(row, row.versions[0]));
+  return [tr, detail];
+}
+
+function pickRadios(table, row, effectiveCell) {
+  const box = elem('div', null, 'matrix');
+  const current = pendingPick(table, row) ?? row.effective;
+  for (const version of row.versions) {
+    const line = elem('div', null, 'matrix-row');
+    const radio = elem('input');
+    radio.type = 'radio';
+    radio.name = `pick-${table.type}-${row.id}`;
+    radio.checked = current === version;
+    radio.setAttribute('aria-label', uiText(msg('以 {id} 为准', { id: versionLabel(version) })));
+    radio.addEventListener('change', () => {
+      contentState.wildPatch.picks[table.type][row.id] = version;
+      effectiveCell.textContent = effectiveLabel(table, row);
+      updateWildSave();
+    });
+    line.append(radio, entryBody(row, version, versionLabel(version)));
+    box.append(line);
+  }
+  return box;
+}
+
+/** The 干员 matrix (§4.2): one line per source, one checkbox per bond that source carries; checked = 保留. */
+function operatorMatrix(table, row, effectiveCell) {
+  const off = new Set(pendingOff(row));
+  const box = elem('div', null, 'matrix');
+  for (const version of row.versions) {
+    const line = elem('div', null, 'matrix-row');
+    line.append(elem('strong', versionLabel(version)));
+    for (const bondId of row.cells?.[version] || []) {
+      const key = `${version}:${bondId}`;
+      const c = checkbox(bondLabel(row, key, bondId), !off.has(key), false);
+      c.box.addEventListener('change', () => {
+        const entry = contentState.wildPatch.operators[row.id] || (contentState.wildPatch.operators[row.id] = { off: [] });
+        if (c.box.checked) entry.off = entry.off.filter(x => x !== key);
+        else entry.off.push(key);
+        effectiveCell.textContent = effectiveLabel(table, row);
+        updateWildSave();
+      });
+      line.append(c.el);
+    }
+    box.append(line);
+  }
+  return box;
+}
+
+async function saveWild() {
+  const data = contentState.wild;
+  if (!data) return;
+  if (!data.synthesis?.ok) { notice(uiText(msg('当前来源集合无法合成，需先收窄版本。')), true); return; }
+  if (!patchDirty(contentState.wildPatch)) { notice(uiText(msg('没有待保存的修改。'))); return; }
+  const result = await api('content/wild', { patch: contentState.wildPatch, expectedRevision: data.revision });
+  contentState.wildPatch = emptyWildPatch();
+  notice(uiText(result.restartRequired ? msg('已保存，重启后生效') : msg('已保存。')));
+  await renderWild();
+}
+
+/**
+ * The two batch presets (§4.3) write through the same CAS as a row edit and only touch the rows the operation bar
+ * currently shows, so the confirm names the row count before anything is posted.
+ */
+async function runWildPreset(kind) {
+  const data = contentState.wild;
+  if (!data) return;
+  const filter = wildFilter();
+  if (!filter.version) { notice(uiText(msg('请先在操作栏选择版本。')), true); return; }
+  const rows = Object.values(data.tables || {}).flat();
+  // `data.tables` is already the filtered view, so this is the set the server's presetPatch will walk. A row whose
+  // sources all read the same is not a decision, so 1A has nothing to do for it (§4.2).
+  const affected = rows.filter(r => r.versions.includes(filter.version) && (kind === 'exclude' || (r.conflict && !r.identical))).length;
+  if (!affected) { notice(uiText(msg('当前筛选下没有可处理的行。'))); return; }
+  if (!confirm(uiText(msg('批量预设「{name}」将影响 {n} 行，确认执行？', { name: uiText(presetNames[kind]), n: affected })))) return;
+  const result = await api('content/wild', { preset: { kind, version: filter.version, filter }, expectedRevision: data.revision });
+  contentState.wildPatch = emptyWildPatch();
+  notice(uiText(result.restartRequired ? msg('已保存，重启后生效') : msg('已保存。')));
+  await renderWild();
+}
+
+/**
+ * 皮肤管理 (§9): the gate document plus the page's working selection. The selection starts as what the server holds;
+ * 重置 clears it without saving, and the save button is only live while the two differ.
+ */
+async function renderSkins() {
+  const data = await api('content/skins');
+  contentState.skins = data;
+  contentState.skinsDisabled = new Set();
+  for (const group of data.groups || []) for (const skin of group.skins || []) if (!skin.enabled) contentState.skinsDisabled.add(skin.id);
+  contentState.skinsBase = new Set(contentState.skinsDisabled);
+  renderSkinStats(data);
+  drawSkinPanel();
+  setStatus($('#skins-status'), uiText(msg('已加载')), 'ok');
+  $('#skins-revision').textContent = `revision ${data.revision}`;
+  updateSkinSave();
+}
+
+function renderSkinStats(data) {
+  const grid = $('#skins-stats');
+  grid.replaceChildren();
+  const stats = { ...data.stats, disabled: contentState.skinsDisabled.size };
+  for (const [key, value] of Object.entries(stats)) {
+    const card = elem('div', null, 'stat');
+    card.append(elem('span', uiText(skinStatNames[key] || msg(key))), elem('strong', String(value)));
+    grid.append(card);
+  }
+}
+
+/** The save button is only live while the page's selection differs from what the server holds. */
+const skinsDirty = () => {
+  const base = contentState.skinsBase;
+  const now = contentState.skinsDisabled;
+  if (base.size !== now.size) return true;
+  for (const id of now) if (!base.has(id)) return true;
+  return false;
+};
+const updateSkinSave = () => { $('#skins-save').disabled = !skinsDirty(); };
+
+function drawSkinPanel() {
+  const list = $('#skins-list');
+  list.replaceChildren();
+  for (const group of contentState.skins?.groups || []) {
+    const [row, detail] = skinGroupRow(group);
+    list.append(row, detail);
+  }
+}
+
+/**
+ * 重置 (§9): the page goes back to the initial default, every skin offered. It only changes the page — the save button
+ * is still what writes it, so the admin sees the result before committing it.
+ */
+async function resetSkins() {
+  if (!contentState.skins) return;
+  contentState.skinsDisabled = new Set();
+  renderSkinStats(contentState.skins);
+  drawSkinPanel();
+  updateSkinSave();
+}
+
+/**
+ * 皮肤管理 (§9): one expandable group per operator, the header carries the disabled count. 精一 and 精二 come first,
+ * then official, then pack. Each skin is the skin itself — art plus name, in the style of the 干员调配 picker: a tile is
+ * highlighted while it is offered, and clicking it takes the skin away (clicking it again gives it back). The highlight
+ * is the whole state, so the tiles carry no state text; the two initial portraits can never be taken away, so a click
+ * on them only says so.
+ */
+function skinGroupRow(group) {
+  const skins = (group.skins || []).slice().sort((a, b) => (skinSourceOrder[a.source] ?? 9) - (skinSourceOrder[b.source] ?? 9));
+  const row = elem('div', null, 'content-row');
+  const detail = elem('div', null, 'row-detail skin-grid');
+  const count = elem('span', null, 'muted');
+  const draw = () => { count.textContent = uiText(msg('已禁用 {n}', { n: skins.filter(s => contentState.skinsDisabled.has(s.id)).length })); };
+  detail.hidden = true;
+  row.append(elem('strong', group.charName || group.charId), count);
+  row.addEventListener('click', () => { detail.hidden = !detail.hidden; });
+  for (const skin of skins) {
+    const tile = elem('div', null, 'skin-tile');
+    const fixed = skin.source === 'default' || skin.fixed;
+    if (skin.art) {
+      const img = elem('img');
+      img.src = skin.art;
+      img.alt = skin.name || skin.id;
+      img.loading = 'lazy';
+      tile.append(img);
+    } else {
+      tile.append(elem('span', '◇', 'tile-mark'));
+    }
+    tile.append(elem('strong', skin.name || skin.id), elem('small', skin.group || '', 'muted'));
+    tile.setAttribute('role', 'button');
+    tile.setAttribute('aria-pressed', String(!contentState.skinsDisabled.has(skin.id)));
+    tile.classList.toggle('fixed', fixed);
+    tile.classList.toggle('on', !contentState.skinsDisabled.has(skin.id));
+    tile.addEventListener('click', () => {
+      if (fixed) { notice(uiText(msg('初始立绘不可移除')), true); return; }
+      if (contentState.skinsDisabled.has(skin.id)) contentState.skinsDisabled.delete(skin.id);
+      else contentState.skinsDisabled.add(skin.id);
+      tile.setAttribute('aria-pressed', String(!contentState.skinsDisabled.has(skin.id)));
+      tile.classList.toggle('on', !contentState.skinsDisabled.has(skin.id));
+      draw();
+      renderSkinStats(contentState.skins);
+      updateSkinSave();
+    });
+    detail.append(tile);
+  }
+  draw();
+  return [row, detail];
+}
+
+async function saveSkins() {
+  const data = contentState.skins;
+  if (!data) return;
+  if (!skinsDirty()) { notice(uiText(msg('没有待保存的修改。'))); return; }
+  // The document is the map keyed by operator (§9), not a flat list: rebuild it from the rows so the POST matches
+  // what the gate reads.
+  const disabled = {};
+  for (const group of data.groups || []) {
+    const list = (group.skins || []).filter((s) => s.id && contentState.skinsDisabled.has(s.id)).map((s) => s.id);
+    if (list.length) disabled[group.charId] = list;
+  }
+  const result = await api('content/skins', { disabled, expectedRevision: data.revision });
+  notice(uiText(result.restartRequired ? msg('已保存，重启后生效') : msg('已保存。')));
+  await renderSkins();
+}
+
+async function renderContent() {
+  await renderVersions();
+  await renderWild();
+  setStatus($('#content-status'), uiText(msg('已加载')), 'ok');
+}
+
 /**
  * The maintenance switch is a drain state, not a label: the status line carries the confirmed state (green running /
  * amber draining / red when the server cannot be reached), the button carries the action it would take next, and the
@@ -156,7 +630,7 @@ function paintMaintenance(mode, buttonLabel) {
   label.textContent = maintenanceNames[mode];
   label.className = 'status-pill ' + (mode === 'running' ? 'ok' : mode === 'maintenance' ? 'warn' : mode === 'pending' ? 'pending' : 'bad');
   button.textContent = buttonLabel || (maintenanceState === 'maintenance' ? '停止维护' : '维护');
-  button.className = maintenanceState === 'maintenance' ? 'primary' : 'danger';
+  button.className = maintenanceState === 'maintenance' ? 'primary' : 'warn'; // warn = enter the drain, primary = end it
   button.disabled = mode === 'pending';
 }
 async function refreshMaintenance() {
@@ -337,7 +811,7 @@ async function refresh() {
     if (state.tab === 'announcements') await renderAnnouncements();
     if (state.tab === 'arcade') await renderArcade();
     if (state.tab === 'feedback') await renderFeedback();
-    if ($('#notice').classList.contains('error')) notice('');
+    dismissToasts('error');
   } catch (e) { if (e.status === 401) showLogin('管理会话已过期，请重新登录'); else notice('刷新失败，当前显示上次成功获取的数据：' + e.message, true); }
   finally { state.loading = false; $('#refresh-button').disabled = false; if (state.refreshAgain) { state.refreshAgain = false; queueMicrotask(refresh); } }
 }
@@ -425,6 +899,14 @@ let feedbackTimer;
 $('#feedback-search').addEventListener('input', () => { clearTimeout(feedbackTimer); feedbackTimer = setTimeout(() => { resetFeedbackPage(); renderFeedbackSafe(); }, 300); });
 $('#feedback-previous').addEventListener('click', () => { if (state.feedbackIndex > 0) { state.feedbackIndex--; renderFeedbackSafe(); } });
 $('#feedback-next').addEventListener('click', () => { if (state.feedbackPages[state.feedbackIndex + 1]) { state.feedbackIndex++; renderFeedbackSafe(); } });
+const renderWildSafe = () => renderWild().catch(e => notice(e.message, true));
+for (const id of ['wild-conflict-only', 'wild-version']) $('#' + id).addEventListener('change', renderWildSafe);
+let wildTimer;
+$('#wild-search').addEventListener('input', () => { clearTimeout(wildTimer); wildTimer = setTimeout(renderWildSafe, 300); });
+for (const [id, work] of [['versions-save', saveVersions], ['wild-save', saveWild], ['skins-save', saveSkins],
+  ['skins-reset', resetSkins], ['wild-preset-pin', () => runWildPreset('pin')], ['wild-preset-exclude', () => runWildPreset('exclude')]]) {
+  $('#' + id).addEventListener('click', () => work().catch(e => notice(e.message, true)));
+}
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $('#' + button.dataset.close).close());
 for (const button of document.querySelectorAll('[data-tab]')) button.addEventListener('click', () => {
   applyTab(button.dataset.tab, tabTitles[button.dataset.tab] || button.textContent.trim());
@@ -452,6 +934,34 @@ $('#maintenance-toggle').addEventListener('click', async () => {
   } catch (e) {
     if (e.status === 401 && state.csrf) showLogin('管理会话已过期，请重新登录');
     else { notice(e.message, true); paintMaintenance('unreachable'); } // the switch may have been applied, so the next tick re-reads it
+  }
+});
+/**
+ * 重启 closes this process: ask the server what it would interrupt, confirm a second time (the click is the first
+ * step), then POST. The server drains, closes gracefully and the supervisor starts a fresh process — the panel's
+ * saved content settings take effect then.
+ */
+$('#restart-button').addEventListener('click', async () => {
+  const button = $('#restart-button');
+  button.disabled = true;
+  try {
+    const info = await api('restart');
+    if (!info.enabled) { notice('当前服务未启用重启接口，请手动重启。', true); return; }
+    const lines = ['重启将关闭服务并由守护进程重新拉起，期间所有玩家会断开连接。'];
+    if (info.activeMatches) lines.push(`当前有 ${info.activeMatches} 场对局进行中，会被中断。`);
+    if (!info.supervised) lines.push('注意：未检测到守护进程，重启后服务不会自动拉起，需要手动启动。');
+    lines.push('确认重启？');
+    if (!confirm(lines.join('\n'))) return;
+    await api('restart', { force: true });
+    maintenanceState = 'maintenance';
+    paintMaintenance('pending', '重启中…');
+    notice('已提交重启：服务正在排空并关闭，恢复后请刷新页面。');
+  } catch (e) {
+    if (e.status === 401 && state.csrf) showLogin('管理会话已过期，请重新登录');
+    else notice(e.message, true);
+    paintMaintenance('unreachable');
+  } finally {
+    button.disabled = false;
   }
 });
 setInterval(() => { if (!document.hidden) refresh(); }, 5000);

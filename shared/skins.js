@@ -13,8 +13,36 @@ export function skinFor(charId, skinId) {
 }
 export const skinsFor = charId => OPERATOR_SKINS.filter(s => s.charId === charId);
 export function skinIdFor(choices, charId) {
-  return plain(choices) && Object.hasOwn(choices, charId) ? skinFor(charId, choices[charId])?.id ?? null : null;
+  const id = plain(choices) && Object.hasOwn(choices, charId) ? skinFor(charId, choices[charId])?.id ?? null : null;
+  return id && !skinDenied(id) ? id : null;
 }
+
+// ---- the admin's skin gate (docs/CONTENT-ADMIN.md §9) -------------------------------------------------------------
+// The skin ids the admin has stopped offering. The server installs it at boot from runtime/skins.json, the client
+// from GET /api/skins/gate; unset keeps every behaviour exactly as it was before the gate existed.
+// One judgement covers the four surfaces a stored choice is read on — the operator's appearance, the card's
+// portrait, the card's background and the operator picker — so a denied skin cannot be picked, restored from
+// localStorage or sent over the wire, and a player who still has one falls back to that operator's default
+// appearance with everything else unchanged.
+/** @type {Set<string>|null} null = nothing denied (the gate is not installed) */
+let skinGate = null;
+
+/** @param {Record<string, string[]>|Set<string>|null} disabled the runtime document's map, or the ids */
+export function setSkinGate(disabled) {
+  if (disabled instanceof Set) { skinGate = disabled.size ? disabled : null; return; }
+  const ids = new Set();
+  if (plain(disabled)) {
+    for (const list of Object.values(disabled)) {
+      if (!Array.isArray(list)) continue;
+      for (const id of list) if (typeof id === 'string' && id) ids.add(id);
+    }
+  }
+  skinGate = ids.size ? ids : null;
+}
+/** The installed gate (null = not installed). For the client's own filtering. */
+export const skinGateIds = () => skinGate;
+/** A skin the gate has stopped offering. The default appearance carries no skin id, so it is never denied. */
+export function skinDenied(skinId) { return !!skinGate && skinGate.has(skinId); }
 
 const PLUGIN_SKIN_LIMITS = Object.freeze({ entries: 160, idLen: 64 });
 /** A plugin id (public/js/skinRegistry.js `PLUGIN_ID` — keep in sync): the left half of the registry's global key. */
@@ -35,12 +63,12 @@ const isRegistrySkinKey = (v) => typeof v === 'string' && v.length <= PLUGIN_SKI
 /** Exact whitelist: own charId keys and bound skin IDs only. An empty map restores default appearances. */
 export function isSkinChoices(value) {
   return plain(value) && Object.keys(value).length <= SKIN_LIMITS.choices
-    && Object.entries(value).every(([charId, skinId]) => !!skinFor(charId, skinId) || isRegistrySkinKey(skinId));
+    && Object.entries(value).every(([charId, skinId]) => (skinFor(charId, skinId) || isRegistrySkinKey(skinId)) && !skinDenied(skinId));
 }
 export function cleanSkinChoices(value) {
   if (!plain(value)) return {};
   return Object.fromEntries(Object.entries(value)
-    .filter(([charId, skinId]) => !!skinFor(charId, skinId) || isRegistrySkinKey(skinId)).slice(0, SKIN_LIMITS.choices));
+    .filter(([charId, skinId]) => (skinFor(charId, skinId) || isRegistrySkinKey(skinId)) && !skinDenied(skinId)).slice(0, SKIN_LIMITS.choices));
 }
 
 // ---- plugin-studio / Forge helpers (docs/SKINS.md: upstream's, kept for import) -------------------------------

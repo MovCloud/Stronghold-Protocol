@@ -29,7 +29,8 @@
         <button class="nav-item" data-tab="bans"><span>⊘</span>封禁管理 <span id="ban-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="announcements"><span>◇</span>服务器公告</button>
         <button class="nav-item" data-tab="arcade"><span>▧</span>娱乐模式</button>
-        <button class="nav-item" data-tab="packs"><span>▦</span>资源包</button>
+        <button class="nav-item" data-tab="packs"><span>▦</span>资源管理</button>
+        <button class="nav-item" data-tab="content"><span>▨</span>内容管理</button>
         <button class="nav-item" data-tab="feedback"><span>✎</span>玩家反馈 <span id="feedback-count" class="nav-count">0</span></button>
         <button class="nav-item" data-tab="audit"><span>≡</span>操作记录</button>
         <!-- plugin panels (window.SP_ADMIN_PANELS) append their nav items and tab sections here at runtime -->
@@ -40,7 +41,7 @@
       <header class="page-header"><div><p class="eyebrow">SERVER OPERATIONS</p><h1 id="page-title">玩家状态</h1><p class="muted">查看当前参与情况，按玩家处理异常会话。</p></div>
         <div class="header-actions"><span id="admin-name" class="admin-name"></span><button id="password-button" class="subtle">修改密码</button><button id="logout-button" class="subtle">退出</button></div>
       </header>
-      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="toasts" class="toast-host" role="status" aria-live="polite"></div>
       <section class="stats-grid" aria-label="服务器概况">
         <article class="stat"><span>真人在线</span><strong id="stat-online">--</strong><small>同一浏览器的多个窗口算一人</small></article>
         <article class="stat"><span>正在对局</span><strong id="stat-playing">--</strong><small>真人席位，不含 AI 与观战者</small></article>
@@ -50,7 +51,7 @@
 
       <section class="tab-panel" id="tab-players">
         <div class="panel-heading"><div><h2>玩家列表 <span id="player-count" class="muted"></span></h2><p id="last-update" class="muted">等待服务器数据…</p></div>
-          <div class="panel-heading-actions"><span id="maintenance-status" class="status-pill ok">运行中</span><button id="maintenance-toggle" class="danger" title="运行中点击进入排空：拒绝新建房间与匹配，进行中的对局不受影响；维护中点击退出排空">维护</button><button id="refresh-button" class="secondary">↻ 刷新</button></div></div>
+          <div class="panel-heading-actions"><span id="maintenance-status" class="status-pill ok">运行中</span><button id="maintenance-toggle" class="warn" title="运行中点击进入排空：拒绝新建房间与匹配，进行中的对局不受影响；维护中点击退出排空">维护</button><button id="restart-button" class="danger" title="关闭服务并由守护进程重新拉起：保存的内容配置在重启后生效；会中断进行中的对局">重启</button><button id="refresh-button" class="secondary">↻ 刷新</button></div></div>
         <div class="toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索昵称、玩家 ID、房间或 IP" aria-label="搜索玩家" maxlength="80"></label><select id="scope" aria-label="筛选玩家"><option value="playing">正在对局</option><option value="all">所有玩家</option><option value="online">连接中的玩家</option><option value="disconnected">离线留席</option><option value="matching">等待匹配</option></select></div>
         <div class="table-wrap"><table><thead><tr><th>玩家</th><th>状态</th><th>房间 / 对局</th><th>模拟进度</th><th>连接地址</th><th class="action-cell">管理操作</th></tr></thead><tbody id="players-body"></tbody></table></div>
         <div class="table-footer"><p>踢出将结束玩家当前参与；其他玩家继续原有对局。</p><div><button id="previous-page" class="subtle">上一页</button><span id="page-range" class="muted"></span><button id="next-page" class="subtle">下一页</button></div></div>
@@ -87,6 +88,33 @@
         <div class="panel-heading"><div><h2>资源包</h2><p class="muted">运行时启停：文件保留在磁盘上，开关只控制下发——目录与 /packs/、/p/ 从下一次请求起生效，已加载的页面不会回退。</p></div></div>
         <div id="pack-list" class="pack-list"></div>
         <p class="panel-note">付费资源包默认停用且不会出现在玩家目录里；启用需确认合规风险（本复刻项目不从事商业活动，见 NOTICE.md）。开关写入管理状态文件，重启后保持。</p>
+        <div class="content-card">
+          <div class="panel-heading"><div><p class="eyebrow">SKINS</p><h2>皮肤管理 <span id="skins-revision" class="muted"></span></h2></div>
+            <div class="panel-heading-actions"><span id="skins-status" class="status-pill pending">未加载</span><button id="skins-reset" class="warn">重置</button><button id="skins-save" class="primary" disabled>保存</button></div></div>
+          <div id="skins-stats" class="stats-grid"></div>
+          <div id="skins-list" class="content-list"></div>
+          <p class="panel-note">按干员分组，每个皮肤就是它自己的一张图块；高亮表示提供中，点击图块取消高亮即不再提供，再点一次恢复。精一与精二的初始立绘不可移除。重置只把页面的选择恢复成默认，保存才写入 runtime/content-skins.json，重启后生效。</p>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-content" hidden>
+        <div class="panel-heading"><div><p class="eyebrow">CONTENT MANAGEMENT</p><h2>内容管理 <span id="content-status" class="status-pill pending">未加载</span></h2><p class="muted">构建期的编辑器：这里保存的内容只写入 runtime/*.json，重启后生效。</p></div></div>
+
+        <div class="content-card">
+          <div class="panel-heading"><div><p class="eyebrow">CONTENT VERSIONS</p><h2>版本管理 <span id="versions-revision" class="muted"></span></h2></div>
+            <div class="panel-heading-actions"><span id="versions-status" class="status-pill pending">未加载</span><button id="versions-save" class="primary" disabled>保存</button></div></div>
+          <div id="versions-list" class="content-list"></div>
+          <p class="panel-note">勾选 = 该版本进入构建。保存写入 runtime/content-versions.json，重启后生效。</p>
+        </div>
+
+        <div class="content-card">
+          <div class="panel-heading"><div><p class="eyebrow">WILD MODE</p><h2>狂野模式 <span id="wild-revision" class="muted"></span></h2></div>
+            <div class="panel-heading-actions"><span id="wild-status" class="status-pill pending">未加载</span><button id="wild-save" class="primary" disabled>保存</button></div></div>
+          <div id="wild-synthesis" class="synthesis" hidden></div>
+          <div class="toolbar"><label class="checkbox-label"><input id="wild-conflict-only" type="checkbox" checked>仅显示冲突</label><label class="search"><span aria-hidden="true">⌕</span><input id="wild-search" type="search" placeholder="按名称或 id 检索" aria-label="检索内容" maxlength="80"></label><select id="wild-version" aria-label="按版本筛选"><option value="">全部版本</option></select></div>
+          <div id="wild-tables"></div>
+          <div class="table-footer"><p>两个批量预设只作用于当前筛选出的行，执行前需要确认。</p><div><button id="wild-preset-pin" class="primary" disabled>1A 冲突以所选版本为准</button><button id="wild-preset-exclude" class="danger" disabled>1B 摘出去</button></div></div>
+        </div>
       </section>
 
       <section class="tab-panel" id="tab-feedback" hidden>

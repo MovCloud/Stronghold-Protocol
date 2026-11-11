@@ -22,6 +22,10 @@ data/local-fx.json
 .cache/
 # Per-server published announcements and command data; never shipped with source.
 /runtime/
+# 狂野模式 (docs/CONTENT-ADMIN.md §2): data/versions/wild/ is rewritten on every startup by the synthesizer
+# (server/contentMerge.js) from runtime/wild.json. Unlike the other data/versions/ folders, which are upstream-pinned
+# snapshots, this one is build output, so it is never committed.
+data/versions/wild/
 # a worktree that links these folders instead of holding them: git sees a symlink as a file, which the patterns
 # above (trailing slash: directories only) do not match
 /node_modules

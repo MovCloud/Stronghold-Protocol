@@ -1,8 +1,6 @@
-// Input rules of the feedback board: text cleaning and lengths, the in-memory rate limits and the owner key.
+// Input rules of the feedback board: text cleaning and lengths, and the in-memory rate limits.
 // Nothing here is persisted: limiter state lives only in this process (a restart forgets it), and neither IPs nor
 // session signatures are hashed, logged or stored.
-import { promises as fs } from 'node:fs';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 
 export const CATEGORIES = Object.freeze(['bug', 'gameplay', 'ui', 'other']);
@@ -49,7 +47,7 @@ export function validateNew(doc) {
 }
 
 /**
- * The owner's change to an item: any of status, reply ('' clears it) and hidden. Unknown keys are ignored.
+ * The console's change to an item: any of status, reply ('' clears it) and hidden. Unknown keys are ignored.
  * @returns {{ patch: { status?: string, reply?: string, hidden?: boolean } } | { field: string }}
  */
 export function validatePatch(doc) {
@@ -157,67 +155,3 @@ export class WindowLimiter {
   }
 }
 
-// The owner key: the same file and the same rules as server/ownerFile.js (that module is not in this image).
-const NAME_DROP = /[\p{White_Space}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Cf}]/gu;
-const nameKey = (name) => name.normalize('NFKC').replace(NAME_DROP, '').toUpperCase().toLowerCase();
-
-/** The key digest of a valid owner file (`{ "names": [...], "keySha256": "<64 hex>" }`, nothing else), or null. */
-export function parseOwnerFile(doc) {
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
-  if (Object.keys(doc).some((key) => key !== 'names' && key !== 'keySha256')) return null;
-  const { names, keySha256 } = doc;
-  if (typeof keySha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(keySha256)) return null;
-  if (!Array.isArray(names) || names.length > 64) return null;
-  if (!names.every((name) => typeof name === 'string' && name.length <= 64 && nameKey(name))) return null;
-  return Buffer.from(keySha256, 'hex');
-}
-
-/**
- * Watches the owner file: re-read when its mtime / size / inode change, checked every `pollMs` off the request path.
- * No file name, a missing file or an invalid one = admin off. The key, its digest and the file are never logged.
- * @returns {{ verify: (key: unknown) => boolean, active: () => boolean, refresh: () => Promise<boolean>, close: () => void }}
- */
-export function createOwnerKey({ file = null, pollMs = 5000, log = { info() {}, warn() {} } } = {}) {
-  let hash = null, stamp = null, warned = null, timer = null, closed = false;
-  const set = (next) => {
-    if (next && !hash) log.info('[feedback] owner file loaded: admin on');
-    else if (!next && hash) log.info('[feedback] owner file gone or invalid: admin off');
-    hash = next;
-  };
-  const check = async () => {
-    if (!file || closed) return !!hash;
-    try {
-      let st;
-      try { st = await fs.stat(file); } catch (e) {
-        if (e?.code !== 'ENOENT') throw e;
-        if (stamp !== 'missing') { stamp = 'missing'; set(null); }
-        return !!hash;
-      }
-      const next = `${st.mtimeMs}:${st.size}:${st.ino}`;
-      if (next === stamp) return !!hash;
-      stamp = next;
-      let parsed = null;
-      // never log a parse error: its message may quote the file
-      try { parsed = parseOwnerFile(JSON.parse(await fs.readFile(file, 'utf8'))); } catch { parsed = null; }
-      if (parsed) warned = null;
-      else if (warned !== next) { warned = next; log.warn('[feedback] owner file invalid: admin off'); }
-      set(parsed);
-    } catch (e) {
-      if (warned !== 'error') { warned = 'error'; log.warn(`[feedback] cannot read the owner file: ${e?.code || 'error'}`); }
-    }
-    return !!hash;
-  };
-  let chain = Promise.resolve(false);
-  const refresh = () => (chain = chain.then(check, check));
-  if (file) {
-    void refresh();
-    timer = setInterval(() => { void refresh(); }, Math.max(250, pollMs));
-    timer.unref?.();
-  }
-  const verify = (key) => {
-    if (!hash || typeof key !== 'string' || !key) return false;
-    return timingSafeEqual(createHash('sha256').update(key, 'utf8').digest(), hash);
-  };
-  return { verify, active: () => !!hash, refresh,
-    close: () => { closed = true; if (timer) clearInterval(timer); timer = null; } };
-}

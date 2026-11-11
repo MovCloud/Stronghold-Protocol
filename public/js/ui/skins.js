@@ -24,6 +24,7 @@
 import { createStore, loadPref, savePref } from '../store.js';
 import { data } from '../data.js';
 import { SKIN_LIMITS } from '../../../shared/protocol.js';
+import { skinDenied } from '../../../shared/skins.js';
 
 /** The localStorage preference (`sp.pref.<key>`) of this browser's skin choices: `{ [charId]: skinId }`. */
 export const SKINS_PREF = 'skins';
@@ -57,11 +58,13 @@ export const skinHasPictures = (skin) => !!skin && ['avatar', 'avatarE2', 'portr
  */
 export function ownerSkin(charId, { ownerId, myId = null, players = [], localSkins = {}, skin = null, otherSkins = true } = {}) {
   if (!charId || ownerId === null) return null;
-  if (ownerId === undefined) return str(localSkins[charId]);
+  // 皮肤管理 (docs/CONTENT-ADMIN.md §9): a skin this server does not offer is not drawn, whoever picked it.
+  const wear = (id) => (skinDenied(id) ? '' : str(id));
+  if (ownerId === undefined) return wear(localSkins[charId]);
   if (ownerId !== myId && !otherSkins) return null;
   const owner = players.find((p) => p.playerId === ownerId);
-  if (owner) return str(owner.skins?.[charId]);
-  return str(skin);
+  if (owner) return wear(owner.skins?.[charId]);
+  return wear(skin);
 }
 
 /**
@@ -155,6 +158,9 @@ export function availableSkins(charId) {
   const rows = [];
   for (const [skinId, skin] of Object.entries(isObj(rec.skins) ? rec.skins : {})) {
     if (!str(skinId) || !isObj(skin)) continue;
+    // 皮肤管理 (docs/CONTENT-ADMIN.md §9): a skin the admin stopped offering is not offered here at all — the row is
+    // not drawn as disabled, it is absent, so a player cannot pick it and the picker cannot look like it broke.
+    if (skinDenied(skinId)) continue;
     const hasModel = skinHasModel(skin);
     const playable = hasModel || skinHasPictures(skin);
     // the tile art: the fixed-size portrait family first (a 1:2 box the grid lines up on), then the illustration, then

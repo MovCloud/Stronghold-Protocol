@@ -103,6 +103,5 @@ export function ArcadeScreen() {
     <div class="arcade__grid">
       ${modes.map((m) => html`<${ArcadeCard} key=${m.id} mode=${m} />`)}
     </div>
-    <footer class="arcade__foot">${t('更多玩法会随插件包加入；每个玩法单独开关。')}</footer>
   </div>`;
 }

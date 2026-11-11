@@ -41,7 +41,7 @@ export function roomStatus(room, serverNow) {
 }
 
 /** Returns true if this API router handled the request. Address resolution shares the WebSocket TRUST_PROXY rules. */
-export function createPublicApi({ lobby, announcements, trustProxy, sendJson, sendError, now = Date.now, ownsAnnouncement = true }) {
+export function createPublicApi({ lobby, announcements, trustProxy, sendJson, sendError, now = Date.now, ownsAnnouncement = true, skinGate = null }) {
   const buckets = new Map();
   let sweptAt = now();
   let announcementReadAt = now();
@@ -81,6 +81,14 @@ export function createPublicApi({ lobby, announcements, trustProxy, sendJson, se
         res.setHeader('Allow', 'GET, HEAD, OPTIONS');
         sendJson(req, res, 405, { error: 'METHOD_NOT_ALLOWED' });
       }
+      return true;
+    }
+    // 皮肤管理 (docs/CONTENT-ADMIN.md §9): the gate the client applies to its own stored choice. Public and read-only —
+    // a player's choice is theirs, only which skins are offered is the server's decision.
+    if (pathname === '/api/skins/gate') {
+      if (!skinGate) return false;
+      res.setHeader('Cache-Control', 'no-store');
+      sendJson(req, res, 200, { disabled: skinGate.disabled });
       return true;
     }
     if (pathname === '/api/announcement' || pathname === '/api/popup-announcement') {

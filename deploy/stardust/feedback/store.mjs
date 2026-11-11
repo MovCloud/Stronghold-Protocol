@@ -122,7 +122,7 @@ export function openStore(file, { now = Date.now } = {}) {
         .run(category, title, body, author, client, at, at);
       return row(Number(lastInsertRowid));
     },
-    /** Applies the owner's patch; updated_at moves only on an actual change, reply_at when the reply becomes a new non-empty text. */
+    /** Applies the console's patch; updated_at moves only on an actual change, reply_at when the reply becomes a new non-empty text. */
     update(id, { status, reply, hidden }, at) {
       const old = row(id);
       if (!old) return null;

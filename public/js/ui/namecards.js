@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html, Icon, Button } from './components.js';
 import { data, useData } from '../data.js';
 import { t } from '../../../shared/i18n.js';
-import { OPERATOR_SKINS } from '../../../shared/skins.js';
+import { OPERATOR_SKINS, skinDenied } from '../../../shared/skins.js';
 import { CAMPS, LOADING } from '../../../shared/avatarSources.js';
 import { BG_SHIFT_DEFAULT, isCardShift } from '../../../shared/playerCard.js';
 
@@ -127,10 +127,11 @@ export function NameCardPicker({ current, onPick, onClose }) {
   const card = (c) => html`<button key=${c.id} type="button" class=${`nc-pick__card${current === c.id ? ' is-on' : ''}`} onClick=${() => pick(c.id)} title=${t(c.name)}>
     <span class="nc-pick__art has-nc"><${NameCardLayer} card=${c.id} /><span class="nc-pick__name">${t(c.name)}</span></span>
     ${current === c.id ? html`<span class="nc-pick__on">${t('使用中')}</span>` : null}</button>`;
-  // the skins in the art index, searchable by skin, brand or operator name; tiles show the half-body art (lazy)
+  // the skins in the art index, searchable by skin, brand or operator name; tiles show the half-body art (lazy).
+  // 皮肤管理 (docs/CONTENT-ADMIN.md §9): a skin the admin stopped offering is not listed here either.
   const needle = q.trim().toLowerCase();
   const charName = (s) => String(s.charName || '');
-  const skins = OPERATOR_SKINS.filter((s) => m?.skins?.[s.id]?.illustration)
+  const skins = OPERATOR_SKINS.filter((s) => m?.skins?.[s.id]?.illustration && !skinDenied(s.id))
     .filter((s) => !needle || [t(s.name), t(s.brand || ''), charName(s)].some((x) => x.toLowerCase().includes(needle)));
   const skinCard = (s) => { const id = `skin:${s.id}`, src = namecardSrc(namecardOf(id), m, true);
     return html`<button key=${id} type="button" class=${`nc-pick__card nc-pick__card--skin${current === id ? ' is-on' : ''}`} onClick=${() => pick(id)} title=${`${charName(s)} · ${t(s.name)}`}>

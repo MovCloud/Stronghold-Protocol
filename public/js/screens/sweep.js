@@ -1,5 +1,5 @@
 // S.W.E.E.P.报告 (2026-10-13, the owner's request: the event's report screen, laid out after the video 2:17–3:03; every
-// drawing here is original, the art is the game's own icons): a full-screen overlay opened from the lobby's plate, three tabs —
+// drawing here is original, the art is the game's own icons): a full-screen overlay opened from the lobby's plate, four tabs —
 //   盟约报告 — 核心盟约 / 附加盟约 tiles (bonds.json isCore); the left panel: the glyph, the name, 激活所需人数 and the
 //              thresholds, the description, 对应干员 (visibleMembers by tier; 替补 on an operator marked 未持有 in 干员持有;
 //              a tap opens 干员调配 at the operator, over this screen);
@@ -7,7 +7,10 @@
 //              in and its bonds;
 //   敌方资料 — 领袖 (bosses.json, the hidden variants left out) and 战术特训敌人 (factions.json types) tiles; the left: art,
 //              name, text and the leader with its escorts / the type's enemies; 查看 opens the enemy codex (全部 / 普通 /
-//              精英 / 领袖, a search, letter grades from the spread of the game's own enemies with the numbers beside them).
+//              精英 / 领袖, a search, letter grades from the spread of the game's own enemies with the numbers beside them);
+//   装备一览 — the shop's equipment (data/items.json) in I–VI sections, the same list the 干员调配 deck shows (screens/
+//              loadout.js `codexItems`: base forms only); the left: icon, name, the tier chip, 售价, 特殊获取, the base
+//              effect, for a mergeable item its 进阶 effect (the merged golden form), the flavor text and the bond it grants.
 // ⓘ opens 玩法说明 at its 进阶图鉴 chapter. The report and the codex are full-screen Modals (focus trap; Esc closes the
 // codex first, then the report; the focus returns to the lobby's button). It comes up from black over the hub and fades
 // back out like the other hub screens (ui/transitions.js). The tab is remembered (sp.pref).
@@ -15,11 +18,14 @@
 // css/screens/lobby.css.
 
 import { useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
-import { html, Button, Icon, Modal, roman } from '../ui/components.js';
+import { html, Button, Icon, Modal, TierChip, roman } from '../ui/components.js';
 import { Img, RichText, GIcon } from '../ui/gameComponents.js';
-import { bondIconUrl, bandIconUrl, enemyIconUrl, factionIconUrl, chessAvatarUrl } from '../ui/assetUrls.js';
+import { bondIconUrl, bandIconUrl, enemyIconUrl, factionIconUrl, chessAvatarUrl, itemIconUrl } from '../ui/assetUrls.js';
 import { attackInterval, fmtNum } from '../ui/gameLogic.js';
 import { abilityRows } from '../ui/abilityLines.js';
+// the equipment list's own filter — 干员调配's 道具 deck draws the same records, so there is one rule for what counts as
+// an item (base form, in the shop) and one order (tier, then the shop's)
+import { codexItems } from './loadout.js';
 import { data, useData } from '../data.js';
 import { contentSet, pageVersion, retryContentSet } from '../content.js';
 import { DEFAULT_VERSION, shownVersion } from '../versions.js';
@@ -35,6 +41,7 @@ const TABS = [
   { id: 'bonds', name: N_('盟约报告'), icon: () => html`<${Icon} name="link" />` },
   { id: 'bands', name: N_('策略报告'), icon: () => html`<${Icon} name="rook" />` },
   { id: 'enemies', name: N_('敌方资料'), icon: () => html`<${GIcon} name="target" />` },
+  { id: 'items', name: N_('装备一览'), icon: () => html`<${Icon} name="box" />` },
 ];
 const MODE_NAME = { SINGLE: N_('独立模拟'), MULTI: N_('同盟模拟') };
 const RANK = { NORMAL: N_('普通'), ELITE: N_('精英'), BOSS: N_('领袖') };
@@ -290,6 +297,48 @@ function EnemiesTab({ m, sel, onSel, onCodex }) {
     </button>`;
 }
 
+// ---- 装备一览 ----------------------------------------------------------------------------------------------------------
+
+/** The equipment of the shop (base forms; a merged one is its base's 进阶 effect), in one section per tier. */
+function ItemsTab({ m, sel, onSel }) {
+  const all = codexItems(data.get('items'));
+  const tiers = [...new Set(all.map((it) => it.tier).filter(Number.isFinite))].sort((a, b) => a - b);
+  return tiers.map((tier) => {
+    const list = all.filter((it) => it.tier === tier);
+    return html`<${Section} key=${tier} name=${t('{tier}阶', { tier: roman(tier) })} glyph=${html`<${Icon} name="box" />`} count=${list.length}>
+      ${list.map((it) => html`<${Tile} key=${it.id} kind="item" on=${sel === it.id} onClick=${() => onSel(it.id)} title=${it.name}
+        badge=${it.price != null ? html`<span class="sw-tile__price num" title=${t('售价')}>${it.price}</span>` : null}>
+        <span class="sw-item"><${Img} src=${itemIconUrl(m, it)} fallback=${html`<${Icon} name="box" />`} /></span>
+        <span class="sw-tile__cap">${it.name}</span>
+      <//>`)}
+    <//>`;
+  });
+}
+
+/** One item: icon, tier, price, the base effect and — when the shop offers its merge — the advanced one. */
+function ItemPanel({ item, m }) {
+  const all = data.get('items') || {};
+  const adv = item.goldenId ? all[item.goldenId] : null;
+  const same = adv && (adv.descRaw || adv.desc) === (item.descRaw || item.desc);
+  const bond = item.giveBondId ? data.lookup('bonds', item.giveBondId) : null;
+  return html`<div class="sw-detail">
+    <${Hero} src=${itemIconUrl(m, item)} glyph=${true} name=${item.name} fallback=${html`<${Icon} name="box" />`} />
+    <div class="sw-facts">
+      <${TierChip} tier=${item.tier} />
+      ${item.price != null ? html`<span class="sw-pill">${t('售价')}<b class="num">${item.price}</b></span>` : null}
+      ${item.shopExcluded ? html`<span class="sw-pill sw-pill--ghost">${t('特殊获取')}</span>` : null}
+    </div>
+    <div class="sw-text">
+      <h4 class="sw-text__h">${same ? t('基础 & 进阶效果') : t('基础效果')}</h4>
+      <${RichText} as="p" text=${item.descRaw || item.desc || ''} />
+      ${adv && !same ? html`<h4 class="sw-text__h">${t('进阶效果')}</h4>
+        <${RichText} as="p" text=${adv.descRaw || adv.desc || ''} />` : null}
+      ${item.flavor ? html`<p class="sw-text__flavor">${item.flavor}</p>` : null}
+      ${bond ? html`<p class="sw-text__bonds">${t('相关盟约')}<span class="sw-chip"><${Img} src=${bondIconUrl(m, bond.bondId)} />${bond.name}</span></p>` : null}
+    </div>
+  </div>`;
+}
+
 // ---- the enemy codex ---------------------------------------------------------------------------------------------------
 
 const STAT_ROWS = [
@@ -405,7 +454,7 @@ function handbookPage() {
  * The report overlay. @param {{ onClose: () => void }} props
  */
 export function SweepReport({ onClose }) {
-  const filesReady = useData('bonds', 'bands', 'bosses', 'factions', 'enemies', 'chess', 'assets');
+  const filesReady = useData('bonds', 'bands', 'bosses', 'factions', 'enemies', 'items', 'chess', 'assets');
   useData('local');
   const version = useStore(shownVersion);
   const content = useStore((s) => s, Object.is, contentSet);
@@ -421,6 +470,7 @@ export function SweepReport({ onClose }) {
   const [bondSel, setBondSel] = useState(null);
   const [bandSel, setBandSel] = useState(null);
   const [enemySel, setEnemySel] = useState(null);
+  const [itemSel, setItemSel] = useState(null);
   const [codex, setCodex] = useState(null);
   const [leaving, leave] = useLeave(onClose);
 
@@ -431,6 +481,8 @@ export function SweepReport({ onClose }) {
   const band = data.lookup('bands', bandSel) || bands[0] || null;
   const firstBoss = ready ? bossList()[0] : null;
   const eSel = enemySel || (firstBoss ? { kind: 'boss', id: firstBoss.bossId } : null);
+  const items = ready ? codexItems(data.get('items')) : [];
+  const item = data.lookup('items', itemSel) || items[0] || null;
 
   useEffect(() => {
     document.body.classList.add('sw-open');
@@ -464,6 +516,9 @@ export function SweepReport({ onClose }) {
   } else if (tab === 'bands') {
     left = band ? html`<${BandPanel} key=${band.bandId} band=${band} m=${m} />` : null;
     right = html`<${BandsTab} m=${m} sel=${band?.bandId} onSel=${setBandSel} />`;
+  } else if (tab === 'items') {
+    left = item ? html`<${ItemPanel} key=${item.id} item=${item} m=${m} />` : null;
+    right = html`<${ItemsTab} m=${m} sel=${item?.id} onSel=${setItemSel} />`;
   } else {
     left = eSel ? html`<${EnemyPanel} key=${`${eSel.kind}:${eSel.id}`} sel=${eSel} m=${m} onCodex=${setCodex} />` : null;
     right = html`<${EnemiesTab} m=${m} sel=${eSel || {}} onSel=${setEnemySel} onCodex=${setCodex} />`;
