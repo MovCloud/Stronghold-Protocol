@@ -1866,14 +1866,13 @@ function MatchScreen() {
   const shownOps = [...(field?.units || []), ...spawnedOps];
   const bondPop = popupView({ open: bondOpen, pub, priv, myId, field, units: popOps || spawnedOps, live: liveLayers });
   const openBond = (id, ownerId, from) => { setBondOpen((b) => toggleBond(b, id, ownerId, from)); audio.sfx('click', { volume: 0.4 }); };
-  // 同盟盟约速查: the per-viewer operator lists. m.public carries no boardOps (PR #922 review): the own seat is
-  // m.private, a teammate appears while their scout / battle field is the one on screen, and the peek (g.peek, the
-  // status channel — a roster stream separate from g.watch's battlefield, so it also answers inside a battle window)
-  // fills in the teammates this viewer may see but is not looking at. What is on screen wins.
+  // 「同盟盟约速查」的干员名单。m.public 不带 boardOps（PR #922 批注）：自己的座位来自 m.private；队友在他那张侦察 /
+  // 战场正好在屏上时从屏上取；其余屏上看不到的队友由 peek（g.peek 的状态通道 —— 与 g.watch 的战场数据彼此独立，
+  // 所以自己的战斗进行中也照常应答）补齐。屏上视图优先。
   const flyOps = mergeFlyOps(flyOpsFor({ myId, priv, field, players, cc, runner: battleRunner }), peek);
-  // 阶段边界 (server/match/match/peek.js): the flyout is a glance at this round's prep / battle window — a phase or round
-  // change collapses it (teamPanel.js), and the server ends the subscription on the same boundary. Its own key (not the
-  // banner's phaseKey): a 联防 wave advances the banner identity but not the peek's round/phase window.
+  // 阶段边界（server/match/match/peek.js）：浮窗只是对本回合准备 / 战斗窗口的瞥一眼 —— 回合或阶段变化时收起（teamPanel.js），
+  // 服务端在同一道边界结束订阅。用它自己的 key（不是横幅的 phaseKey）：联防的一波会推进横幅的标识，但不会推进
+  // peek 的回合 / 阶段窗口。
   const peekPhaseKey = `${pub?.round ?? 0}:${phase || ''}`;
   const watchingNow = combat ? (watching || field?.fieldId || home) : watching;
   const shopOpen = showShop && !barCollapsed;

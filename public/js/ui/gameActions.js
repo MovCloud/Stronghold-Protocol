@@ -111,8 +111,8 @@ export const actions = {
   emote: (id) => act('g.emote', { id }, { quiet: true }),
   // `playerId`: the player tapped in the team panel (a shared field shows two) — what an eliminated viewer follows
   watch: (fieldId, playerId = null) => act('g.watch', typeof playerId === 'string' && playerId ? { fieldId, playerId } : { fieldId }, { sfx: 'tab' }),
-  // 同盟盟约速查 (server/match/match/peek.js): the roster flyout expanded (true) / collapsed (false). Quiet and best
-  // effort — it refreshes what the viewer just opened, so a refusal must not toast.
+  // 「同盟盟约速查」浮窗（server/match/match/peek.js）：展开（true）/ 收起（false）队伍栏右缘的名册浮窗。
+  // 安静、尽力而为 —— 它只是刷新玩家刚打开的内容，被拒绝时不该弹提示。
   peek: (open) => act('g.peek', { open: !!open }, { sfx: false, quiet: true }),
   // the bonds of a player whose list the hot frames strip (WS compression round 2, step ③): the server answers one
   // unicast m.bonds (main.js writes it into the mirror's player entry). Best effort and quiet — it is a refresh of a

@@ -819,9 +819,8 @@ export const C2S_FORK = {
   // battle starts; every teammate and spectator sees it as m.public players[].bondPlan; absent / null clears it
   'g.bondPlan': { bondId: nullable(isId), $optional: ['bondId'] },
   'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
-  // 同盟盟约速查 (server/match/match/peek.js, the fork's flyout): the viewer expanded (true: one team-filtered
-  // snapshot, then kept up to date for PEEK_TTL_MS) or collapsed (false) the roster flyout. Never m.public, never the
-  // opponent team in 2V2.
+  // 同盟盟约速查（server/match/match/peek.js，本 fork 的浮窗）：展开（true：一份按队伍裁剪的快照，之后在本回合 / 阶段内
+  // 保持更新）或收起（false）。永不进入 m.public，2V2 下永不下发对手队伍。
   'g.peek': { open: isBool },
   // server-run combat, local display replicas (DESIGN §14): `local` — this browser runs its own normal / 联防 fields
   // from the b.start spec instead of being streamed them; `battleId` + `stream: true` — its replica diverged from a
@@ -880,9 +879,9 @@ export const S2C_FORK = [
   // removed player, who is then out of the room as after g.leave · m.notice { kind: 'afkRemoved', playerId, name,
   // rounds } — to everyone else in the match (players and spectator seats)
   'm.removed', 'm.notice',
-  // 同盟盟约速查 (server/match/match/peek.js): the answer to g.peek — one unicast frame to the viewer whose flyout
-  // is open. { seq, ops: { [playerId]: [{ id, golden? }] } } is the open's snapshot; { seq, seat, ops } is one mate's
-  // changed layout. Team mates only; nothing here is ever broadcast.
+  // 同盟盟约速查（server/match/match/peek.js）：g.peek 的应答 —— 只发给展开浮窗的观众的单播帧。
+  // { seq, ops: { [playerId]: [{ id, golden? }] } } 是展开时的快照；{ seq, seat, ops } 是某位队友名单变化后的增量。
+  // 只含队友，永不广播。
   'm.peek',
   // server-run combat, local display replicas: b.sync { battleId, tick, h, done? } — the Worker battle's state
   // digest right after step `tick`; `done`: the step that finished it · b.ext { battleId, i, to, hp, end? } — a

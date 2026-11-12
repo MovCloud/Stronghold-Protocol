@@ -1,11 +1,10 @@
-// 同盟盟约速查 peek, server side (server/match/match/peek.js): the roster flyout asks g.peek { open } and the server
-// unicasts its TEAM MATES' board operators — one snapshot on the open, then one frame per changed layout. The server
-// filters by team (co-op: the whole roster; 2V2: the viewer's own team only), nothing goes into m.public, and a moved
-// piece is not a layout change. The viewer-side merge (peek over flyOpsFor) is test/ui/team-flyout.test.js.
+// 同盟盟约速查 peek，服务端（server/match/match/peek.js）：名册浮窗发 g.peek { open }，服务端单播**队友**场上的干员
+// —— 展开时一份快照，之后每份变化名单一帧。服务端按队伍过滤（coop：整队；2V2：只发观众自己那队），观战席根本
+// 到不了这里，内容不进 m.public，在棋盘上挪动棋子不算名单变化。观众侧与屏上视图的合并见 test/ui/team-flyout.test.js。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tileKey } from '../../server/match/board.js';
-import { PHASE } from '../../shared/constants.js';
+import { PHASE, ERR } from '../../shared/constants.js';
 import { makeMatch, give, legalTileFor, chessOfTier } from './harness.js';
 
 const MELEE = (c) => c.position === 'MELEE' && c.profession === 'TANK';
@@ -131,5 +130,66 @@ test('g.peek: the subscription ends with its round / phase, and drops on a disco
   assert.ok(h.m._peekSubs.has('p_0'), 'reopening subscribes again');
   h.m.onDisconnect('p_0');
   assert.ok(!h.m._peekSubs.has('p_0'), 'a disconnect drops the subscription');
+  h.m.dispose();
+});
+
+test('g.peek: a spectator seat is refused like any other intent — only g.watch reaches the bench', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, spectators: ['s_0'], seed: 7105, fake: true }).start();
+  h.toPrep(1);
+  const r = h.m.handle('s_0', { t: 'g.peek', open: true });
+  assert.equal(r.error, ERR.SPECTATOR);
+  assert.ok(!h.m._peekSubs?.has('s_0'), 'no subscription either');
+  assert.equal(h.lastTo('s_0', 'm.peek'), null, 'and no frame');
+  h.m.dispose();
+});
+
+test('g.peek: a finalised death pushes [] to the open flyout (its pieces went back to the pool)', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, seed: 7106, fake: true }).start();
+  h.toPrep(1);
+  const b = h.ps('p_1');
+  clearSeat(b);
+  place(h, b, []);
+  h.m.handle('p_0', { t: 'g.peek', open: true });
+  assert.equal(h.lastTo('p_0', 'm.peek').ops.p_1.length, 1, 'the snapshot has the operator');
+
+  b.eliminate(1);
+  h.m.flush();
+  const frames = lastPeeks(h, 'p_0');
+  assert.equal(frames.at(-1).seat, 'p_1');
+  assert.deepEqual(frames.at(-1).ops, [], 'a finalised seat is empty, not stale');
+  h.m.dispose();
+});
+
+test('g.peek: the revival window keeps the roster (a seat waiting to be rescued is not dead yet)', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, seed: 7107, fake: true }).start();
+  h.toPrep(1);
+  const b = h.ps('p_1');
+  clearSeat(b);
+  place(h, b, []);
+  // 实验性救援：`alive` 已是 false，但没人救才会最终判死（server/match/match/extensions.js pendingDeath）。
+  b.alive = false;
+  b.pendingDeath = true;
+  h.m.handle('p_0', { t: 'g.peek', open: true });
+  assert.equal(h.lastTo('p_0', 'm.peek').ops.p_1.length, 1, 'still on the flyout while the rescue is possible');
+
+  b.pendingDeath = false;
+  h.m.flush();
+  assert.deepEqual(lastPeeks(h, 'p_0').at(-1).ops, [], 'the final death empties it');
+  h.m.dispose();
+});
+
+test('g.peek: co-op boss rounds cross groups — the roster is status, not battlefield state', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, seed: 7108, fake: true }).start();
+  h.toPrep(1);
+  const b = h.ps('p_1');
+  clearSeat(b);
+  place(h, b, []);
+  h.m.phase = PHASE.COMBAT;
+  h.m.fields = [
+    { fieldId: 'b1', kind: 'boss', live: true, cc: true, players: ['p_0'] },
+    { fieldId: 'b2', kind: 'hidden', live: true, cc: true, players: ['p_1'] },
+  ];
+  h.m.handle('p_0', { t: 'g.peek', open: true });
+  assert.deepEqual(Object.keys(h.lastTo('p_0', 'm.peek').ops), ['p_1'], 'the other group is still the same team');
   h.m.dispose();
 });

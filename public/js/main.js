@@ -387,8 +387,8 @@ function wireNet() {
     matchAt = Date.now();
     const pub = payload(msg);
     const prev = store.get().match.public;
-    // 同盟盟约速查 (g.peek) belongs to one round/phase (peek.js drops the subscription on that boundary): the stored
-    // table must not outlive it, or a stale prep roster would render as if it were live
+    // 同盟盟约速查（g.peek）只属于打开它的那个回合 / 阶段（peek.js 在该边界丢弃订阅）：存下的整表不能活过边界，
+    // 否则准备期的旧名册会被当成实时数据画出来
     const rollover = !!prev && (prev.phase !== pub.phase || prev.round !== pub.round);
     store.patch('match', { public: pub, ...(rollover ? { peek: null } : {}) });
     if (store.get().ui.resumed) store.patch('ui', { resumed: false });
@@ -400,8 +400,8 @@ function wireNet() {
     if (selectRoute(s) === 'game' && msg.playerId === s.me?.playerId) audio.layerGain(msg.bondId, msg.add);
   });
   net.on('m.field', (msg) => store.patch('match', { field: payload(msg) }));
-  // 同盟盟约速查 (server/match/match/peek.js): the teammates' operators while the roster flyout is open. The open's
-  // answer replaces the whole map; an incremental frame replaces one seat's list. Team mates only — the server filters.
+  // 同盟盟约速查（server/match/match/peek.js）：浮窗展开期间队友的干员名单。展开时的应答替换整张表；
+  // 增量帧只替换一个座位。只含队友 —— 服务端已经按队伍裁剪过。
   net.on('m.peek', (msg) => {
     const prev = store.get().match.peek;
     let peek;

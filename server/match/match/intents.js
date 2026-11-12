@@ -67,7 +67,7 @@ export class MatchIntents {
       case 'g.emote': return this.emote(ps, msg.id);
       // playerId: the player tapped (a shared field names two) — the watch preference (item 56)
       case 'g.watch': return this.watch(ps, msg.fieldId, msg.playerId ?? null);
-      // 同盟盟约速查 (peek.js): the flyout expanded / collapsed — a team-filtered snapshot, then kept up to date
+      // 「同盟盟约速查」浮窗（peek.js）：展开 / 收起 —— 按队伍裁剪的快照，之后随名单变化推送增量
       case 'g.peek': return this.peek(ps, !!msg.open);
       case 'g.autoplay': return this.setAutoplay(ps, !!msg.on);
       // 比赛控制 (matchControl.js): the pause is a request the connected humans must all agree to; `{ on: false }` is

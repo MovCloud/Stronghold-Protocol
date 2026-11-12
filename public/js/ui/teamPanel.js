@@ -33,14 +33,13 @@
 // check who draws from the same pool.
 // 投票移出 (ui/kickVote.js, GitHub feedback #12): the row of a teammate the AI plays because they stayed offline has a
 // 投票移出 button in SP_DRAFT / PREP; the open vote is shown in the notice slot above the rows.
-// PR #922 review (2026-11-11): the flyout's operator lists are per-viewer. m.public never carries a roster — the own
-// seat's operators come from m.private boardOps, a teammate's only from the scout / battle field currently on screen,
-// so the other group and a teammate still in battle show no list (g.watch, docs/META.md §4). A row is one grid row per
-// seat with three columns (bonds / operators / the strategy square): the square is the row's height, the other two
-// columns divide the rest of the window, and all three cells are the same size. Keeping them in the SAME grid row is
-// the fix for the bug the upstream review reported (PR #922) — with the strategy column in its own grid, an expanded
-// 「前往查看」 row shifted that seat's strategy out of line with its bonds. Each cell scrolls sideways on its own, and
-// a picked strategy is a button that opens its card beside the square.
+// PR #922 批注（2026-11-11）：浮窗的干员名单按观众裁剪。m.public 绝不携带名册 —— 自己的座位来自 m.private 的
+// boardOps，队友只在「他这张侦察 / 战场正好在屏上」时才有；其余屏上看不到的队友由 peek（g.peek → m.peek，
+// server/match/match/peek.js 的状态通道）补齐，所以另一组与仍在战斗中的队友在 peek 里照常可见，而在 g.watch 的
+// 战场数据里没有（docs/META.md §4）。一行是每个座位的一行网格，分三列（盟约 / 场上干员 / 策略方块）：方块就是
+// 行高，另外两列分掉窗口剩余宽度，三格同尺寸。把三列放在**同一行网格**里，正是上游评审报告的那个 bug（PR #922）
+// 的修法 —— 策略列单独成网格时，某行展开「前往查看」会把这个座位的策略方块顶得和盟约错位。每格各自横向滚动，
+// 选中的策略是按钮，点它在方块旁打开卡片。
 
 import { useEffect, useReducer, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
@@ -351,13 +350,13 @@ export function flyOpChessId(u, lookup = (id) => data.lookup('chess', id), chess
 }
 
 /**
- * Per-viewer on-field operators for the flyout (PR #922 review). The own seat reads m.private.boardOps; a teammate
- * only when their field is the one on screen (a prep scout, or a battle the viewer may watch — g.watch already
- * refused every other field), and always board-only, chess-only. The result is `{ [playerId]: [{ id, golden? }] }`.
- * A prep scout (`prep: true`, fieldId `n:<pid>`) carries its board in the meta itself: no battle runs yet, so the
- * runner has nothing for it (client-combat matches still have `cc` true in prep — reading the runner there would empty
- * the row while that board is plainly on screen). A battle reads the runner's board in client combat, else the meta's.
- * Exported for the tests.
+ * 浮窗里按观众看到的场上干员（PR #922 批注）。自己的座位读 m.private.boardOps；队友只在他那张战场正好在屏上时
+ * 才有（准备期侦察，或观众有权观看的战斗 —— 其他战场 g.watch 已经拒绝过），且只含场上棋子、只含干员。
+ * 返回值形如 `{ [playerId]: [{ id, golden? }] }`。
+ * 准备期侦察（`prep: true`，fieldId `n:<pid>`）的棋盘在 meta 自身里：此时还没有战斗在跑，runner 里没有它的数据
+ * （客户端战斗的对局在准备期 `cc` 仍为 true —— 在那里读 runner 会把明明画在屏上的那一行清空）。战斗在客户端战斗
+ * 模式下读 runner 的棋盘，否则读 meta 的。
+ * 导出供测试使用。
  */
 export function flyOpsFor({ myId, priv = null, field = null, players = null, cc = false, runner = null }) {
   const out = {};
@@ -387,11 +386,10 @@ export function flyOpsFor({ myId, priv = null, field = null, players = null, cc 
 }
 
 /**
- * The flyout's operator lists: what the screen shows wins, the peek fills the rest (server/match/match/peek.js,
- * 同盟盟约速查). `base` is `flyOpsFor` — the own m.private boardOps plus a teammate whose field is on screen; `peek`
- * is `m.match.peek`, the teammates the server sent while the flyout is open. An empty peek list is ignored: a seat the
- * screen already draws is never blanked by a slower frame, and a seat with no operators simply has no entry.
- * Exported for the UI tests.
+ * 浮窗的干员名单：屏上视图优先，peek 补齐其余座位（server/match/match/peek.js，同盟盟约速查）。`base` 是
+ * `flyOpsFor` —— 自己的 m.private boardOps，加上屏上战场里的队友；`peek` 是 `m.match.peek`，浮窗展开期间服务端
+ * 发来的队友名单。peek 的空列表一律忽略：屏上已经画着的座位不会被一份更慢的帧清空，场上没有干员的座位也就没有条目。
+ * 导出供 UI 测试使用。
  * @param {Record<string, Array<{ id: string, golden?: number }>>|null} base
  * @param {Record<string, Array<{ id: string, golden?: number }>>|null} peek
  * @returns {Record<string, Array<{ id: string, golden?: number }>>}
@@ -407,13 +405,11 @@ export function mergeFlyOps(base, peek) {
 }
 
 /**
- * The seat's bonds in the flyout: icon only, no names and no 「尚未激活盟约」 copy — the flyout does not reuse BondStrip
- * (PR #922 review, the reviewer's point against the shared component). This fork keeps its own addition on top of that
- * shape (owner request 2026-10-25): the `count/next` badge, so a teammate's row still reads how far along each bond is.
- * The badge keeps `.bslot` / `.bslot__count` so it shares the top strip's positioning rules (css/game.css).
- * `size="sm"` is upstream's and stays: the discs are the same size as the 盟约 strip above the board (owner request
- * 2026-11-12), so a flyout row reads like that strip. Only the operator thumbnails and the strategy glyph are drawn
- * bigger, at css `--fly-ico`.
+ * 浮窗里一个座位的盟约：只有图标，不写名字、不显示「尚未激活盟约」—— 浮窗不复用 BondStrip（PR #922 批注，
+ * 评审反对复用共享组件的意见）。本 fork 在这套形状之上保留自己的追加（owner request 2026-10-25）：`count/next`
+ * 角标，队友那一行仍能看出每条盟约走到哪一步。角标沿用 `.bslot` / `.bslot__count`，与顶栏名册条共享定位规则
+ * （css/game.css）。`size="sm"` 是上游的，保留：圆盘与棋盘上方的盟约条同尺寸（owner request 2026-11-12），
+ * 浮窗一行读起来就像那条名册条。只有干员缩略图与策略图标按 css `--fly-ico` 画得更大。
  * @param {{ bonds?: any[] | null, ownerId: any, onBond?: ((bondId: string, ownerId: any) => void) | null,
  *   layersDisabled?: boolean }} props
  */
@@ -436,17 +432,14 @@ function FlyBonds({ bonds, ownerId, onBond = null, layersDisabled = false }) {
 }
 
 /**
- * The operators a seat has on its field, drawn beside its bond discs (owner request 2026-10-25): the per-viewer list
- * `flyOpsFor` builds — m.private boardOps for the own seat, the field on screen for a teammate (PR #922 review). A
- * lean list, just the ids plus the elite bit, so a thumbnail needs no board Lookup (names / tiers / art come from
- * data/chess.json). An id is the operator's **char** id (the field record's body: views.js `assets.avatar || charId
- * || piece.id` — a 补位 slot shows the operator it fights as), which is a key of the art manifest's `chars`, never of
- * data/chess.json (its keys are `chess_char_*`): the thumbnail composes that record instead of a chess lookup,
- * otherwise every tile shows '?'. A row is one grid row per seat (css/screens/team.css): the bonds cell and this cell
- * divide the window and each scrolls inside itself, so a long list never pushes the strategy square — which is the row's
- * height, not a third of the window. The thumbnails take css `--fly-ico` (owner request 2026-11-12), the size shared
- * with the strategy glyph, so a thumbnail is exactly as big as the square beside it; the bond discs in the neighbouring
- * cell stay at the top strip's size.
+ * 一个座位场上的干员，画在盟约圆盘旁（owner request 2026-10-25）：`flyOpsFor` 组出的按观众名单 —— 自己的座位来自
+ * m.private.boardOps，队友来自屏上的战场（PR #922 批注）。精简名单，只有 id 与精英位，缩略图不需要再查棋盘
+ * （名字 / 星级 / 立绘来自 data/chess.json）。id 是干员的 **char** id（场上记录的实体：views.js
+ * `assets.avatar || charId || piece.id` —— 补位槽显示的是实际出战的干员），它是立绘清单 `chars` 的键，绝不是
+ * data/chess.json 的键（那里的键是 `chess_char_*`）：缩略图直接组合那条记录而不是查棋子表，否则每格都会显示 '?'。
+ * 一行是一个座位的一行网格（css/screens/team.css）：盟约格与这一格分掉窗口宽度、各自内部滚动，长名单永远不会
+ * 把策略方块挤走 —— 策略方块就是行高，不是窗口的三分之一。缩略图用 css `--fly-ico`（owner request 2026-11-12），
+ * 与策略图标同尺寸，所以缩略图正好和旁边的方块一样大；隔壁格的盟约圆盘保持顶栏名册条的尺寸。
  * @param {{ ops?: Array<{ id: string, golden?: number }> | null,
  *   onOp?: ((u: { id: string, golden?: number }) => void) | null }} props
  */
@@ -516,28 +509,23 @@ function cell(cls, body) {
 }
 
 /**
- * 「同盟盟约速查」 flyout (user requests 2026-10-24 / 2026-10-25, PR #922 review): the toggle bar stands at the right
- * edge of the widest roster row (`--fly-left`, measured in TeamPanel) and the window opens to its right, so expanding
- * it never widens the roster or pushes its header. The bar spans the roster's whole height, but the window starts
- * level with the first row (css `--fly-top`, measured in TeamPanel) and every row is exactly that seat's roster row
- * tall (`--fly-row-h`, mirrored from `rowH`) — so the 同盟成员 header has no group beside it, each avatar's discs sit
- * directly to that row's right, and an expanded 「前往查看」 row moves the flyout too instead of shifting every row
- * after it.
- * A row is one grid row per seat with three columns: bonds, the field operators, the strategy square (owner request
- * 2026-11-12). The square is the row's height and the other two columns divide the rest of the window; all three cells
- * are the same size, and the icons in them are drawn at one shared size. Keeping the three columns in the SAME grid row
- * is the fix for the bug the upstream review reported (PR #922): when the strategy column was a separate grid, an
- * expanded 「前往查看」 row pushed that seat's strategy out of line with its bonds. The first two columns scroll
- * sideways inside their own cell (a long list cannot cut the square), and the window runs from the anchor to the left
- * edge of the HUD's right-hand 指令 / 效果 column, or to the HUD's own right edge when that column is not on screen
- * (`--fly-w`, measured in TeamPanel) — inside the safe-area / 异形屏 insets of css/devices.css, never the page's
- * absolute right edge (owner request 2026-11-12). A picked strategy is a button: it opens `BandPopup` beside the
- * square, and a click anywhere else closes it.
- * Hidden while the roster is folded (TeamPanel only renders it with the roster open).
- * A room grouped by chess pool (`pools`, rosterPools) reserves each pool header's height here too, so the flyout's rows
- * stay level with their roster rows across the whole list (owner request 2026-10-25: one line across shows one seat).
- * The discs are icon-only in the flyout (owner request 2026-10-25): with no name under them every disc's white glyph
- * centre sits on the row's centre line, level with the operator thumbnails and the strategy icon.
+ * 「同盟盟约速查」浮窗（用户需求 2026-10-24 / 2026-10-25，PR #922 批注）：拉杆立在最宽那行队伍栏的右缘
+ * （`--fly-left`，在 TeamPanel 里量出），窗口向右展开，所以展开它既不会加宽队伍栏，也不会把表头挤走。拉杆占满
+ * 队伍栏整个高度，窗口却从第一行的高度开始（css `--fly-top`，在 TeamPanel 里量出），每一行正好是那个座位队伍行
+ * 的高度（`--fly-row-h`，镜像 `rowH`）—— 于是「同盟成员」表头旁边没有分组，每个头像的圆盘正好落在那一行右边，
+ * 展开「前往查看」只会移动浮窗，而不会把后面的每一行顶下去。
+ * 一行是每个座位的一行网格，分三列：盟约、场上干员、策略方块（owner request 2026-11-12）。方块就是行高，
+ * 另外两列分掉窗口剩余宽度；三格同尺寸，格内图标按同一共享尺寸绘制。把三列放在**同一行网格**里，正是上游评审
+ * 报告的那个 bug（PR #922）的修法：策略列单独成网格时，某行展开「前往查看」会把这个座位的策略方块顶得和盟约错位。
+ * 前两列在各自格内横向滚动（长名单切不掉方块），窗口从锚点一直延伸到 HUD 右侧「指令 / 效果」列的左缘，那一列
+ * 不在屏上时延伸到 HUD 自己的右缘（`--fly-w`，在 TeamPanel 里量出）—— 始终落在 css/devices.css 的安全区 /
+ * 异形屏内边距里，绝不到页面的绝对右缘（owner request 2026-11-12）。选中的策略是按钮：点它在方块旁打开
+ * `BandPopup`，点其他地方关闭。
+ * 队伍栏收起时不渲染（TeamPanel 只在队伍栏展开时渲染它）。
+ * 按棋子卡池分组（`pools`，rosterPools）的对局也在这里预留每个卡池表头的高度，于是整份名单里浮窗的行始终与
+ * 对应的队伍行齐平（owner request 2026-10-25：横着一条线就是同一个座位）。
+ * 浮窗里圆盘只有图标（owner request 2026-10-25）：没有名字之后，每个圆盘白色图形的中心都落在行的中线上，
+ * 与干员缩略图、策略图标齐平。
  * @param {{ players: any[], myId: any, open: boolean, onToggle: () => void,
  *   onBond?: ((bondId: string, playerId: string) => void) | null,
  *   flyOps?: Record<string, Array<{ id: string, golden?: number }>> | null,
@@ -551,11 +539,10 @@ function cell(cls, body) {
 export function BondsFlyout({ players, myId, open, onToggle, onBond = null, flyOps = null, onOp = null,
   rowH = null, layersDisabled = false, pools = null, bandPop = null, rowsRef = null, onBandPick = null, onBandClose = null }) {
   const row = (p) => {
-    // A finalised elimination is not a state the flyout can act on: the seat's pieces are wiped and their copies return
-    // to the shared pool (server/match/player/round.js eliminate), its bonds recompute empty and its board clears. Keep
-    // the row in the grid — the three columns must stay aligned — but grey it and take every control out of reach, so it
-    // reads as an eliminated seat rather than as one with nothing to show yet. A revival window is NOT death: while
-    // `pendingDeath` is set the seat still counts as alive (experimental revival, owner request 2026-11-12).
+    // 已经最终判死的座位不是浮窗能操作的状态：棋子清空、复制体回到共享卡池（server/match/player/round.js eliminate），
+    // 盟约重算为空、棋盘清空。行仍留在网格里（三列必须对齐），但灰掉并让所有控件不可点，读起来是「已淘汰」，
+    // 而不是「还没东西可显示」。救援窗口**不是**死亡：`pendingDeath` 期间这个座位仍算存活（实验性救援，
+    // owner request 2026-11-12）。
     const dead = p.alive === false && !p.pendingDeath;
     return html`<section key=${p.playerId} class=${cx('team__fly-row', p.playerId === myId && 'is-self', dead && 'is-dead')}
       style=${rowH?.[p.playerId] ? `--fly-row-h:${rowH[p.playerId]}px` : undefined}>
@@ -601,10 +588,10 @@ function PoolHead({ pool }) {
  *   halves.half: the ‹ › layer a tap on that player's avatar switches to (battle/observe.js avatarLayer), null = the usual flow
  *   spMarks: the shared 机变 draft's pick order on the portraits (ui/choiceOverlay.js spMarks: ✓ picked, ••• deciding)
  *   uniteLocal: the local 联防 replica's per-leaker counts while it is on screen (battle runner state().uniteLeft), else null
- *   onBond: a flyout disc's click opens that player's bond popup (screens/game.js openBond); absent = the discs are inert
- *   onFlyToggle: the flyout expanded / collapsed — g.peek { open } (server/match/match/peek.js); absent = no peek
- *   phaseKey: the round and phase the screen is in — a change collapses the flyout (the peek subscription ends there)
- *   online: the connection's state — a reconnection (false → true) collapses the flyout too (the old subscription ended)
+ *   onBond: 点击浮窗圆盘打开该玩家的盟约弹窗（screens/game.js openBond）；缺省 = 圆盘不可点
+ *   onFlyToggle: 浮窗展开 / 收起 —— g.peek { open }（server/match/match/peek.js）；缺省 = 不走 peek
+ *   phaseKey: 屏幕所处的回合与阶段 —— 变化时收起浮窗（peek 订阅就在那道边界结束）
+ *   online: 连接状态 —— 重连（false → true）同样收起浮窗（旧订阅已随断线结束）
  */
 export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 3000, observe = null, halves = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null, onBond = null,
   flyOps = null, onOp = null, layersDisabled = false, onFlyToggle = null, phaseKey = null, online = null }) {
@@ -618,34 +605,32 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
   const noticeRef = useRef(null);
   const headerRef = useRef(null);
   const [layout, setLayout] = useState(() => teamPanelLayout(players.length, 0));
-  // the 盟约 flyout beside the roster: opened by the bar at the roster's right edge (arrows flip > / <); it spans the
-  // roster's whole height and only exists while the roster is open
+  // 队伍栏旁的「盟约」浮窗：由队伍栏右缘的拉杆打开（箭头 > / < 切换）；它占满队伍栏高度，且只在队伍栏展开时存在
   const [bondsOpen, setBondsOpen] = useState(false);
-  // 同盟盟约速查 (server/match/match/peek.js): expanding the flyout asks the server for the teammates' operators; the
-  // collapse releases that subscription. A folded roster keeps the flyout's state as it was, so only the toggle reports.
+  // 同盟盟约速查（server/match/match/peek.js）：展开浮窗即向服务端索要队友的干员名单，收起即解除订阅。
+  // 队伍栏折起时浮窗状态维持原样，所以只有拉杆会上报。
   useEffect(() => { if (onFlyToggle) onFlyToggle(bondsOpen); }, [bondsOpen]);
-  // 阶段边界: the flyout is a glance at the prep / battle window it was opened in, so a phase or round change collapses
-  // it — that close is what ends the peek subscription on the wire. The server drops it on the same boundary anyway,
-  // which is the redundant half for a client that never sends the close.
+  // 阶段边界：浮窗只是对打开它的那个准备 / 战斗窗口瞥一眼，所以回合或阶段变化就收起它 —— 这次 close 正是链路上
+  // 结束 peek 订阅的动作。服务端本来也会在同一道边界丢弃订阅，那是针对「从不发 close 的客户端」的冗余保障。
   const phaseRef = useRef(phaseKey);
   useEffect(() => {
     if (phaseRef.current === phaseKey) return;
     phaseRef.current = phaseKey;
     setBondsOpen(false);
   }, [phaseKey]);
-  // 重连: the subscription ended with the dropped connection (server/match/match/peek.js drops it on disconnect), and a
-  // player coming back wants the main screen rather than the panel they left open — a false → true edge collapses it.
+  // 重连：订阅随断开的连接结束（server/match/match/peek.js 在断线时丢弃），而回来的玩家想看主画面而不是他离开时
+  // 开着的面板 —— false → true 的边沿直接收起浮窗。
   const onlineRef = useRef(online);
   useEffect(() => {
     const was = onlineRef.current;
     onlineRef.current = online;
     if (online === true && was === false) setBondsOpen(false);
   }, [online]);
-  // each flyout row mirrors its roster row (PR #922 review): measuring the first row only made every row after an
-  // expanded 「前往查看」 row drift. `data-pid` on the roster rows is the join.
+  // 浮窗的每一行镜像对应的队伍行（PR #922 批注）：只量第一行时，前面某行展开「前往查看」会让后面每一行错位。
+  // 队伍行上的 `data-pid` 就是连接键。
   const [rowH, setRowH] = useState({});
-  // The band card the flyout opens beside its square (PR #922 review). Its state lives in TeamPanel, not in
-  // BondsFlyout, so the flyout stays a pure vnode tree that test/ui/watch-bonds.test.js can walk without a render.
+  // 浮窗在方块旁打开的盟约卡（PR #922 批注）：状态放在 TeamPanel 而不是 BondsFlyout 里，浮窗才能保持成一棵纯 vnode
+  // 树，test/ui/watch-bonds.test.js 不用渲染就能遍历。
   const flyRowsRef = useRef(null);
   const [bandPop, setBandPop] = useState(null);
   useEffect(() => {

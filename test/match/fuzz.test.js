@@ -61,6 +61,8 @@ function randomIntent(rng, m, ps) {
     case 'g.emote': return { t, id: rng.pick(EMOTES) };
     case 'g.bondPlan': return rng() < 0.2 ? { t } : { t, bondId: rng() < 0.7 ? rng.pick(BONDS) : rng.pick(['constructor', '__proto__', 'bond_x']) };
     case 'g.watch': return { t, fieldId: rng.pick(['n:p_0', 'n:p_1', 'n:ai_0', 'u', 'b1', 'b2', 'zz', '']) };
+    // 同盟盟约速查：展开 / 收起，两种都发
+    case 'g.peek': return { t, open: rng() < 0.5 };
     // the on-demand bond read (WS compression round 2, step ③): a known player most of the time, a stranger sometimes
     case 'g.bonds': return { t, playerId: rng() < 0.8 && m.players.size ? rng.pick([...m.players.keys()]) : 'nobody' };
     case 'g.autoplay': return { t, on: rng() < 0.05 };

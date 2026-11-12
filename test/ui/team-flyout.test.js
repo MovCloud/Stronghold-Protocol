@@ -1,5 +1,5 @@
-// 同盟盟约速查 flyout (PR #922 review): the per-viewer operator lists and the composed thumbnail record.
-// The server side (no boardOps in m.public, board-only in m.private) is test/match/teammate-flyout.test.js.
+// 同盟盟约速查浮窗（PR #922 批注）：按观众裁剪的干员名单与组合出的缩略图记录。服务端（m.public 不带 boardOps、
+// m.private 只带场上棋子）见 test/match/teammate-flyout.test.js。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { flyOpRec, flyOpsFor, flyOpChessId, charName, mergeFlyOps } from '../../public/js/ui/teamPanel.js';
@@ -107,6 +107,7 @@ test('flyOpsFor: with no field on screen only the own list is built (no spectato
   assert.deepEqual(flyOpsFor({ myId: 'p_0', priv: null, field: null, players }), {});
 });
 
+// peek 是 `m.match.peek`（g.peek → m.peek，server/match/match/peek.js）：屏上视图优先，空列表不覆盖。
 test('mergeFlyOps: the peek fills the seats the screen does not show; the screen always wins', () => {
   const base = { p_0: [{ id: 'char_1' }], p_1: [{ id: 'char_10' }] };
   const peek = { p_1: [{ id: 'char_99' }], p_2: [{ id: 'char_20' }, { id: 'char_21', golden: 1 }], p_3: [] };

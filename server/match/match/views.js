@@ -549,15 +549,14 @@ export class MatchViews {
     }];
   }
 
-  /** 同盟盟约速查 flyout (ui/teamPanel.js BondsFlyout, owner request 2026-10-25; PR #922 review): the chess pieces on
-   *  a player's board, lean — only the chess id a thumbnail draws (the seat's field record, so a 补位 / 自选 slot shows
-   *  the operator it fights as) and its elite bit. No loadout / skin / spine work: this rides in every m.private.
-   *  Tokens are not 干员 and stay out; so do the hand, the temp area, equipment, summons and coordinates (the viewer
-   *  only ever walks a seat's board through m.private or the scout / battle field view, never a broadcast list). */
+  /** 同盟盟约速查浮窗（ui/teamPanel.js BondsFlyout，owner request 2026-10-25；PR #922 批注）：一名玩家场上的棋子，
+   *  精简 —— 只留缩略图要画的干员 id（取该座位场上记录的 charId，所以补位 / 自选槽显示的是实际出战的干员）
+   *  与精英位。不含装备 / 皮肤 / 骨骼：这份数据随每帧 m.private 下发。
+   *  召唤物不是干员，排除在外；手牌、暂存区、装备、召唤物与坐标同样不含（观众只会通过 m.private 或屏上的
+   *  侦察 / 战场视图走一遍座位棋盘，绝不会从广播名单里拿）。 */
   _boardOps(ps) {
     const ops = [];
-    // A seat waiting to be rescued still counts as alive (experimental revival: `alive` already reads false, but the
-    // death is only finalised when nobody rescues it), so its board operators stay in the flyout until then.
+    // 等待救援的座位仍算存活（实验性救援：`alive` 已是 false，但没人救才会最终判死），名单保留到判死为止。
     if (!ps || (ps.alive === false && !ps.pendingDeath)) return ops;
     const gd = ps.gd || this.gd;
     for (const { piece } of boardOrder(ps.board)) {
