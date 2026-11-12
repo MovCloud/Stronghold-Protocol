@@ -157,6 +157,7 @@ export class MatchMessaging {
     }
     if (this._pubDirty || forcePublic) this._maybeSendPublic(forcePublic);
     if (this._damageDirty) this._flushDamage();
+    try { this._flushPeek(); } catch (e) { this.reportError('peek', e); }
   }
 
   _sendPrivate(ps, force) {

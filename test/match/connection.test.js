@@ -51,15 +51,15 @@ test('constructor validation mirrors the stub; start() sends the first m.public 
   assert.equal(pub.factions.length, 3);
   assert.ok(DATA.bosses[pub.bossId]);
   for (const p of pub.players) {
-    for (const k of ['playerId', 'seat', 'name', 'isBot', 'connected', 'alive', 'lp', 'bandId', 'shopLevel', 'boardCount', 'boardOps', 'ready', 'bonds', 'fieldId', 'status']) assert.ok(k in p, `players[].${k}`);
-    assert.ok(Array.isArray(p.boardOps), 'players[].boardOps is the 盟约 flyout list');
+    for (const k of ['playerId', 'seat', 'name', 'isBot', 'connected', 'alive', 'lp', 'bandId', 'shopLevel', 'boardCount', 'ready', 'bonds', 'fieldId', 'status']) assert.ok(k in p, `players[].${k}`);
+    assert.ok(!('boardOps' in p), 'm.public carries no roster (PR #922 review): the flyout asks g.peek instead');
     assert.ok(STATUSES.includes(p.status));
   }
   const privs = h.sent.filter(([, m]) => m.t === 'm.private');
   assert.deepEqual(privs.map(([id]) => id).sort(), ['p_0', 'p_1'], 'one m.private per human, none for bots');
   for (const [id, priv] of privs) {
     assert.equal(priv.playerId, id);
-    for (const k of ['seat', 'alive', 'lp', 'funds', 'bandId', 'ready', 'canReady', 'shop', 'hand', 'temp', 'board', 'deployCap', 'deployCount', 'bonds', 'effects', 'nextEnemies', 'stats']) assert.ok(k in priv, `m.private.${k}`);
+    for (const k of ['seat', 'alive', 'lp', 'funds', 'bandId', 'ready', 'canReady', 'shop', 'hand', 'temp', 'board', 'boardOps', 'deployCap', 'deployCount', 'bonds', 'effects', 'nextEnemies', 'stats']) assert.ok(k in priv, `m.private.${k}`);
     for (const k of ['level', 'maxLevel', 'upgradePrice', 'refreshPrice', 'freeRefreshes', 'frozen', 'slots', 'rewardOffer']) assert.ok(k in priv.shop, `shop.${k}`);
     assert.equal(priv.hand.length, 10);
     assert.equal(priv.temp.length, 5);

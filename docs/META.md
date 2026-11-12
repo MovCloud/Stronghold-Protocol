@@ -973,7 +973,21 @@ flyout. Board only: the hand, the temp area, equipment, summons (tokens), coordi
 rescue fails). It is per-viewer on purpose: `m.public players[]` has NO `boardOps` — that view is one
 broadcast for every seat and the spectator bench, so the field there would bypass `g.watch` (§4); a teammate's
 operators reach the flyout only through the scout / battle field already on screen (`m.field` prep scout, `b.start`),
-so the other group and a teammate still in battle show no list.
+or through the peek below — never through the public frame.
+
+`g.peek { open }` / `m.peek` (同盟盟约速查, fork, `server/match/match/peek.js`): the roster flyout's expansion asks the
+server for the teammates' operators instead of every client being handed them. `open: true` subscribes for the round
+and phase it was sent in, answers one snapshot `{ t: 'm.peek', seq, ops: { [playerId]: [{ id, golden? }] } }` — the
+viewer's TEAM MATES only, the viewer itself excluded (its own list is `m.private boardOps`) — and, while the
+subscription lives, unicasts `{ t: 'm.peek', seq, seat, ops }` for each mate whose layout changed (the sorted operator
+ids / elite bits; a moved piece on the same board changes nothing). `open: false` drops it; leaving and a disconnect do
+too, and a repeated open within 1 s only refreshes it (a re-render, not a new glance). A round or phase change also ends
+it — the flyout is a glance at the prep / battle window it was opened in: the client collapses the flyout on that same
+boundary (so it sends the close), and the server drops the subscription on its next flush as the redundant half for a
+client that is connected but stuck (a frozen page, a lost close). The server filters with
+`teamIdOf`: 同盟 (coop) sends the whole roster, 2V2 sends the viewer's own team only — the opponent's seats never
+appear — and a spectator seat is refused (`SPECTATOR`, the same rule as `g.watch`). Nothing is broadcast and nothing is
+written to disk: the frame is the lean `boardOps` shape, no hand / temp / equipment / summons / coordinates.
 
 Bond layers in the views (DESIGN §20.15): from the end of COMBAT (`_finishCombat`, every normal result in) until SETTLE,
 `m.private bonds` and `m.public players[].bonds` add the finished battle's IN_BATTLE gains (`PlayerState.pendingLayerGains`

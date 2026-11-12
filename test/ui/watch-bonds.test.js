@@ -472,7 +472,7 @@ test('§20.15 wiring: the game screen feeds the strip, the popup and the detail 
   assert.ok(!/stripBonds\.find\(\(b\) => b\.bondId === bondOpen\)/.test(src), 'no popup entry read from the strip regardless of its owner');
   // PR #922 review: the flyout's operator lists are per-viewer — the own seat from m.private, a teammate only from the
   // field currently on screen; a tap opens that operator's card with its chess id.
-  assert.match(src, /const flyOps = flyOpsFor\(\{ myId, priv, field, players, cc, runner: battleRunner \}\)/);
+  assert.match(src, /const flyOps = mergeFlyOps\(flyOpsFor\(\{ myId, priv, field, players, cc, runner: battleRunner \}\), peek\)/);
   assert.match(src, /onOp=\$\{\(u, p\)\ => \{[\s\S]*?flyOpChessId\(u\)/,
     'a flyout tile opens the operator card of the seat that owns it');
   assert.match(src, /requestWatch\(t\.fieldId, p\.playerId\)/, 'a team-row pick remembers the player');

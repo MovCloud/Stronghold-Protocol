@@ -335,7 +335,14 @@ height (`--fly-square`, the shortest measured row) — and the bonds and operato
 all three cells are the same size. Keeping them in the same grid row is the fix for the bug the review reported: with
 the strategy column in its own grid, an expanded row shifted that seat's strategy out of line with its bonds. A picked
 strategy is a button that opens its card beside the square, and a click anywhere else closes it. The operator lists are
-per-viewer: the own seat from `m.private boardOps`, a teammate's only from the field on screen (§4).
+per-viewer: the own seat from `m.private boardOps`, a teammate's from the field on screen (§4) or from the peek
+(`g.peek` on expansion / `m.peek` while it stays open — the server's team-filtered snapshot and updates, merged by
+`mergeFlyOps` with the on-screen field winning), because `m.public` never carries a roster. A round or phase change
+collapses the flyout (`game.js` phaseKey, `teamPanel.js`): the peek is a glance at the prep / battle window it was
+opened in, and the same boundary ends the server-side subscription. A connection that comes back (the connection
+status's false → true edge) collapses it too: the server dropped the subscription on the disconnect, so the panel
+would otherwise show a stale glance — and the player returning to the match wants the field, not an open panel. The
+collapse sends `g.peek { open: false }`, which the server accepts idempotently.
 This fork keeps its own additions on top of the upstream shape: the discs are drawn by `FlyBonds` (icon only, no names, no
 「尚未激活盟约」 copy) wrapped in the `count/next` badge rather than the shared `BondStrip`, the pool-group spacer rows, the
 vertical scroll sync between roster and flyout, the clickable bond disc, the `--fly-top` height, and no flyout on phones,

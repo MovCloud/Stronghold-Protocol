@@ -819,6 +819,10 @@ export const C2S_FORK = {
   // battle starts; every teammate and spectator sees it as m.public players[].bondPlan; absent / null clears it
   'g.bondPlan': { bondId: nullable(isId), $optional: ['bondId'] },
   'g.revive': { playerId: isId, round: (v) => isInt(v, 1, 1000), matchId: isId },
+  // 同盟盟约速查 (server/match/match/peek.js, the fork's flyout): the viewer expanded (true: one team-filtered
+  // snapshot, then kept up to date for PEEK_TTL_MS) or collapsed (false) the roster flyout. Never m.public, never the
+  // opponent team in 2V2.
+  'g.peek': { open: isBool },
   // server-run combat, local display replicas (DESIGN §14): `local` — this browser runs its own normal / 联防 fields
   // from the b.start spec instead of being streamed them; `battleId` + `stream: true` — its replica diverged from a
   // b.sync digest (`tick`) or cannot keep up: the server streams that field to it from then on
@@ -876,6 +880,10 @@ export const S2C_FORK = [
   // removed player, who is then out of the room as after g.leave · m.notice { kind: 'afkRemoved', playerId, name,
   // rounds } — to everyone else in the match (players and spectator seats)
   'm.removed', 'm.notice',
+  // 同盟盟约速查 (server/match/match/peek.js): the answer to g.peek — one unicast frame to the viewer whose flyout
+  // is open. { seq, ops: { [playerId]: [{ id, golden? }] } } is the open's snapshot; { seq, seat, ops } is one mate's
+  // changed layout. Team mates only; nothing here is ever broadcast.
+  'm.peek',
   // server-run combat, local display replicas: b.sync { battleId, tick, h, done? } — the Worker battle's state
   // digest right after step `tick`; `done`: the step that finished it · b.ext { battleId, i, to, hp, end? } — a
   // boss / hidden replica's shared-pool record from entry `i`

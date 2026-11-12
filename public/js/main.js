@@ -395,6 +395,16 @@ function wireNet() {
     if (selectRoute(s) === 'game' && msg.playerId === s.me?.playerId) audio.layerGain(msg.bondId, msg.add);
   });
   net.on('m.field', (msg) => store.patch('match', { field: payload(msg) }));
+  // 同盟盟约速查 (server/match/match/peek.js): the teammates' operators while the roster flyout is open. The open's
+  // answer replaces the whole map; an incremental frame replaces one seat's list. Team mates only — the server filters.
+  net.on('m.peek', (msg) => {
+    const prev = store.get().match.peek;
+    let peek;
+    if (typeof msg.seat === 'string') peek = { ...(prev || {}), [msg.seat]: Array.isArray(msg.ops) ? msg.ops : [] };
+    else if (msg.ops && typeof msg.ops === 'object' && !Array.isArray(msg.ops)) peek = { ...msg.ops };
+    else return;
+    store.patch('match', { peek });
+  });
   net.on('m.damage', (msg) => {
     const s = store.get(), view = s.match.public;
     const damage = acceptDamageSnapshot(s.match.damage, payload(msg), view?.matchId || view?.revival?.matchId);

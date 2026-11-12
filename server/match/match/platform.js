@@ -178,6 +178,7 @@ export class MatchPlatform {
       // a rehearsal this host was running falls back to the server (DESIGN §14; a no-op without tasks)
       this._rehearsalHostChanged();
       this.refreshUniteSkipVote(); // a disconnected human's silence is never consent (unitePhaseWaves.js): drop and recount
+      this._peekForget(playerId); // the 速查 flyout's subscription ends with the connection (peek.js)
       this.markPublic();
     });
   }
@@ -250,6 +251,7 @@ export class MatchPlatform {
       this._matchControlMemberGone(playerId);
       this.watchers.delete(playerId);
       this.localViews.delete(playerId);
+      this._peekForget(playerId);
       if (this.ended) return;
       this._resume();
       if (this.clientCombat) this._authorityLost(ps, 'left');

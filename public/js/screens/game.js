@@ -97,7 +97,7 @@ import { useFieldView } from '../ui/fieldHost.js';
 import { TopBar, liveLp, ownLeaks, uniteRemaining, tempInfo, tempReadyReason } from '../ui/hud.js';
 import { uniteBudgetInfo } from '../ui/gameLogic/phases.js';
 import { BondStrip, BondPopup } from '../ui/bondStrip.js';
-import { TeamPanel, flyOpsFor, flyOpChessId, useRoster } from '../ui/teamPanel.js';
+import { TeamPanel, flyOpsFor, flyOpChessId, mergeFlyOps, useRoster } from '../ui/teamPanel.js';
 import { Danmaku } from '../ui/danmaku.js';
 import { DamageBoard, uniteDamageOwners, bossDamageOwners } from '../ui/damageBoard.js';
 import { ShopBar } from '../ui/shopBar.js';
@@ -260,6 +260,7 @@ function MatchScreen() {
   const pub = useStore((s) => s.match.public);
   const priv = useStore((s) => s.match.private);
   const field = useStore((s) => s.match.field);
+  const peek = useStore((s) => s.match.peek);
   const myId = useStore((s) => s.me.playerId);
   const conn = useStore((s) => s.connection, shallowEqual);
   const roomSolo = useStore((s) => s.room?.mode === 'solo');
@@ -1866,8 +1867,13 @@ function MatchScreen() {
   const bondPop = popupView({ open: bondOpen, pub, priv, myId, field, units: popOps || spawnedOps, live: liveLayers });
   const openBond = (id, ownerId, from) => { setBondOpen((b) => toggleBond(b, id, ownerId, from)); audio.sfx('click', { volume: 0.4 }); };
   // 同盟盟约速查: the per-viewer operator lists. m.public carries no boardOps (PR #922 review): the own seat is
-  // m.private, and a teammate appears only while their scout / battle field is the one on screen.
-  const flyOps = flyOpsFor({ myId, priv, field, players, cc, runner: battleRunner });
+  // m.private, a teammate appears while their scout / battle field is the one on screen, and the peek (g.peek, the
+  // flyout's open) fills in the teammates this viewer may see but is not looking at. What is on screen wins.
+  const flyOps = mergeFlyOps(flyOpsFor({ myId, priv, field, players, cc, runner: battleRunner }), peek);
+  // 阶段边界 (server/match/match/peek.js): the flyout is a glance at this round's prep / battle window — a phase or round
+  // change collapses it (teamPanel.js), and the server ends the subscription on the same boundary. Its own key (not the
+  // banner's phaseKey): a 联防 wave advances the banner identity but not the peek's round/phase window.
+  const peekPhaseKey = `${pub?.round ?? 0}:${phase || ''}`;
   const watchingNow = combat ? (watching || field?.fieldId || home) : watching;
   const shopOpen = showShop && !barCollapsed;
   const ufShown = !!(selEntry && editable && !facing && !drag && showPrep && ufGeo);
@@ -1984,7 +1990,8 @@ function MatchScreen() {
 
       <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} roster=${roster} emoteTtl=${bubbleMs} onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
         spMarks=${sp ? spMarks(sp, { solo }) : null} onBond=${(id, ownerId) => openBond(id, ownerId, 'strip')}
-        flyOps=${flyOps} layersDisabled=${layersDisabled}
+        flyOps=${flyOps} layersDisabled=${layersDisabled} phaseKey=${peekPhaseKey} online=${conn.status === 'online'}
+        onFlyToggle=${actions.peek}
         onOp=${(u, p) => {
           const id = flyOpChessId(u);
           if (id) setDetail({ kind: 'chess', id, foreign: p?.playerId !== myId, owner: p?.playerId ?? null, tap: ++cardTap.current });

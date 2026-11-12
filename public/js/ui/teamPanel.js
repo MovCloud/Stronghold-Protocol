@@ -387,6 +387,26 @@ export function flyOpsFor({ myId, priv = null, field = null, players = null, cc 
 }
 
 /**
+ * The flyout's operator lists: what the screen shows wins, the peek fills the rest (server/match/match/peek.js,
+ * 同盟盟约速查). `base` is `flyOpsFor` — the own m.private boardOps plus a teammate whose field is on screen; `peek`
+ * is `m.match.peek`, the teammates the server sent while the flyout is open. An empty peek list is ignored: a seat the
+ * screen already draws is never blanked by a slower frame, and a seat with no operators simply has no entry.
+ * Exported for the UI tests.
+ * @param {Record<string, Array<{ id: string, golden?: number }>>|null} base
+ * @param {Record<string, Array<{ id: string, golden?: number }>>|null} peek
+ * @returns {Record<string, Array<{ id: string, golden?: number }>>}
+ */
+export function mergeFlyOps(base, peek) {
+  const out = { ...(base || {}) };
+  if (!peek || typeof peek !== 'object' || Array.isArray(peek)) return out;
+  for (const [pid, ops] of Object.entries(peek)) {
+    if (out[pid] || !Array.isArray(ops) || ops.length === 0) continue;
+    out[pid] = ops;
+  }
+  return out;
+}
+
+/**
  * The seat's bonds in the flyout: icon only, no names and no 「尚未激活盟约」 copy — the flyout does not reuse BondStrip
  * (PR #922 review, the reviewer's point against the shared component). This fork keeps its own addition on top of that
  * shape (owner request 2026-10-25): the `count/next` badge, so a teammate's row still reads how far along each bond is.
@@ -582,9 +602,12 @@ function PoolHead({ pool }) {
  *   spMarks: the shared 机变 draft's pick order on the portraits (ui/choiceOverlay.js spMarks: ✓ picked, ••• deciding)
  *   uniteLocal: the local 联防 replica's per-leaker counts while it is on screen (battle runner state().uniteLeft), else null
  *   onBond: a flyout disc's click opens that player's bond popup (screens/game.js openBond); absent = the discs are inert
+ *   onFlyToggle: the flyout expanded / collapsed — g.peek { open } (server/match/match/peek.js); absent = no peek
+ *   phaseKey: the round and phase the screen is in — a change collapses the flyout (the peek subscription ends there)
+ *   online: the connection's state — a reconnection (false → true) collapses the flyout too (the old subscription ended)
  */
 export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 3000, observe = null, halves = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null, onBond = null,
-  flyOps = null, onOp = null, layersDisabled = false }) {
+  flyOps = null, onOp = null, layersDisabled = false, onFlyToggle = null, phaseKey = null, online = null }) {
   const players = sortedPlayers(pub);
   const { density, open: rosterOpen, setOpen: setRosterOpen, phone } = roster;
   const list = density === 'list';
@@ -598,6 +621,26 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
   // the 盟约 flyout beside the roster: opened by the bar at the roster's right edge (arrows flip > / <); it spans the
   // roster's whole height and only exists while the roster is open
   const [bondsOpen, setBondsOpen] = useState(false);
+  // 同盟盟约速查 (server/match/match/peek.js): expanding the flyout asks the server for the teammates' operators; the
+  // collapse releases that subscription. A folded roster keeps the flyout's state as it was, so only the toggle reports.
+  useEffect(() => { if (onFlyToggle) onFlyToggle(bondsOpen); }, [bondsOpen]);
+  // 阶段边界: the flyout is a glance at the prep / battle window it was opened in, so a phase or round change collapses
+  // it — that close is what ends the peek subscription on the wire. The server drops it on the same boundary anyway,
+  // which is the redundant half for a client that never sends the close.
+  const phaseRef = useRef(phaseKey);
+  useEffect(() => {
+    if (phaseRef.current === phaseKey) return;
+    phaseRef.current = phaseKey;
+    setBondsOpen(false);
+  }, [phaseKey]);
+  // 重连: the subscription ended with the dropped connection (server/match/match/peek.js drops it on disconnect), and a
+  // player coming back wants the main screen rather than the panel they left open — a false → true edge collapses it.
+  const onlineRef = useRef(online);
+  useEffect(() => {
+    const was = onlineRef.current;
+    onlineRef.current = online;
+    if (online === true && was === false) setBondsOpen(false);
+  }, [online]);
   // each flyout row mirrors its roster row (PR #922 review): measuring the first row only made every row after an
   // expanded 「前往查看」 row drift. `data-pid` on the roster rows is the join.
   const [rowH, setRowH] = useState({});
