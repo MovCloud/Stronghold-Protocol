@@ -236,11 +236,6 @@ export class MatchViews {
         // m.result's own bonds, so their layers would only cost every m.public bytes for the rest of the match
         // (the mode-off bonds with members included, `off: true`, as in m.private — bondsMeta.offBondCounts)
         bonds: ps.alive || ps.pendingDeath ? bondList(this.gd, ps.bondsView(), { off: offBondCounts(ps.gd || this.gd, ps) }) : [],
-        // 盟约展开栏 (ui/teamPanel.js BondsFlyout, owner request 2026-10-25): the operators this seat has on its field,
-        // drawn beside its bond discs. Lean on purpose — the chess id the thumbnail needs, plus its elite bit when the
-        // seat's field record says so (a 补位 / 自选 piece shows the operator it fights as, like _prepBoardUnits does);
-        // names / tiers / art come from data/chess.json on the client. Tokens (devices, summons) are not 干员.
-        boardOps: this._boardOps(ps),
         fieldId: this.fieldOf(ps),
         status: this.statusOf(ps),
         autoplay: ps.autoplay,
@@ -554,13 +549,16 @@ export class MatchViews {
     }];
   }
 
-  /** 盟约展开栏 (ui/teamPanel.js BondsFlyout, owner request 2026-10-25): the chess pieces on a player's board, lean —
-   *  only the chess id a thumbnail draws (the seat's field record, so a 补位 / 自选 slot shows the operator it fights
-   *  as) and its elite bit. No loadout / skin / spine work: this rides in every m.public for every seat. Tokens are not
-   *  operators and stay out. */
+  /** 同盟盟约速查 flyout (ui/teamPanel.js BondsFlyout, owner request 2026-10-25; PR #922 review): the chess pieces on
+   *  a player's board, lean — only the chess id a thumbnail draws (the seat's field record, so a 补位 / 自选 slot shows
+   *  the operator it fights as) and its elite bit. No loadout / skin / spine work: this rides in every m.private.
+   *  Tokens are not 干员 and stay out; so do the hand, the temp area, equipment, summons and coordinates (the viewer
+   *  only ever walks a seat's board through m.private or the scout / battle field view, never a broadcast list). */
   _boardOps(ps) {
     const ops = [];
-    if (!ps || ps.alive === false) return ops;
+    // A seat waiting to be rescued still counts as alive (experimental revival: `alive` already reads false, but the
+    // death is only finalised when nobody rescues it), so its board operators stay in the flyout until then.
+    if (!ps || (ps.alive === false && !ps.pendingDeath)) return ops;
     const gd = ps.gd || this.gd;
     for (const { piece } of boardOrder(ps.board)) {
       if (piece.kind !== 'chess') continue;

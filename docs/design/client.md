@@ -327,6 +327,33 @@ necessary internal scrolling. Expanded match rosters use readable width-aware ro
 every player, watch/back action and eligible rescue remains reachable with separate touch targets. Important
 mobile shop and settings text has pixel floors without changing the global layout root or battle rules.
 
+Fork flyout (2026-11-11, PR #922 sync, `ui/teamPanel.js` `BondsFlyout`): the open roster's 「同盟盟约速查」 panel is one
+grid row per seat — bonds, that seat's operators, the strategy square — with each row's height mirrored from the roster
+row of the same seat (`data-pid` + ResizeObserver), so expanding a 「前往查看」 row moves the flyout too; the bar
+stands at the right edge of the widest roster row (`--fly-left`). The strategy column is a square — its width is the row
+height (`--fly-square`, the shortest measured row) — and the bonds and operators columns divide the rest of the window;
+all three cells are the same size. Keeping them in the same grid row is the fix for the bug the review reported: with
+the strategy column in its own grid, an expanded row shifted that seat's strategy out of line with its bonds. A picked
+strategy is a button that opens its card beside the square, and a click anywhere else closes it. The operator lists are
+per-viewer: the own seat from `m.private boardOps`, a teammate's only from the field on screen (§4).
+This fork keeps its own additions on top of the upstream shape: the discs are drawn by `FlyBonds` (icon only, no names, no
+「尚未激活盟约」 copy) wrapped in the `count/next` badge rather than the shared `BondStrip`, the pool-group spacer rows, the
+vertical scroll sync between roster and flyout, the clickable bond disc, the `--fly-top` height, and no flyout on phones,
+where the roster drawer has no room to its right. The window runs from the bar to the left edge of the HUD's right-hand
+指令 / 效果 column when that column is on screen, and to the HUD's own right edge otherwise (`--fly-w`) — the HUD box
+already carries the safe-area and 异形屏 insets, so the flyout never reaches the page's absolute right edge; the effects
+column fades out in the 敌方预览 pen view, so the HUD edge is the fallback there too (owner request 2026-11-12). When the
+规程 season lands its own 策略操作列 it takes priority over the effects column in that lookup. The operator thumbnails
+and the strategy glyph take one shared size (`--fly-ico`, the size the square can hold); the bond discs do not — they
+keep the top strip's own `--disc` (.52rem), so a flyout row reads exactly like the 盟约 strip above the board (owner
+request 2026-11-12). The button is the cell itself, so the strategy square keeps the same grey backing as the bonds and
+operator cells (owner request 2026-11-12). A finalised elimination (`alive === false` with no `pendingDeath`) keeps its
+row in the grid but draws it greyed and inert (`is-dead`, no disc / square / thumbnail is clickable): the seat's pieces
+have gone back to the shared pool, while a revival window still counts as alive and keeps the live row. A thumbnail whose
+char id has no chess record in the loaded data toasts that reason instead of sitting inert. The strategy card's placement
+and head are upstream's: its right edge 8px left of the square, its top on the square's top clamped to leave ~240px
+below, a `md` icon, the effect name only when present, and the `tapx` close button (synced 2026-11-12).
+
 
 Look & feel: research 06 §11–§12 (near-black green-grey panels, mint `#4ed8af` accents, gold prices, bracket frames, hexagon badges, bond discs, 7-segment countdown). Fonts: Noto Sans SC (Google Fonts with local fallback), Bender/Novecento self-hosted for numerals and Latin micro-labels.
 

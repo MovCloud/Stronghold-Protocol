@@ -10,16 +10,22 @@
   /* below the bond strip */
   --team-bottom: calc(2.64rem + 8px);
   /* above the shop bar (ui/fieldHost.js HUD_REM.shopBarTop) */
-  --team-w1: max(calc(280px * var(--sp-ui, 1)), 2.8rem, 32px);
-  --team-w2: min(max(calc(520px * var(--sp-ui, 1)), 5.2rem, 32px), 32vw);
+  /* the design value: the classic column's cap (its width follows the widest row's content, see below), and the
+     list's fixed bounded scroller (a 20-seat room must be scrollable) */
+  --team-w1: 2.8rem;
+  --team-w2: min(max(5.2rem, 32px), 32vw);
   --team-fs: max(calc(.15 * var(--t)), 13px);
   /* list text */
   --team-fs-sm: max(calc(.12 * var(--t)), 11px);
   --team-row: 44px;
   --team-av: 36px;
-  /* one width open and folded (owner report 2026-10-25: the header used to jump between the two states);
-   a phone keeps its own compact folded tab (media below) */
-  width: var(--team-w1);
+  /* the classic column follows the widest row's content — upstream has no width at all — so the flyout bar stands at
+     the content edge instead of at a fixed floor that left more than half of the column empty beside the rows (owner
+     report 2026-11-12). --team-w1 stays the cap, so a long name cannot widen the column past the design value; the
+     list keeps its fixed width, and a phone keeps its own compact folded tab (media below). The header follows the
+     content too, so the folded header is now narrower than the open one — the fixed width that stopped that jump
+     (owner report 2026-10-25) no longer applies to the classic column. */
+  max-width: var(--team-w1);
   position: absolute;
   left: .22rem;
   top: var(--team-top);
@@ -58,136 +64,215 @@
 
 .team__row { position: relative; display: flex; align-items: center; gap: .1rem; pointer-events: auto; }
 
-/* 盟约展开栏 (ui/teamPanel.js BondsFlyout): the bar stands at the roster's right edge and the flyout opens to its right
-   — the toggle on the left, the bond discs on the right. The bar spans the roster's whole height, but the window starts
-   level with the first row (--fly-top, measured in ui/teamPanel.js), so the 同盟成员 header has no group beside it and
-   every group is exactly one roster row tall: each avatar's discs sit directly to that row's right (user request
-   2026-10-25). No box around the bar — a soft hover gradient only; no right border (user request 2026-10-24). */
+/* 「同盟盟约速查」 flyout (ui/teamPanel.js BondsFlyout): the bar stands at the right edge of the widest roster row
+   (--fly-left, measured in ui/teamPanel.js) and the window opens to its right — expanding it never widens the roster
+   or pushes its header (owner request 2026-10-24). The bar spans the roster's whole height, but the window starts
+   level with the first row (--fly-top, measured in ui/teamPanel.js), so the 同盟成员 header has no row beside it. A row
+   is a three-column grid that divides the window equally — bonds, the on-field operators, the strategy square — and its
+   height mirrors that seat's roster row (--fly-row-h, measured per row in ui/teamPanel.js), so an expanded 「前往查看」
+   row moves the row beside it too instead of shifting every row after it (PR #922 review).
+   The bar is the rounded-rectangle tab upstream draws (PR #922, copied 2026-11-12): a 1px frame on three sides with the
+   left edge open into the roster, and the two right corners rounded so it reads as the expansion edge. */
 
 .team__fly {
-  position: absolute; top: 0; bottom: 0; left: 100%; z-index: 6;
+  /* --fly-square is measured in ui/teamPanel.js (the shortest roster row — the strategy column is a square, so its
+     width is the row height), so it is not declared here: a declaration on this element would win over the inherited
+     measured value. --fly-ico is the size of the operator thumbnails and the strategy glyph — as big as the square can
+     hold (owner request 2026-11-12). The bond discs do not take it: they keep the top strip's own --disc so a flyout row
+     reads exactly like the 盟约 strip above the board (owner request 2026-11-12). */
+  --fly-bar: max(.2rem, 32px, calc(44px * var(--sp-ui, 1)));
+  --fly-ico: calc(var(--fly-square, .86rem) - max(8px, .1rem));
+  position: absolute; top: 0; bottom: 0; left: var(--fly-left, 100%); z-index: 6;
   width: 0; pointer-events: none;
 }
 
+/* upstream's tab, drawn with this fork's tokens: --text-lo stands in for the upstream --fg-2 and --mint-400 for
+   --mint-300, neither of which exists in css/theme.css. The frame is open on its LEFT edge, where the bar meets the
+   roster, and the two rounded corners face the content that opens beside it — copied as upstream draws it
+   (PR #922; the mirror version this fork had for a day, rounded on the left with the right edge open, was dropped
+   2026-11-12 after the owner compared the two). */
+
 .team__bonds-toggle {
-  position: absolute; left: 0; top: 0; bottom: 0; width: .2rem; padding: 0;
+  position: absolute; left: 0; top: 0; bottom: 0; width: var(--fly-bar); padding: 0;
   display: flex; align-items: center; justify-content: center;
-  background: none; border: 0; color: var(--text-lo); cursor: pointer; pointer-events: auto;
+  color: var(--text-lo); background: linear-gradient(90deg, rgba(8, 11, 10, .92), rgba(8, 11, 10, .62));
+  border: 1px solid var(--line-2); border-left: 0; border-radius: 0 3px 3px 0; cursor: pointer;
+  pointer-events: auto;
   transition: background var(--t-fast), color var(--t-fast);
 }
 
-.team__bonds-toggle:hover, .team__bonds-toggle:focus-visible {
-  background: linear-gradient(180deg, rgba(23, 249, 183, .26), rgba(23, 249, 183, .03));
-  color: var(--mint-400); outline: none;
+.team__bonds-toggle:hover, .team__bonds-toggle:focus-visible, .team__bonds-toggle.is-open {
+  background: rgba(13, 44, 36, .92); color: var(--mint-400); outline: none;
 }
 
-.team__bonds-toggle.is-open { color: var(--mint-400); }
-
-.team__bonds-toggle .icon { width: .14rem; height: .14rem; }
+/* the icon buttons take the big-icon rule (owner request 2026-11-12), the same floor as the panel's own toggle; the
+   18 px is below the 32 px scaling minimum, so it stays bare px (test/ui/ui-size.test.js) */
+.team__bonds-toggle .icon { width: max(.14rem, 18px); height: max(.14rem, 18px); }
 
 .team__fly-window {
   position: absolute;
-  left: .2rem;
+  left: var(--fly-bar);
   top: var(--fly-top, 0);
   bottom: 0;
-  /* the three columns' icons: one knob for the whole flyout (owner request 2026-10-25, second pass: the row had width to spare, so the discs and thumbnails go back up to their pre-reduction size — still centred in the row/group) */
-  --fly-ico: .4rem;
-  /* The window itself never scrolls: its left part (.team__fly-scroll) holds the bond discs and the field operators in
-     two aligned columns (column 1 sizes to the widest bond row, so every later column starts at the same x) and scrolls
-     sideways when a long operator list is wider than the window; the drafted strategy (column 3) is drawn in .team__fly-bands
-     beside the scroller, so that scroll can never cut the icon at the right edge (user report 2026-11-07). --fly-max is
-     measured in ui/teamPanel.js: the window never reaches past the screen's right edge. */
-  display: flex;
-  align-items: stretch;
-  /* the same 5px gap the scroller uses between its two columns, now between the scroller and the strategy column:
-     without it the operators' and the strategy's backings touch and read as one slab (user report 2026-11-09) */
-  column-gap: 5px;
-  width: max-content;
-  max-width: min(8.6rem, calc(100vw - var(--team-w2) - .9rem), var(--fly-max, 100vw));
+  /* --fly-w is measured in ui/teamPanel.js: from the bar to the left edge of whatever occupies the right side of the HUD
+     (the 指令 / 效果 column when it is on screen), or to the HUD's own right edge when nothing is. The HUD box already
+     carries the safe-area and 异形屏 insets (css/devices.css §2, §5), so the window never runs to the page's absolute
+     right edge (owner request 2026-11-12). The three columns share it equally, so a long bond strip or operator list
+     pans inside its own cell and can never cut the strategy square (user report 2026-11-07, PR #922 review). */
+  width: var(--fly-w, calc(100vw - 4rem));
+  box-sizing: border-box;
   min-width: 0;
-  padding: 0 5px;
+  padding: 0 6px;
   pointer-events: auto;
 }
 
-/* the scrolling part of the flyout: the discs and the on-field operators */
+/* the rows container: one row per seat, level with its roster row. It is still a scroll container — ui/teamPanel.js
+   keeps its scrollTop level with the roster's, so a wheel or a drag on either side moves both. */
 
-.team__fly-scroll {
-  display: grid;
-  grid-template-columns: max-content max-content;
-  align-content: start;
-  align-items: center;
-  column-gap: 5px;
-  row-gap: .14rem;
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow-x: auto;
-  overflow-y: hidden;
+.team__fly-rows {
+  display: flex;
+  flex-direction: column;
+  gap: .14rem;
+  height: 100%;
+  overflow: hidden;
   scrollbar-width: none;
   cursor: grab;
 }
 
-.team__fly-scroll::-webkit-scrollbar { width: 0; height: 0; }
-
-/* the strategy column, outside the scroller: one cell per row (and one spacer per 卡池 header) with exactly the rows'
-   heights and gaps, so every icon sits level with its seat and no horizontal scroll can hide it. --fly-row keeps it
-   level in the compact list (css below). */
-
-.team__fly-bands {
-  display: flex;
-  flex-direction: column;
-  gap: .14rem;
-  flex: none;
-  min-width: 0;
-  overflow: hidden;
-  box-shadow: -8px 0 8px -8px rgba(0, 0, 0, .8);
-}
+.team__fly-rows::-webkit-scrollbar { width: 0; height: 0; }
 
 /* one spacer per chess-pool header, as tall as that header (--fly-pool, measured in ui/teamPanel.js), so the flyout's
    rows stay level with their roster rows in a room grouped by 卡池 (owner request 2026-10-25: a line across is always
    one and the same seat) */
 
-.team__fly-pool { grid-column: 1 / -1; height: var(--fly-pool, 24px); }
+.team__fly-pool { flex: none; height: var(--fly-pool, 24px); }
 
-.team__fly-row { display: contents; }
+/* The strategy column is a square: its width is the row height (--fly-square, measured in ui/teamPanel.js), and the
+   rest of the window is divided between the bonds column and the operators column (owner request 2026-11-12). Every
+   cell takes the square's height, so a grown bond or operator cell never outgrows the square beside it — the row's
+   align-items centres them, and the three boxes stay the same size as each other.
+   This grid is also the fix for the bug the upstream review reported (PR #922): the strategy column used to sit in its
+   own grid, outside the seat's row, so an expanded 「前往查看」 row shifted the strategy out of line with the bonds of
+   the same seat. Here bonds, operators and the strategy square are one grid row per seat, and that row mirrors the
+   seat's roster row (--fly-row-h). */
+.team__fly-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--fly-square, .86rem);
+  align-items: center;
+  column-gap: 6px;
+  flex: none;
+  height: var(--fly-row-h, var(--fly-row, var(--fly-square, .86rem)));
+}
 
-/* each column carries its own backing rather than the window doing it: the window has no fill, so the 卡池 spacer row
-   stays fully transparent and reads as the divider between pools (owner request 2026-10-25). The 5px padding on both
-   sides of every column keeps its icons off the column edge; the scroller's 5px column gap separates the discs from the
-   operators, and the window's 5px column gap separates the scroller from the strategy column (2026-11-09), whose own
-   shadow marks the edge. */
+/* an eliminated seat (ui/teamPanel.js: `alive === false` with no pending revival): its pieces went back to the shared
+   pool when the death was finalised, so the row has nothing left to act on. It stays in the grid — the three columns must
+   stay aligned with the roster — but reads greyed and inert: no disc, square or thumbnail is clickable any more
+   (owner request 2026-11-12, in place of upstream's empty cells). A revival window is NOT dead and keeps its live row. */
+.team__fly-row.is-dead { opacity: .35; filter: grayscale(1); pointer-events: none; }
 
-.team__fly-bonds, .team__fly-ops, .team__fly-band { padding: 0 5px; background: rgba(6, 10, 9, .86); }
+/* each cell carries its own backing rather than the window doing it: the window has no fill, so the 卡池 spacer stays
+   fully transparent and reads as the divider between pools (owner request 2026-10-25). The 6px padding on both sides of
+   every cell keeps its icons off the cell edge (upstream's value, copied 2026-11-12; the compact list rows keep their own
+   4px below). A cell is its own horizontal scroller (PR #922 review): the rows
+   container clips its overflow, so the hover ring is drawn inside the square. Every cell is the square's height, so the
+   three boxes stay the same size as each other even on a row taller than the square. */
 
-.team__fly-ops:empty, .team__fly-band:empty { padding: 0; background: none; }
+.team__fly-cell {
+  box-sizing: border-box;
+  min-width: 0;
+  height: var(--fly-square, .86rem);
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  background: rgba(6, 10, 9, .86);
+  border-radius: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: none;
+  cursor: grab;
+}
 
-.team__fly-bonds { display: flex; align-items: center; min-width: 0; height: .8rem; }
+.team__fly-cell::-webkit-scrollbar { width: 0; height: 0; }
 
-.team__fly-bonds .bstrip { flex-wrap: nowrap; align-items: center; gap: .1rem; }
+.team__fly-cell.is-empty { padding: 0; background: none; }
 
-/* the flyout's discs are a size smaller than the top strip's and carry no name (owner request 2026-10-25): the white
-   glyph's centre then sits on the row's centre line, level with the operator thumbnails and the strategy icon */
+.team__fly-track { display: flex; align-items: center; gap: .1rem; width: max-content; min-width: 0; }
+
+.team__fly-ops .team__fly-track { gap: 6px; }
+
+/* the flyout's bonds do not reuse the top strip's BondStrip component (PR #922 review): ui/teamPanel.js FlyBonds draws
+   the discs itself, with no names and no 「尚未激活盟约」 copy. What this fork keeps on top of that shape is the
+   count badge (owner request 2026-10-25), so a teammate's row still reads how far along each bond is. The discs keep the
+   top strip's own --disc (.52rem) so a row reads exactly like the 盟约 strip above the board (owner request 2026-11-12);
+   the badge keeps the base rules of css/game.css and scales with --disc, so the number shrinks back with them. */
 
 .team__fly-bonds .bslot { width: auto; }
 
-.team__fly-bonds .bslot .bond { --disc: var(--fly-ico); }
+/* the seat's on-field operators (ui/teamPanel.js FlyOps): thumbnails only, column 2 of the grid. They take the big-icon
+   size (--fly-ico, owner request 2026-11-12), not the component's own small size; the discs in the neighbouring cell
+   stay at the top strip's size. */
 
-.team__fly-bonds .bslot__count { top: -.03rem; right: -.02rem; padding: 0 .02rem; font-size: .1rem; }
+.team__fly-ops .uthumb { --ut: var(--fly-ico); flex: none; }
 
-.team__fly-bonds .bslot__count small { font-size: .08rem; }
+/* a tapped operator opens its 干员详情 card (PR #922 review). The ring is drawn INSIDE the square: the operator cell is
+   a horizontal scroller and the rows container clips its overflow, so an outer ring loses its right side. */
 
-/* the seat's on-field operators: thumbnails only, column 2 of the grid (every row shares its left edge); a disc's size
-   (the covenant marker's, `--disc` of the flyout's bonds) since the owner's request of 2026-10-25 */
+.team__fly-opbtn { flex: none; padding: 0; border: 0; background: none; line-height: 0; cursor: pointer; }
 
-.team__fly-ops { display: flex; align-items: center; gap: 7px; height: .8rem; min-width: 0; }
+.team__fly-opbtn:hover .uthumb, .team__fly-opbtn:focus-visible { outline: 2px solid var(--mint-400); outline-offset: -2px; }
 
-.team__fly-ops .uthumb { --ut: max(var(--fly-ico), calc(24px * var(--sp-ui, 1))); flex: none; }
+/* the drafted strategy (players[].bandId): column 3 of the grid, and the column is a square — width = height =
+   --fly-square (owner request 2026-11-12). Its icon is drawn at the same size as an operator thumbnail beside it (the
+   bond discs stay at the top strip's size), so the three cells still read as one size; an empty seat keeps the cell (and
+   so the column's left edge). With a pick it is a button, and that button IS the cell (ui/teamPanel.js FlyBand carries
+   team__fly-cell), so the grey backing of .team__fly-cell covers it too — a bare band button would have no backing at
+   all and read as a floating glyph. */
 
-/* the drafted strategy (players[].bandId): column 3, one icon the size of the ops thumbnails; an empty seat keeps the
-   cell (and so the column's left edge). Drawn in .team__fly-bands, beside the horizontal scroller. */
+.team__fly-band { justify-content: center; width: var(--fly-square, .86rem); height: var(--fly-square, .86rem); padding: 0; }
 
-.team__fly-band { display: flex; align-items: center; height: .8rem; min-width: 0; }
+/* the track takes the whole cell so the glyph is centred in the square */
 
-.team__fly-band .bandicon { --bi: max(var(--fly-ico), calc(24px * var(--sp-ui, 1))); border: 1px solid var(--line-2); }
+.team__fly-band .team__fly-track { width: 100%; justify-content: center; }
+
+/* --bi is the shared icon size, so the glyph is exactly as big as a thumbnail in the neighbouring cell; box-sizing
+   keeps its 1px frame inside that size instead of adding to it */
+
+.team__fly-band .bandicon { --bi: var(--fly-ico); box-sizing: border-box; background: transparent; border: 1px solid var(--line-2); }
+
+.team__fly-band .bandicon img { object-fit: contain; }
+
+.team__fly-band.is-clickable { appearance: none; border: 0; color: inherit; font: inherit; cursor: pointer; }
+
+.team__fly-band.is-clickable:hover, .team__fly-band.is-clickable:focus-visible { outline: 2px solid var(--mint-400); outline-offset: -2px; }
+
+/* fixed on purpose: the bond / operator cells are horizontal scrollers and the rows container clips them, so an
+   absolutely placed card would be cut (PR #922 review) */
+
+.team__fly-bandpop {
+  position: fixed; z-index: 40; width: min(3.4rem, 44vw); max-height: min(60vh, 4.6rem); overflow: auto;
+  padding: .1rem .12rem .12rem; background: rgba(8, 12, 11, .97); border: 1px solid var(--line-2);
+  border-radius: 4px; box-shadow: 0 .12rem .34rem rgba(0, 0, 0, .6); color: var(--text-hi);
+  font-size: calc(.14 * var(--t)); pointer-events: auto;
+}
+
+.team__fly-bandpop__head { display: flex; align-items: flex-start; gap: .08rem; }
+
+.team__fly-bandpop__titles { display: flex; flex-direction: column; gap: .02rem; flex: 1 1 auto; min-width: 0; }
+
+.team__fly-bandpop__kicker { color: var(--mint-400); font-size: calc(.11 * var(--t)); letter-spacing: .04em; }
+
+.team__fly-bandpop__titles b { font-size: calc(.17 * var(--t)); }
+
+.team__fly-bandpop__titles b small { color: var(--text-md); font-weight: 400; }
+
+.team__fly-bandpop__close {
+  flex: none; width: max(.24rem, 24px); height: max(.24rem, 24px); display: grid; place-items: center;
+  background: none; border: 0; color: var(--text-md); cursor: pointer;
+}
+
+.team__fly-bandpop__desc { margin: .08rem 0 0; color: var(--text-md); line-height: 1.5; }
 
 .team__btn { position: relative; padding: 0; background: none; border: 0; transition: transform var(--t-fast); }
 
@@ -319,7 +404,7 @@
 
 /* a mouse drag scrolls the roster (ui/teamPanel.js attaches the handlers; the flyout follows the same offset) */
 
-.team__players.is-dragging, .team__fly-scroll.is-dragging, .team__fly-bands.is-dragging { cursor: grabbing; user-select: none; }
+.team__players.is-dragging, .team__fly-rows.is-dragging, .team__fly-cell.is-dragging { cursor: grabbing; user-select: none; }
 
 .team--list.team--pools .team__players { grid-auto-flow: row; grid-template-rows: none; align-items: start; }
 
@@ -391,28 +476,26 @@
 
 .team--list .team-rescue > small { font-size: var(--team-fs-sm); }
 
-/* the 盟约 flyout in the compact list: one group per roster row (its measured height, gap and padding), the discs
-   small enough to stay inside the row */
+/* the 同盟盟约速查 flyout in the compact list: one row per roster row (its measured height, gap and padding). The square
+   is the compact row's height, so the shared icon size is whatever a compact row can hold. */
 
-.team--list .team__fly-window { padding-top: 2px; --fly-ico: .36rem; }
+.team--list .team__fly-window { padding-top: 2px; }
 
-.team--list .team__fly-scroll { column-gap: 5px; row-gap: 4px; }
+.team--list .team__fly-rows { gap: 4px; }
 
-.team--list .team__fly-bands { gap: 4px; }
+/* the roster row's border is not measured, so the fallback keeps the +2px; --fly-row-h wins as soon as the row is measured */
 
-.team--list .team__fly-bonds, .team--list .team__fly-ops, .team--list .team__fly-band { height: var(--fly-row, calc(var(--team-row) + 2px)); }
+.team--list .team__fly-row { height: var(--fly-row-h, var(--fly-row, calc(var(--team-row) + 2px))); }
 
-.team--list .team__fly-bonds { gap: 6px; }
+.team--list .team__fly-cell { padding: 0 4px; }
 
-.team--list .team__fly-bonds .bstrip { gap: 10px; }
+/* the strategy square keeps its own padding: its icon is measured against the square, so the cell must not eat into it */
+
+.team--list .team__fly-band { padding: 0; }
+
+.team--list .team__fly-bonds .team__fly-track { gap: 6px; }
 
 .team--list .team__fly-bonds .bslot { width: auto; }
-
-.team--list .team__fly-bonds .bslot__count { top: -.03rem; right: -.02rem; padding: 0 .02rem; font-size: .1rem; }
-
-.team--list .team__fly-bonds .bslot__count small { font-size: .08rem; }
-
-.team--list .team__fly-bonds .bstrip--empty { font-size: max(.12rem, 10px); }
 
 /* an experimental room: the rows grouped by chess pool (m.public poolGroups) */
 

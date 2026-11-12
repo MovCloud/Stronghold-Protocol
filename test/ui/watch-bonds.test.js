@@ -43,7 +43,7 @@ function* walk(v) {
   if (Array.isArray(v)) { for (const x of v) yield* walk(x); return; }
   if (!v || typeof v !== 'object') return;
   yield v;
-  if (typeof v.type === 'function' && /^[A-Z]/.test(v.type.name) && ['OwnerTag'].includes(v.type.name)) yield* walk(v.type(v.props));
+  if (typeof v.type === 'function' && /^[A-Z]/.test(v.type.name) && ['OwnerTag', 'FlyBonds', 'FlyOps', 'FlyBand'].includes(v.type.name)) yield* walk(v.type(v.props));
   yield* walk(v.props?.children);
 }
 const hasClass = (v, c) => typeof v?.props?.class === 'string' && v.props.class.split(/\s+/).includes(c);
@@ -373,40 +373,56 @@ describe('§20.15 the strip and the popup say whose bonds they show', () => {
       assert.equal(hasClass(bar, 'is-open'), open);
     }
   });
-  test('the 盟约 flyout: every seat\'s strip (own row included), the toggle left of the discs, the same discs as the top strip', () => {
+  test('the 盟约 flyout: every seat\'s discs (own row included), the toggle left of them, icon only — no names (PR #922)', () => {
     const players = PUB().players;
     const closed = BondsFlyout({ players, myId: ME, open: false, onToggle() {} });
     const shut = [...walk(closed)].find((x) => hasClass(x, 'team__fly'));
     assert.ok(shut && !hasClass(shut, 'is-open'), 'closed: the bar only');
     assert.equal(shut.props.children[0].type?.name, 'BondsToggle', 'the toggle is the first child — discs open to its right');
-    assert.equal([...walk(closed)].some((x) => x.type?.name === 'BondStrip'), false, 'no discs until it opens');
+    assert.equal([...walk(closed)].some((x) => x.type?.name === 'FlyBonds'), false, 'no discs until it opens');
 
     const calls = [];
     const open = BondsFlyout({ players, myId: ME, open: true, onToggle() {}, onBond: (id, pid) => calls.push([id, pid]) });
     const fly = [...walk(open)].find((x) => hasClass(x, 'team__fly'));
     assert.ok(hasClass(fly, 'is-open'));
     assert.equal(fly.props.children[0].type?.name, 'BondsToggle');
-    const strips = [...walk(open)].filter((x) => x.type?.name === 'BondStrip');
-    assert.equal(strips.length, players.length, 'one group per seat, the viewer\'s own included');
-    assert.deepEqual(strips.map((s) => s.props.bonds).slice(0, 2), [players[0].bonds, players[1].bonds]);
-    assert.equal(strips[0].props.max, 16, 'the flyout has room: no +N cut');
+    // the flyout does not reuse the top strip's BondStrip (PR #922 review): ui/teamPanel.js FlyBonds draws the discs itself
+    const groups = [...walk(open)].filter((x) => x.type?.name === 'FlyBonds');
+    assert.equal(groups.length, players.length, 'one group per seat, the viewer\'s own included');
+    assert.ok(![...walk(open)].some((x) => x.type?.name === 'BondStrip'), 'the shared strip component is not used here');
+    assert.deepEqual(groups.map((g) => g.props.bonds).slice(0, 2), [players[0].bonds, players[1].bonds]);
+    assert.ok(![...walk(groups[0])].some((x) => hasClass(x, 'bond__name')), 'icon only, no bond name');
+    // this fork keeps its own addition on top of the upstream shape: the count badge (owner request 2026-10-25)
+    const badge = [...walk(groups[0])].find((x) => hasClass(x, 'bslot__count'));
+    assert.ok(badge, 'the count badge is still printed');
+    assert.match(textOf(badge), /^3\/\d+$/, 'count / next threshold');
     const rows = [...walk(open)].filter((x) => hasClass(x, 'team__fly-row'));
     assert.equal(rows.length, players.length, 'one group per seat, level with that seat\'s roster row');
     assert.ok(hasClass(rows[0], 'is-self'), 'the own group is marked');
     assert.ok(!hasClass(rows[1], 'is-self'));
-    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'BondStrip').length, 1, 'the discs sit directly beside the avatar');
+    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'FlyBonds').length, 1, 'the discs sit directly beside the avatar');
     assert.ok(![...walk(open)].some((x) => hasClass(x, 'team__fly-name')), 'no name column between the avatar and its discs');
-    // user report 2026-11-07 (the draft strategy icon cut at the flyout's right edge): the strategy column stands
-    // beside the horizontally scrolling part, never inside it, so a long operator list cannot scroll it out of view
+    // PR #922 review: a seat is one grid row with three columns — bonds, operators, the strategy square — and each cell
+    // scrolls sideways on its own, so a long strip can never scroll the strategy square out of view. The bug the review
+    // reported was that the strategy column sat in its own grid: an expanded 「前往查看」 row then shifted that seat's
+    // strategy out of line with its bonds, so the three cells must be children of the same row.
     const win = [...walk(open)].find((x) => hasClass(x, 'team__fly-window'));
-    const scroll = [...walk(open)].find((x) => hasClass(x, 'team__fly-scroll'));
-    const bandsCol = [...walk(open)].find((x) => hasClass(x, 'team__fly-bands'));
-    assert.ok(win && scroll && bandsCol, 'the window splits into a scroller and a strategy column');
-    assert.ok([...walk(win)].includes(scroll) && [...walk(win)].includes(bandsCol), 'both live in the window');
-    assert.ok(![...walk(scroll)].some((x) => x.type?.name === 'FlyBand'), 'the strategy icons stay outside the scroller');
-    assert.equal([...walk(scroll)].filter((x) => x.type?.name === 'FlyOps').length, players.length, 'one ops cell per seat in the scroller');
-    assert.equal([...walk(bandsCol)].filter((x) => x.type?.name === 'FlyBand').length, players.length, 'one strategy cell per seat in the column');
-    strips[1].props.onOpen('sargonShip');
+    const rowsCol = [...walk(open)].find((x) => hasClass(x, 'team__fly-rows'));
+    assert.ok(win && rowsCol, 'the window holds the rows container');
+    assert.ok([...walk(win)].includes(rowsCol), 'the rows live in the window');
+    assert.ok(![...walk(win)].some((x) => hasClass(x, 'team__fly-scroll') || hasClass(x, 'team__fly-bands')),
+      'no separate scroller / strategy column: every cell is its own');
+    assert.equal([...walk(open)].filter((x) => hasClass(x, 'team__fly-cell')).length, players.length * 3,
+      'three cells per seat: bonds, operators, strategy');
+    assert.ok([...walk(open)].filter((x) => hasClass(x, 'team__fly-ops')).every((o) => hasClass(o, 'team__fly-cell')),
+      'the operators are a cell of the grid, not a column outside it');
+    assert.ok([...walk(open)].filter((x) => hasClass(x, 'team__fly-band')).every((b) => hasClass(b, 'team__fly-cell')),
+      'the strategy square is a cell of the grid');
+    for (const r of rows) {
+      assert.equal([...walk(r)].filter((x) => hasClass(x, 'team__fly-cell')).length, 3,
+        `seat ${r.key}: its three cells are in the same grid row`);
+    }
+    groups[1].props.onBond('sargonShip');
     assert.deepEqual(calls, [['sargonShip', 'p2']], 'a disc opens that player\'s bond popup');
   });
 
@@ -415,9 +431,9 @@ describe('§20.15 the strip and the popup say whose bonds they show', () => {
     const open = BondsFlyout({ players, myId: ME, open: true, onToggle() {} });
     const rows = [...walk(open)].filter((x) => hasClass(x, 'team__fly-row'));
     assert.equal(rows.length, players.length, 'the row stays (the columns beside it must stay aligned)');
-    assert.equal([...walk(rows[2])].filter((x) => x.type?.name === 'BondStrip').length, 0, 'no strip for a hidden opponent');
+    assert.equal([...walk(rows[2])].filter((x) => x.type?.name === 'FlyBonds').length, 0, 'no discs for a hidden opponent');
     assert.doesNotMatch(textOf(rows[2]), /尚未激活盟约/);
-    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'BondStrip').length, 1, 'a visible teammate still shows theirs');
+    assert.equal([...walk(rows[1])].filter((x) => x.type?.name === 'FlyBonds').length, 1, 'a visible teammate still shows theirs');
   });
 
   test('the popup of a teammate\'s bond: "👁 name 的盟约", their count / layers, members from their board', () => {
@@ -454,6 +470,11 @@ test('§20.15 wiring: the game screen feeds the strip, the popup and the detail 
   assert.match(src, /openId=\$\{bondPop && bondPop\.ownerId === strip\.ownerId \? bondPop\.bondId : null\}/, 'the strip marks only its own owner\'s popup');
   assert.match(src, /setBondOpen\(\(b\) => \(b && b\.from === 'strip' \? null : b\)\)/, 'a strip popup closes when the strip changes hands');
   assert.ok(!/stripBonds\.find\(\(b\) => b\.bondId === bondOpen\)/.test(src), 'no popup entry read from the strip regardless of its owner');
+  // PR #922 review: the flyout's operator lists are per-viewer — the own seat from m.private, a teammate only from the
+  // field currently on screen; a tap opens that operator's card with its chess id.
+  assert.match(src, /const flyOps = flyOpsFor\(\{ myId, priv, field, players, cc, runner: battleRunner \}\)/);
+  assert.match(src, /onOp=\$\{\(u, p\)\ => \{[\s\S]*?flyOpChessId\(u\)/,
+    'a flyout tile opens the operator card of the seat that owns it');
   assert.match(src, /requestWatch\(t\.fieldId, p\.playerId\)/, 'a team-row pick remembers the player');
   assert.match(src, /\(!watchingOther \|\| field\.fieldId === watching\) \? cameraLayers\(field, pub, myId\)/, 'the ‹ › pill on a watched shared field');
   // a reload while watching a teammate's battle: the resent field becomes the watched one again (observing pill, 返回战场)

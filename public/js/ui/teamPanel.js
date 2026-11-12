@@ -33,13 +33,21 @@
 // check who draws from the same pool.
 // 投票移出 (ui/kickVote.js, GitHub feedback #12): the row of a teammate the AI plays because they stayed offline has a
 // 投票移出 button in SP_DRAFT / PREP; the open vote is shown in the notice slot above the rows.
+// PR #922 review (2026-11-11): the flyout's operator lists are per-viewer. m.public never carries a roster — the own
+// seat's operators come from m.private boardOps, a teammate's only from the scout / battle field currently on screen,
+// so the other group and a teammate still in battle show no list (g.watch, docs/META.md §4). A row is one grid row per
+// seat with three columns (bonds / operators / the strategy square): the square is the row's height, the other two
+// columns divide the rest of the window, and all three cells are the same size. Keeping them in the SAME grid row is
+// the fix for the bug the upstream review reported (PR #922) — with the strategy column in its own grid, an expanded
+// 「前往查看」 row shifted that seat's strategy out of line with its bonds. Each cell scrolls sideways on its own, and
+// a picked strategy is a button that opens its card beside the square.
 
 import { useEffect, useReducer, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
-import { html, Icon, Tooltip, Fragment } from './components.js';
-import { PlayerAvatar, Sprite, LpTower, GIcon, LocalSprite, UnitThumb, BandIcon } from './gameComponents.js';
+import { html, Icon, Tooltip, Fragment, BondDisc } from './components.js';
+import { PlayerAvatar, Sprite, LpTower, GIcon, LocalSprite, UnitThumb, BandIcon, RichText } from './gameComponents.js';
 import { EmoteBubble } from './emotes.js';
-import { STATUS_META, sortedPlayers, teamFrameIds, activeBubbles } from './gameLogic.js';
+import { STATUS_META, sortedPlayers, teamFrameIds, activeBubbles, sortBonds, nextThreshold } from './gameLogic.js';
 import { MissTag, uniteRemaining } from './hud.js';
 import { localAsset, data } from '../data.js';
 import { ReviveAction, RevivalNotice } from './revival.js';
@@ -50,7 +58,8 @@ import { PHONE_QUERY, rosterPools, rosterStartsOpen, teamDensity, teamEmoteMode,
 import { useMedia } from './device.js';
 import { useStore } from '../store.js';
 import { BondPlanTag } from './bondPlan.js';
-import { BondStrip } from './bondStrip.js';
+import { bondIconUrl } from './assetUrls.js';
+import { toast } from './toasts.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -244,7 +253,7 @@ export function TeamRow({ p, pub, myId, watching, onWatch, observe, halves, clic
   const lp = rowLp(p, pub, self ? selfLive : null, { uniteLocal, cap });
   const inTeam = team.has(p.playerId);
   const { click, dblClick } = clicks;
-  return html`<div data-seat=${p.seat} class=${cx('team__row', self && 'is-self', inTeam && 'is-team', watched && 'is-watched', p.alive === false && !p.pendingDeath && 'is-dead', p.pendingDeath && 'is-pending', open && 'is-open', offline && 'is-offline')}>
+  return html`<div data-seat=${p.seat} data-pid=${p.playerId} class=${cx('team__row', self && 'is-self', inTeam && 'is-team', watched && 'is-watched', p.alive === false && !p.pendingDeath && 'is-dead', p.pendingDeath && 'is-pending', open && 'is-open', offline && 'is-offline')}>
     <button type="button" class="team__btn" onClick=${() => click(p, self)} onDblClick=${(e) => dblClick(e, p, self)} title=${inTeam && !self ? `${title} · ${t('与你在同一战场')}` : title} aria-label=${title} aria-expanded=${observe && !self && !half ? String(open) : undefined}>
       <${PlayerAvatar} player=${p} self=${self} prefer="avatar">${p.shopLevel && !p.pendingDeath && !spMark ? html`<span class="pavatar__level" title=${t('调度中心等级')}><${Sprite} k=${`shopLevelSprite/shop_level_icon_${p.shopLevel}`} fallback=${html`<b class="num">${p.shopLevel}</b>`} /></span>` : null}</${PlayerAvatar}>
       ${inTeam ? html`<span class=${cx('team__frame', !frameArt && 'team__frame--plain')} style=${frameArt ? `--frame:url("${frameArt}")` : undefined} aria-hidden="true"></span>` : null}
@@ -284,10 +293,32 @@ export function TeamRow({ p, pub, myId, watching, onWatch, observe, halves, clic
  * roster's right edge, so the flyout grows to the right and never widens the roster or its header.
  */
 export function BondsToggle({ open, onToggle }) {
-  const label = open ? t('收起盟约') : t('展开盟约');
+  const label = open ? t('收起同盟盟约速查') : t('展开同盟盟约速查');
   return html`<button type="button" class=${cx('team__bonds-toggle', open && 'is-open')}
     aria-expanded=${String(open)} aria-controls="team-bonds" title=${label} aria-label=${label}
     onClick=${onToggle}><${Icon} name=${open ? 'chevronLeft' : 'chevronRight'} /></button>`;
+}
+
+/**
+ * The display name for a flyout operator: the operator record itself, or the chess record that maps to it (a 补位 /
+ * 自选 slot shows the operator it actually deploys). Cached per data load — the flyout draws every seat.
+ * @param {string} id charId
+ * @param {() => any} [chess] chess table (defaults to data/chess.json)
+ * @returns {string|null}
+ */
+let charNamesSrc = null;
+const charNames = new Map();
+
+export function charName(id, chess = () => data.get('chess')) {
+  const src = chess();
+  if (src !== charNamesSrc) {
+    charNamesSrc = src;
+    charNames.clear();
+    for (const rec of Object.values(src || {})) {
+      if (rec?.charId && rec.name && !charNames.has(rec.charId)) charNames.set(rec.charId, rec.name);
+    }
+  }
+  return charNames.get(id) || null;
 }
 
 /**
@@ -296,88 +327,238 @@ export function BondsToggle({ open, onToggle }) {
  * elite bit for the E2 avatar). Exported for the UI tests.
  * @param {{ id: string, golden?: number }} u
  * @param {(id: string) => any} [lookup] chess lookup (defaults to data/chess.json)
+ * @param {(id: string) => string|null} [nameOf] display name (defaults to charName)
  * @returns {any} a chess-shaped record, or null
  */
-export function flyOpRec(u, lookup = (id) => data.lookup('chess', id)) {
-  if (lookup(u?.id)) return null;
-  return { charId: u.id, assets: { avatar: u.id }, isGolden: !!u.golden };
+export function flyOpRec(u, lookup = (id) => data.lookup('chess', id), nameOf = charName) {
+  if (!u?.id || lookup(u.id)) return null;
+  return { charId: u.id, name: nameOf(u.id) || u.id, assets: { avatar: u.id }, isGolden: !!u.golden };
+}
+
+/** The chess id behind a flyout operator (the charId `boardOps` sends): the same id the 干员详情 card opens with, so
+ *  tapping a tile in the flyout opens that operator's card. A charId with no chess record of its own falls back to the
+ *  first record that maps to it (the elite record first when the seat's piece is elite). Exported for the UI tests. */
+export function flyOpChessId(u, lookup = (id) => data.lookup('chess', id), chess = () => data.get('chess')) {
+  if (!u?.id) return null;
+  if (lookup(u.id)) return u.id;
+  let plain = null;
+  for (const [cid, rec] of Object.entries(chess() || {})) {
+    if (rec?.charId !== u.id) continue;
+    if (u.golden ? rec.isGolden : !rec.isGolden) return cid;
+    if (!plain) plain = cid;
+  }
+  return plain;
 }
 
 /**
- * The operators a seat has on its field, drawn beside its bond discs (owner request 2026-10-25): m.public
- * players[].boardOps — a lean list the server sends with the bonds (server/match/match/views.js), just the ids plus the
- * elite bit, so a thumbnail needs no board Lookup (names / tiers / art come from data/chess.json). An id is the
- * operator's **char** id (the field record's body: views.js `assets.avatar || charId || piece.id` — a 补位 slot shows
- * the operator it fights as), which is a key of the art manifest's `chars`, never of data/chess.json (its keys are
- * `chess_char_*`): the thumbnail composes that record instead of a chess lookup, otherwise every tile shows '?'.
- * The flyout is a two-column grid (css/screens/team.css): column 1 sizes to the widest bond strip, so this column has
- * the same left edge on every row, right of the longest strip.
- * @param {{ ops?: Array<{ id: string, golden?: number }> | null }} props
+ * Per-viewer on-field operators for the flyout (PR #922 review). The own seat reads m.private.boardOps; a teammate
+ * only when their field is the one on screen (a prep scout, or a battle the viewer may watch — g.watch already
+ * refused every other field), and always board-only, chess-only. The result is `{ [playerId]: [{ id, golden? }] }`.
+ * A prep scout (`prep: true`, fieldId `n:<pid>`) carries its board in the meta itself: no battle runs yet, so the
+ * runner has nothing for it (client-combat matches still have `cc` true in prep — reading the runner there would empty
+ * the row while that board is plainly on screen). A battle reads the runner's board in client combat, else the meta's.
+ * Exported for the tests.
  */
-function FlyOps({ ops }) {
+export function flyOpsFor({ myId, priv = null, field = null, players = null, cc = false, runner = null }) {
+  const out = {};
+  const own = priv?.boardOps;
+  if (Array.isArray(own) && own.length) out[myId] = own;
+  if (!field?.fieldId) return out;
+  // the field's members: a normal field / prep board is `n:<pid>`; a shared (府/联防) field lists them in `players` or sides
+  const onField = (pid) => {
+    if (Array.isArray(field.players)) return field.players.includes(pid);
+    if (field.fieldId === `n:${pid}`) return true;
+    return !!field.sides && typeof field.sides === 'object' && Object.prototype.hasOwnProperty.call(field.sides, pid);
+  };
+  for (const p of Array.isArray(players) ? players : []) {
+    const pid = p.playerId;
+    if (!pid || pid === myId || (p.alive === false && !p.pendingDeath) || !onField(pid)) continue;
+    const units = (!field.prep && cc && runner ? runner.ownerOps?.(pid, field.fieldId) : field.units) || field.units || [];
+    const ops = [];
+    for (const u of units) {
+      if (!u || u.kind !== 'op' || (u.ownerId && u.ownerId !== pid)) continue;
+      if (u.area && u.area !== 'board') continue;
+      const id = u.avatar || u.diy?.charId || u.defId || u.id;
+      if (id) ops.push({ id, ...(u.golden ? { golden: 1 } : {}) });
+    }
+    if (ops.length) out[pid] = ops;
+  }
+  return out;
+}
+
+/**
+ * The seat's bonds in the flyout: icon only, no names and no 「尚未激活盟约」 copy — the flyout does not reuse BondStrip
+ * (PR #922 review, the reviewer's point against the shared component). This fork keeps its own addition on top of that
+ * shape (owner request 2026-10-25): the `count/next` badge, so a teammate's row still reads how far along each bond is.
+ * The badge keeps `.bslot` / `.bslot__count` so it shares the top strip's positioning rules (css/game.css).
+ * `size="sm"` is upstream's and stays: the discs are the same size as the 盟约 strip above the board (owner request
+ * 2026-11-12), so a flyout row reads like that strip. Only the operator thumbnails and the strategy glyph are drawn
+ * bigger, at css `--fly-ico`.
+ * @param {{ bonds?: any[] | null, ownerId: any, onBond?: ((bondId: string, ownerId: any) => void) | null,
+ *   layersDisabled?: boolean }} props
+ */
+function FlyBonds({ bonds, ownerId, onBond = null, layersDisabled = false }) {
+  const m = data.get('assets');
+  const list = sortBonds(Array.isArray(bonds) ? bonds : [], (id) => data.lookup('bonds', id)).filter((b) => !b.off);
+  return list.map((b) => {
+    const rec = data.lookup('bonds', b.bondId);
+    const th = Array.isArray(b.thresholds) && b.thresholds.length ? b.thresholds : rec?.thresholds || [];
+    const next = nextThreshold(b.count ?? 0, th);
+    const name = rec?.name || b.bondId;
+    const title = `${name} ${b.count ?? 0}/${next ?? th[th.length - 1] ?? '-'}${b.harmony > 0 ? t('（含调和 +{harmony}）', { harmony: b.harmony }) : ''}`;
+    return html`<span key=${b.bondId} class=${cx('bslot', b.active && 'is-active')} data-bond=${b.bondId}>
+      <${BondDisc} name=${name} icon=${bondIconUrl(m, b.bondId)} layers=${rec?.noStack ? undefined : b.layers ?? 0}
+        tier=${b.tier ?? 0} maxTier=${Math.max(1, th.length)} active=${!!b.active} size="sm" showName=${false}
+        layersDisabled=${layersDisabled} title=${title} onClick=${onBond ? () => onBond(b.bondId, ownerId) : undefined} />
+      <span class=${cx('bslot__count', 'num', next == null && 'is-max')}>${b.count ?? 0}<small>/${next ?? th[th.length - 1] ?? '-'}</small></span>
+    </span>`;
+  });
+}
+
+/**
+ * The operators a seat has on its field, drawn beside its bond discs (owner request 2026-10-25): the per-viewer list
+ * `flyOpsFor` builds — m.private boardOps for the own seat, the field on screen for a teammate (PR #922 review). A
+ * lean list, just the ids plus the elite bit, so a thumbnail needs no board Lookup (names / tiers / art come from
+ * data/chess.json). An id is the operator's **char** id (the field record's body: views.js `assets.avatar || charId
+ * || piece.id` — a 补位 slot shows the operator it fights as), which is a key of the art manifest's `chars`, never of
+ * data/chess.json (its keys are `chess_char_*`): the thumbnail composes that record instead of a chess lookup,
+ * otherwise every tile shows '?'. A row is one grid row per seat (css/screens/team.css): the bonds cell and this cell
+ * divide the window and each scrolls inside itself, so a long list never pushes the strategy square — which is the row's
+ * height, not a third of the window. The thumbnails take css `--fly-ico` (owner request 2026-11-12), the size shared
+ * with the strategy glyph, so a thumbnail is exactly as big as the square beside it; the bond discs in the neighbouring
+ * cell stay at the top strip's size.
+ * @param {{ ops?: Array<{ id: string, golden?: number }> | null,
+ *   onOp?: ((u: { id: string, golden?: number }) => void) | null }} props
+ */
+function FlyOps({ ops, onOp = null }) {
   const list = Array.isArray(ops) ? ops : [];
-  return html`<div class="team__fly-ops" role="group" aria-label=${t('在场')}>
-    ${list.map((u, i) => html`<${UnitThumb} key=${`${u.id}:${i}`} kind="chess" id=${u.id} rec=${flyOpRec(u)} size="xs"
-      golden=${!!u.golden} class="team__fly-op" />`)}
-  </div>`;
+  const body = list.length ? list.map((u, i) => {
+    const rec = flyOpRec(u);
+    const thumb = html`<${UnitThumb} key=${`${u.id}:${i}`} kind="chess" id=${u.id} rec=${rec} golden=${!!u.golden} />`;
+    if (!onOp) return thumb;
+    return html`<button key=${`${u.id}:${i}`} type="button" class="team__fly-opbtn"
+      aria-label=${t('{name} 的干员卡', { name: rec?.name || u.id })}
+      onClick=${() => {
+        // An id with no chess record cannot open the card (a 补位 body that this version's data does not carry). Say so
+        // in the non-blocking toast instead of leaving a button that silently ignores the tap (owner request 2026-11-12).
+        if (flyOpChessId(u)) onOp(u);
+        else toast(t('找不到这名干员的图鉴记录，无法打开干员卡'), 'warn');
+      }}>${thumb}</button>`;
+  }) : null;
+  return cell('team__fly-ops', body);
 }
 
 /**
  * The strategy a seat picked in the opening draft, drawn to the right of its field operators (owner request
  * 2026-10-25): m.public players[].bandId — the same field the draft screen and the seat rows use. One icon, the name in
- * the tooltip; an empty cell keeps every row's third column on the same left edge.
- * @param {{ bandId?: string|null }} props
+ * the tooltip; an empty cell keeps every row's third column on the same left edge. With `onOpen` it is a button: the
+ * click opens `BandPopup` beside the square, the same name / effect / description the 本局信息 card shows. The button is
+ * the cell itself (`team__fly-cell`), so the square keeps the same grey backing as the bonds and operator cells — a bare
+ * `team__fly-band` button would have no backing at all and read as a floating glyph.
+ * @param {{ bandId?: string|null, onOpen?: ((bandId: string, el: any) => void) | null }} props
  */
-function FlyBand({ bandId }) {
-  return html`<div class="team__fly-band" role="group" aria-label=${t('策略')}>
-    ${typeof bandId === 'string' && bandId ? html`<${BandIcon} bandId=${bandId} />` : null}
+function FlyBand({ bandId, onOpen = null }) {
+  const has = typeof bandId === 'string' && bandId;
+  const icon = has ? html`<${BandIcon} bandId=${bandId} />` : null;
+  if (!has || !onOpen) return cell('team__fly-band', icon);
+  return html`<button type="button" class=${cx('team__fly-cell', 'team__fly-band', 'is-clickable')}
+    aria-label=${t('{name} 的策略卡', { name: data.lookup('bands', bandId)?.name || bandId })}
+    onClick=${(e) => onOpen(bandId, e.currentTarget)}>${icon}</button>`;
+}
+
+/** The band card the flyout opens beside its square (PR #922 review): the same name / effect / description the 本局信息
+ *  card shows, kept small so it fits the flyout's own width. `position: fixed` in css — the bond and operator cells are
+ *  horizontal scrollers and would clip an absolutely placed card. */
+function BandPopup({ band, onClose }) {
+  const b = data.lookup('bands', band.bandId);
+  if (!b) return null;
+  return html`<div class="team__fly-bandpop" role="dialog" aria-label=${t('策略')}
+    aria-modal="true" style=${`top:${band.top}px;right:${band.right}px`}>
+    <header class="team__fly-bandpop__head">
+      <${BandIcon} bandId=${band.bandId} size="md" />
+      <div class="team__fly-bandpop__titles">
+        <small class="team__fly-bandpop__kicker">STRATEGY // ${band.owner ? t('{bandOwner} 的策略', { bandOwner: band.owner }) : t('我的策略')}</small>
+        <b>${b.name}${b.effectName ? html` <small>${b.effectName}</small>` : null}</b>
+      </div>
+      <button type="button" class="team__fly-bandpop__close tapx" aria-label=${t('关闭')} onClick=${onClose}>
+        <${Icon} name="close" />
+      </button>
+    </header>
+    <${RichText} as="p" text=${b.descRaw || b.desc} class="team__fly-bandpop__desc" />
   </div>`;
 }
 
+/** One cell of the flyout's row: a horizontally scrolling track, its own backing, and no backing when empty (so the
+ *  卡池 spacer stays transparent and reads as the divider between pools — owner request 2026-10-25). */
+function cell(cls, body) {
+  return html`<div class=${cx('team__fly-cell', cls, !body && 'is-empty')}>
+    <div class="team__fly-track">${body}</div></div>`;
+}
+
 /**
- * 「盟友盟约」 flyout (user requests 2026-10-24 / 2026-10-25): the toggle bar stands at the roster's right edge and the
- * window opens to its right, so expanding it never widens the roster or pushes its header. The bar spans the roster's
- * whole height, but the window starts level with the first row (css `--fly-top`, measured in TeamPanel) and every group
- * is exactly one roster row tall — so the 同盟成员 header has no group beside it and each avatar's discs sit directly to
- * that row's right. One block per seat, the viewer's own included (no name between the avatar and its discs: the row
- * itself says whose they are), and, to the right of the longest bond strip, the operators that seat has on the field
- * (FlyOps) and the strategy it drafted (FlyBand). The discs and the operators scroll sideways inside the window when a
- * long operator list is wider than it; the strategy column stands beside that scroller (never inside it), so the scroll
- * cannot cut the icon at the window's right edge (user report 2026-11-07). The window's width is capped by `--fly-max`,
- * measured here from its left edge, so it cannot run past the screen either. Hidden while the roster is folded
- * (TeamPanel only renders it with the roster open).
+ * 「同盟盟约速查」 flyout (user requests 2026-10-24 / 2026-10-25, PR #922 review): the toggle bar stands at the right
+ * edge of the widest roster row (`--fly-left`, measured in TeamPanel) and the window opens to its right, so expanding
+ * it never widens the roster or pushes its header. The bar spans the roster's whole height, but the window starts
+ * level with the first row (css `--fly-top`, measured in TeamPanel) and every row is exactly that seat's roster row
+ * tall (`--fly-row-h`, mirrored from `rowH`) — so the 同盟成员 header has no group beside it, each avatar's discs sit
+ * directly to that row's right, and an expanded 「前往查看」 row moves the flyout too instead of shifting every row
+ * after it.
+ * A row is one grid row per seat with three columns: bonds, the field operators, the strategy square (owner request
+ * 2026-11-12). The square is the row's height and the other two columns divide the rest of the window; all three cells
+ * are the same size, and the icons in them are drawn at one shared size. Keeping the three columns in the SAME grid row
+ * is the fix for the bug the upstream review reported (PR #922): when the strategy column was a separate grid, an
+ * expanded 「前往查看」 row pushed that seat's strategy out of line with its bonds. The first two columns scroll
+ * sideways inside their own cell (a long list cannot cut the square), and the window runs from the anchor to the left
+ * edge of the HUD's right-hand 指令 / 效果 column, or to the HUD's own right edge when that column is not on screen
+ * (`--fly-w`, measured in TeamPanel) — inside the safe-area / 异形屏 insets of css/devices.css, never the page's
+ * absolute right edge (owner request 2026-11-12). A picked strategy is a button: it opens `BandPopup` beside the
+ * square, and a click anywhere else closes it.
+ * Hidden while the roster is folded (TeamPanel only renders it with the roster open).
  * A room grouped by chess pool (`pools`, rosterPools) reserves each pool header's height here too, so the flyout's rows
  * stay level with their roster rows across the whole list (owner request 2026-10-25: one line across shows one seat).
  * The discs are icon-only in the flyout (owner request 2026-10-25): with no name under them every disc's white glyph
  * centre sits on the row's centre line, level with the operator thumbnails and the strategy icon.
  * @param {{ players: any[], myId: any, open: boolean, onToggle: () => void,
  *   onBond?: ((bondId: string, playerId: string) => void) | null,
- *   pools?: Array<{ id: number|null, players: any[] }>|null }} props
+ *   flyOps?: Record<string, Array<{ id: string, golden?: number }>> | null,
+ *   onOp?: ((u: { id: string, golden?: number }, p: any) => void) | null,
+ *   rowH?: Record<string, number> | null, layersDisabled?: boolean,
+ *   pools?: Array<{ id: number|null, players: any[] }>|null,
+ *   bandPop?: { bandId: string, owner: string|null, top: number, right: number } | null,
+ *   rowsRef?: any, onBandPick?: ((bandId: string, owner: string, el: any) => void) | null,
+ *   onBandClose?: (() => void) | null }} props
  */
-export function BondsFlyout({ players, myId, open, onToggle, onBond = null, pools = null }) {
-  // The window is two siblings: the horizontally scrolling part (bond discs + field operators) and the strategy column.
-  // The strategy column sits outside that scroller, so a long operator list — the scroller's content can exceed the
-  // window's max-width — can never cut the icon at the right edge (user report 2026-11-07).
-  const row = (p) => html`<section key=${p.playerId} class=${cx('team__fly-row', p.playerId === myId && 'is-self')}>
+export function BondsFlyout({ players, myId, open, onToggle, onBond = null, flyOps = null, onOp = null,
+  rowH = null, layersDisabled = false, pools = null, bandPop = null, rowsRef = null, onBandPick = null, onBandClose = null }) {
+  const row = (p) => {
+    // A finalised elimination is not a state the flyout can act on: the seat's pieces are wiped and their copies return
+    // to the shared pool (server/match/player/round.js eliminate), its bonds recompute empty and its board clears. Keep
+    // the row in the grid — the three columns must stay aligned — but grey it and take every control out of reach, so it
+    // reads as an eliminated seat rather than as one with nothing to show yet. A revival window is NOT death: while
+    // `pendingDeath` is set the seat still counts as alive (experimental revival, owner request 2026-11-12).
+    const dead = p.alive === false && !p.pendingDeath;
+    return html`<section key=${p.playerId} class=${cx('team__fly-row', p.playerId === myId && 'is-self', dead && 'is-dead')}
+      style=${rowH?.[p.playerId] ? `--fly-row-h:${rowH[p.playerId]}px` : undefined}>
       <!-- a hidden 2v2 opponent has no bonds to show: keep the cell (the grid columns must stay aligned) but print
-           nothing, rather than BondStrip's 「尚未激活盟约」 which reads as if the opponent had none to share. -->
-      <div class="team__fly-bonds">${p.hidden ? null : html`<${BondStrip} bonds=${p.bonds} max=${16} names=${false}
-        onOpen=${(id) => onBond?.(id, p.playerId)} />`}</div>
-      <${FlyOps} ops=${p.boardOps} />
+           nothing, rather than 「尚未激活盟约」 which reads as if the opponent had none to share. -->
+      ${cell('team__fly-bonds', p.hidden ? null : html`<${FlyBonds} bonds=${p.bonds} ownerId=${p.playerId}
+        layersDisabled=${layersDisabled} onBond=${onBond && !dead ? (id) => onBond(id, p.playerId) : null} />`)}
+      <${FlyOps} ops=${flyOps?.[p.playerId] || null} onOp=${onOp && !dead ? (u) => onOp(u, p) : null} />
+      <${FlyBand} bandId=${p.bandId}
+        onOpen=${onBandPick && !dead ? (id, el) => onBandPick(id, p.name || p.playerId, el) : null} />
     </section>`;
-  const band = (p) => html`<${FlyBand} key=${p.playerId} bandId=${p.bandId} />`;
+  };
+
   const spacer = () => html`<div class="team__fly-pool" aria-hidden="true"></div>`;
   const groups = () => (pools && pools.length > 1
     ? pools.map((pool) => html`<${Fragment} key=${pool.id ?? 'rest'}>${spacer()}${pool.players.map(row)}<//>`)
     : players.map(row));
-  const bands = () => (pools && pools.length > 1
-    ? pools.map((pool) => html`<${Fragment} key=${pool.id ?? 'rest'}>${spacer()}${pool.players.map(band)}<//>`)
-    : players.map(band));
+
   return html`<div class=${cx('team__fly', open && 'is-open')}>
     <${BondsToggle} open=${open} onToggle=${onToggle} />
-    ${open ? html`<div class="team__fly-window" id="team-bonds" role="region" aria-label=${t('盟约')}>
-      <div class="team__fly-scroll">${groups()}</div>
-      <div class="team__fly-bands">${bands()}</div>
+    ${open ? html`<div class="team__fly-window" id="team-bonds" role="region" aria-label=${t('同盟盟约速查')}>
+      <div ref=${rowsRef} class="team__fly-rows">${groups()}</div>
+      ${bandPop ? html`<${BandPopup} band=${bandPop} onClose=${onBandClose} />` : null}
     </div>` : null}
   </div>`;
 }
@@ -402,7 +583,8 @@ function PoolHead({ pool }) {
  *   uniteLocal: the local 联防 replica's per-leaker counts while it is on screen (battle runner state().uniteLeft), else null
  *   onBond: a flyout disc's click opens that player's bond popup (screens/game.js openBond); absent = the discs are inert
  */
-export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 3000, observe = null, halves = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null, onBond = null }) {
+export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 3000, observe = null, halves = null, self: selfLive = null, cap = 10, uniteLocal = null, spMarks = null, onBond = null,
+  flyOps = null, onOp = null, layersDisabled = false }) {
   const players = sortedPlayers(pub);
   const { density, open: rosterOpen, setOpen: setRosterOpen, phone } = roster;
   const list = density === 'list';
@@ -416,6 +598,55 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
   // the 盟约 flyout beside the roster: opened by the bar at the roster's right edge (arrows flip > / <); it spans the
   // roster's whole height and only exists while the roster is open
   const [bondsOpen, setBondsOpen] = useState(false);
+  // each flyout row mirrors its roster row (PR #922 review): measuring the first row only made every row after an
+  // expanded 「前往查看」 row drift. `data-pid` on the roster rows is the join.
+  const [rowH, setRowH] = useState({});
+  // The band card the flyout opens beside its square (PR #922 review). Its state lives in TeamPanel, not in
+  // BondsFlyout, so the flyout stays a pure vnode tree that test/ui/watch-bonds.test.js can walk without a render.
+  const flyRowsRef = useRef(null);
+  const [bandPop, setBandPop] = useState(null);
+  useEffect(() => {
+    if (!bondsOpen) setBandPop(null);
+    const rows = flyRowsRef.current;
+    if (rows) for (const c of rows.querySelectorAll('.team__fly-cell')) c.scrollLeft = 0;
+  }, [bondsOpen]);
+  useEffect(() => {
+    if (!bandPop) return undefined;
+    const close = (e) => {
+      if (e.target?.closest?.('.team__fly-bandpop') || e.target?.closest?.('.team__fly-band')) return;
+      setBandPop(null);
+    };
+    document.addEventListener('click', close, true);
+    return () => document.removeEventListener('click', close, true);
+  }, [bandPop]);
+  // A click anywhere outside the open flyout closes it — the command column, the shop, 升级 / 冻结 / 刷新, the bench,
+  // 查看迎击单位, 本局信息 (upstream PR #922, merged 2026-11-12). The roster itself (`.team`: its rows, 前往查看 /
+  // 返回战场 and the toggle) keeps it open, as does a click in the flyout's own gaps (between rows or cells, the
+  // window's padding) and the band popup or operator card.
+  useEffect(() => {
+    if (!bondsOpen) return undefined;
+    const onDown = (e) => {
+      const target = e.target;
+      if (target instanceof Element && target.closest('.team, .bpop, .dpanel')) return;
+      setBondsOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [bondsOpen]);
+  // fixed, beside the square that was clicked (upstream PR #922's placement, synced 2026-11-12): the card's right edge
+  // sits 8px to the LEFT of the square, its top on the square's top, clamped so its ~240px body never runs off the bottom.
+  // The cells are horizontal scrollers and clip an absolutely placed card, so it is position: fixed.
+  const openBandPop = (bandId, owner, el) => {
+    const r = el?.getBoundingClientRect?.();
+    const vw = globalThis.innerWidth || document.documentElement.clientWidth || 1920;
+    const vh = globalThis.innerHeight || document.documentElement.clientHeight || 1080;
+    setBandPop({
+      bandId,
+      owner: owner || null,
+      right: r ? Math.max(8, Math.round(vw - r.left + 8)) : 8,
+      top: r ? Math.max(8, Math.min(Math.round(r.top), Math.round(vh - 240))) : 8,
+    });
+  };
   // a desktop list takes a second column when its seats do not fit the height (phones: one column, the drawer scrolls)
   const measured = list && rosterOpen && !phone;
   // where the roster's rows begin: the 盟约 window starts there, so the 同盟成员 header has no group beside it
@@ -426,28 +657,65 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
     if (!panel || !rosterEl) return undefined;
     const place = () => {
       if (rosterEl.hidden) return;
-      const top = rosterEl.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+      const box = panel.getBoundingClientRect();
+      const top = rosterEl.getBoundingClientRect().top - box.top;
       panel.style.setProperty('--fly-top', `${Math.max(0, Math.round(top))}px`);
-      // the window opens to the right of the roster: keep its right edge on screen (css max-width reads --fly-max),
-      // so a wide flyout can never run past the viewport and have its strategy column clipped by the screen edge
-      const win = panel.querySelector('.team__fly-window');
-      if (win) panel.style.setProperty('--fly-max', `${Math.max(160, Math.round(innerWidth - win.getBoundingClientRect().left - 8))}px`);
-      else panel.style.removeProperty('--fly-max');
+      // the anchor is the right edge of the WIDEST roster row, not the panel's padding edge (PR #922 model): the bar
+      // stands there and the window opens from it, so a row that does not fill the panel still has its flyout row
+      // level with it (owner request 2026-11-12: the width is copied from the optimised branch)
+      let widest = box.width;
+      for (const row of rosterEl.querySelectorAll('.team__row')) widest = Math.max(widest, row.getBoundingClientRect().right - box.left);
+      // round UP, not to the nearest px: the column is content-driven and its width is fractional, so rounding down let
+      // the bar's left edge land inside the column (up to 1px, a hairline that reads as the bar covering the roster's
+      // right edge — owner report 2026-11-12). Ceiling keeps it at or just outside the roster's edge.
+      const anchor = Math.ceil(widest);
       // the flyout takes the roster's own metrics: a list seat carries a 1px frame (46px, not the nominal 44) and a
       // 卡池 head is as tall as its line box (~26px, not the 24px minimum), so a fixed height would drift a little
-      // lower down every row (owner request 2026-10-25: one line across is one and the same seat)
-      const row = rosterEl.querySelector('.team__row');
-      if (row) panel.style.setProperty('--fly-row', `${row.getBoundingClientRect().height}px`);
+      // lower down every row (owner request 2026-10-25: one line across is one and the same seat). Every row is
+      // measured, not just the first (PR #922 review): an expanded 「前往查看」 row must move the row beside it too.
+      const heights = {};
+      for (const row of rosterEl.querySelectorAll('.team__row')) {
+        heights[row.dataset.pid] = Math.round(row.getBoundingClientRect().height * 10) / 10;
+      }
+      setRowH((prev) => (JSON.stringify(prev) === JSON.stringify(heights) ? prev : heights));
+      const first = rosterEl.querySelector('.team__row');
+      if (first) panel.style.setProperty('--fly-row', `${heights[first.dataset.pid]}px`);
       const head = rosterEl.querySelector('.team__pool-head');
       if (head) panel.style.setProperty('--fly-pool', `${head.getBoundingClientRect().height}px`);
       else panel.style.removeProperty('--fly-pool');
+      if (!bondsOpen) {
+        for (const key of ['--fly-left', '--fly-w', '--fly-square']) panel.style.removeProperty(key);
+        return;
+      }
+      const bar = panel.querySelector('.team__bonds-toggle')?.getBoundingClientRect().width || 44;
+      // The window stops at the left edge of whatever occupies the right side of the HUD, plus an 8px gutter (upstream's
+      // rule, PR #922): the 指令 / 效果 column when it is on screen, otherwise the HUD's own right edge. That edge is the
+      // HUD box, which already carries the safe-area and 异形屏 insets (css/devices.css §2, §5) — the flyout must stop
+      // there, not at the page's absolute right edge (owner request 2026-11-12). The effects column fades out in the
+      // 敌方预览 pen view, so the HUD edge is the fallback there too. When the 规程 season lands its own 策略操作列 it
+      // takes priority over the effects column in this lookup (owner request 2026-11-12).
+      const hud = panel.closest('.gm__hud') || document.documentElement;
+      const fx = hud.querySelector('.gm__effects');
+      const fxRect = fx && !hud.closest('.gm.is-pen') ? fx.getBoundingClientRect() : null;
+      const right = fxRect && fxRect.width > 0 ? fxRect.left - 8 : hud.getBoundingClientRect().right || window.innerWidth;
+      const flyW = Math.max(220, Math.round(right - box.left - anchor - bar));
+      // the strategy column is a square: its width is the row height, so --fly-square is the SHORTEST measured row —
+      // every square in the window is then the same size, and the rest of the window is divided between the bonds and
+      // the operators columns (PR #922 model, owner request 2026-11-12). There is no equal-third cap: the square is the
+      // row, not a third of the window.
+      const vals = Object.values(heights);
+      const square = vals.length ? Math.round(Math.min(...vals)) : 64;
+      panel.style.setProperty('--fly-left', `${anchor}px`);
+      panel.style.setProperty('--fly-w', `${flyW}px`);
+      panel.style.setProperty('--fly-square', `${square}px`);
     };
     place();
     // The compact roster scrolls with the wheel and with a dragged mouse (owner request 2026-10-25: a 20-seat room is
     // one scrolling column and its scrollbar stays hidden, css). A wheel or a drag over the 盟约 flyout beside it moves
     // the roster too, and the two always hold the same offset, so a group never drifts off the row it belongs to. Touch
-    // keeps the browser's own panning (`touch-action: pan-y`).
-    const scrollers = () => [rosterEl, panel.querySelector('.team__fly-scroll'), panel.querySelector('.team__fly-bands')].filter((el) => el && !el.hidden);
+    // keeps the browser's own panning (`touch-action: pan-y`). A row's own cell scrolls sideways on its own (PR #922
+    // review): a long bond strip or operator list pans inside its cell and never cuts the strategy square.
+    const scrollers = () => [rosterEl, panel.querySelector('.team__fly-rows')].filter((el) => el && !el.hidden);
     const sync = () => {
       for (const el of scrollers()) if (el !== rosterEl) el.scrollTop = rosterEl.scrollTop;
     };
@@ -464,18 +732,27 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
     let swallow = false;
     const onDown = (e) => {
       if (e.pointerType !== 'mouse' || e.button !== 0) return;
-      drag = { host: e.currentTarget, id: e.pointerId, y: e.clientY, top: rosterEl.scrollTop, moved: false };
+      const cell = e.target?.closest?.('.team__fly-cell');
+      if (cell && cell.scrollWidth > cell.clientWidth) {
+        drag = { host: cell, axis: 'x', id: e.pointerId, x: e.clientX, left: cell.scrollLeft, moved: false };
+        return;
+      }
+      drag = { host: e.currentTarget, axis: 'y', id: e.pointerId, y: e.clientY, top: rosterEl.scrollTop, moved: false };
     };
     const onMove = (e) => {
       if (!drag || drag.id !== e.pointerId) return;
-      const dy = e.clientY - drag.y;
+      const d = drag.axis === 'x' ? e.clientX - drag.x : e.clientY - drag.y;
       if (!drag.moved) {
-        if (Math.abs(dy) < 6) return;
+        if (Math.abs(d) < 6) return;
         drag.moved = true;
         drag.host.setPointerCapture?.(e.pointerId);
         drag.host.classList.add('is-dragging');
       }
-      rosterEl.scrollTop = Math.max(0, drag.top - dy);
+      if (drag.axis === 'x') {
+        drag.host.scrollLeft = Math.max(0, Math.min(drag.host.scrollWidth - drag.host.clientWidth, drag.left - d));
+        return;
+      }
+      rosterEl.scrollTop = Math.max(0, drag.top - d);
       sync();
     };
     const onUp = () => {
@@ -511,7 +788,7 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
     return () => {
       observer?.disconnect(); window.removeEventListener('resize', place);
       rosterEl.removeEventListener('scroll', sync);
-      for (const key of ['--fly-top', '--fly-row', '--fly-pool', '--fly-max']) panel.style.removeProperty(key);
+      for (const key of ['--fly-top', '--fly-row', '--fly-pool', '--fly-left', '--fly-w', '--fly-square']) panel.style.removeProperty(key);
       for (const el of targets) {
         el.removeEventListener('wheel', onWheel);
         el.removeEventListener('pointerdown', onDown);
@@ -569,6 +846,8 @@ export function TeamPanel({ pub, myId, watching, onWatch, roster, emoteTtl = 300
         : players.map(row)}</div>
     </div>
     ${rosterOpen && players.length > 1 ? html`<${BondsFlyout} players=${players} myId=${myId} open=${bondsOpen} pools=${pools}
+      rowH=${rowH} layersDisabled=${layersDisabled} flyOps=${flyOps} onOp=${onOp}
+      bandPop=${bandPop} rowsRef=${flyRowsRef} onBandPick=${openBandPop} onBandClose=${() => setBandPop(null)}
       onToggle=${() => setBondsOpen(on => !on)} onBond=${onBond} />` : null}
   </aside>`;
 }

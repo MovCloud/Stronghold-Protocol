@@ -107,17 +107,6 @@ function computeBonds(priv) {
 const EXTRA_NAMES = ['能天使', '德克萨斯', '拉普兰德', '陈', '星熊', '银灰', '史尔特尔', '塞雷娅', '一位名字特别特别长的博士·Rhodes Island',
   '艾雅法拉', '推进之王', '斯卡蒂', '赫拉格', '麦哲伦', '莫斯提马', '煌'];
 const EXTRA_BANDS = ['band_bldsk', 'band_sarkazb', 'band_amiya', 'band_amedic', null];
-/** m.public players[].boardOps (server/match/match/views.js): the chess ids a seat has on its field, for the 盟约
- *  flyout's thumbnail column. Deterministic per seat so screenshots stay stable. */
-function mockBoardOps(n, salt = 0) {
-  const all = visibleChess();
-  const out = [];
-  for (let j = 0; j < n && all.length; j++) {
-    const c = all[(salt * 7 + j * 13) % all.length];
-    out.push({ id: c.chessId, ...(j === 0 && salt % 3 === 0 ? { golden: 1 } : {}) });
-  }
-  return out;
-}
 /** Seats `from`..`to - 1` of a big room (players20). */
 function extraPlayers(from, to) {
   const out = [];
@@ -127,7 +116,7 @@ function extraPlayers(from, to) {
     const p = {
       playerId: `p${i + 1}`, seat: i, name: bot ? `AI·${EXTRA_NAMES[k % EXTRA_NAMES.length]}` : EXTRA_NAMES[k % EXTRA_NAMES.length], isBot: bot,
       bandId: EXTRA_BANDS[k % EXTRA_BANDS.length], connected: k !== 6, alive: k !== 9, lp: k === 9 ? 0 : 6 + ((k * 7) % 30), shopLevel: 1 + (k % 6),
-      boardCount: 3 + (k % 6), boardOps: mockBoardOps(3 + (k % 6), k + 1), ready: k % 3 === 0, bonds: [], fieldId: `n:p${i + 1}`,
+      boardCount: 3 + (k % 6), ready: k % 3 === 0, bonds: [], fieldId: `n:p${i + 1}`,
       status: k === 9 ? 'dead' : k % 3 === 0 ? 'ready' : 'acting',
     };
     if (k === 12) p.pendingDeath = true;
@@ -171,12 +160,17 @@ function refreshPrivate() {
   p.shop.maxLevel = 6;
   if (p.shop.upgradePrice == null) p.shop.upgradePrice = upg[p.shop.level - 1] ?? 0;
   p.shop.refreshPrice = p.shop.freeRefreshes > 0 ? 0 : 1;
+  // m.private boardOps (server/match/player/views.js): the own board for the 同盟盟约速查 column. m.public never
+  // carries it — one broadcast cannot follow g.watch, so a teammate's list only appears while their field is on screen.
+  p.boardOps = p.alive === false ? [] : p.board.filter((x) => x && x.kind === 'chess').map((x) => {
+    const rec = data.lookup('chess', x.id);
+    return { id: rec?.charId || x.id, ...(x.golden ? { golden: 1 } : {}) };
+  });
   store.patch('match', { private: JSON.parse(JSON.stringify(p)) });
   const me = S.pub.players.find((x) => x.playerId === ME);
   if (me) {
     me.bonds = p.bonds;
     me.boardCount = p.deployCount;
-    me.boardOps = p.alive === false ? [] : p.board.filter((x) => x && x.kind === 'chess').map((x) => ({ id: x.id, ...(x.golden ? { golden: 1 } : {}) }));
     me.lp = p.lp;
     me.ready = p.ready;
     if (S.pub.phase === PHASE.PREP) me.status = p.ready ? 'ready' : 'acting';
@@ -259,6 +253,12 @@ function buildState() {
       { id: 'enemyeffect_3', name: '悬赏·飞行I', desc: '为自身<@ba.vup>下场作战</>添加1只悬赏敌人，将其击倒者获得<@ba.vup>1</>资金', iconKind: 'choice', iconId: 'icon_player_buff', counter: 1 },
     ],
     nextEnemies,
+    // m.private boardOps (server/match/player/views.js): the own board for the 同盟盟约速查 column, [] once the seat
+    // is eliminated. m.public never carries it — one broadcast cannot follow g.watch.
+    boardOps: VARIANTS.has('dead') ? [] : board.filter((x) => x && x.kind === 'chess').map((x) => {
+      const rec = data.lookup('chess', x.id);
+      return { id: rec?.charId || x.id, ...(x.golden ? { golden: 1 } : {}) };
+    }),
     stats: { dmgDealt: 184230, kills: 96, leaks: 3, gold: 58, refreshes: 11, merges: 3 },
   };
   if (VARIANTS.has('loadout')) priv.loadout = mockLoadout(board, slots);
@@ -268,7 +268,6 @@ function buildState() {
 
   const players = PLAYERS.map((p, i) => ({
     ...p, connected: i !== 3 || true, alive: true, lp: [24, 31, 18, 5][i], shopLevel: [4, 5, 3, 4][i], boardCount: [7, 8, 6, 7][i],
-    boardOps: mockBoardOps([7, 8, 6, 7][i], i + 1),
     ready: [false, true, false, false][i], bonds: [], fieldId: `n:${p.playerId}`, status: ['acting', 'ready', 'acting', 'acting'][i],
   }));
   players[3].connected = false;
@@ -282,6 +281,22 @@ function buildState() {
   // I am the second of the first pair → the mirrored right half (server pairPlayers: alive players by seat, in pairs)
   if (VARIANTS.has('bossR')) { players[0].seat = 1; players[1].seat = 0; }
   if (VARIANTS.has('dead')) { players[0].alive = false; players[0].status = 'dead'; players[0].lp = 0; priv.lp = 0; }
+  // a teammate eliminated: their flyout row stays empty while the others still show bonds / operators
+  if (VARIANTS.has('teammatedead')) { players[1].alive = false; players[1].status = 'dead'; players[1].lp = 0; }
+  // 「同盟盟约速查」 (PR #922): every seat's activated bonds + the drafted strategy. The data is always present, so
+  // opening the toggle by hand matches `?variant=flyout`; `flyout,teammatedead` (or `flyout,dead`) leaves the
+  // eliminated seat's row empty, as the server does with `boardOps: []`. A teammate's operator column is not in
+  // m.public at all — it only appears while their field is on screen, so the mock leaves it empty here.
+  const shown = data.list('bonds').filter((b) => b.weight > 0 && !disabled.has(b.bondId)).slice(0, 14);
+  players.forEach((p, i) => {
+    p.bonds = shown.map((b, k) => {
+      const thresholds = b.thresholds || [2];
+      const count = thresholds[0] + ((k + i) % 2);
+      let tier = 0;
+      for (const t of thresholds) if (count >= t) tier++;
+      return { bondId: b.bondId, count, active: tier > 0, tier, layers: 12 + ((k * 7 + i * 5) % 40), thresholds };
+    });
+  });
 
   const pub = {
     phase: PHASE.PREP, round: 6, lastRound: 14, bossRound: 14, hiddenRound: 15, deadline: Date.now() + 74000, serverNow: Date.now(), modeId: 'mode_multi_hard', difficulty: 'HARD',
@@ -364,8 +379,10 @@ function mockLoadout(board, slots) {
 function setPhase(phase, variant) {
   stopBattle();
   clearInterval(stormTimer);
-  buildState();
+  // the switcher's variants must be in place before buildState: it is what applies `dead`, `flyout`'s bonds,
+  // `temp`, `loadout` … (adding them afterwards left those presets empty; only a URL `?variant=` did anything)
   for (const v of (variant || '').split(',').filter(Boolean)) VARIANTS.add(v);
+  buildState();
   if (VARIANTS.has('reward') && !S.priv.shop.rewardOffer) S.priv.shop.rewardOffer = { tier: 5, slots: shuffle(visibleChess(5)).slice(0, 3).map((c) => ({ kind: 'chess', id: c.chessId, price: 0, sold: false })) };
   if (VARIANTS.has('temp') && !S.priv.temp.some(Boolean)) { S.priv.temp[0] = chessPiece(pick(S.pool)); S.priv.temp[1] = itemPiece(shopItems()[2]); }
   applyGapVariants();
@@ -859,6 +876,7 @@ function applyUiVariants() {
     tryPen();
   }
   if (VARIANTS.has('bond')) clickSel('.bslot .bond', 500);
+  if (VARIANTS.has('flyout')) clickSel('.team__bonds-toggle', 500);
   if (VARIANTS.has('emote')) {
     clickSel('.ewheel__btn', 400);
     setTimeout(() => {
@@ -884,7 +902,7 @@ function applyUiVariants() {
 // ---- switcher --------------------------------------------------------------------------------------------------------------
 const SWITCH = [
   ['INFO_CHECK', PHASE.INFO_CHECK, ''], ['BAND_DRAFT', PHASE.BAND_DRAFT, ''], ['BAND_DRAFT solo', PHASE.BAND_DRAFT, 'solo'],
-  ['BATTLE_CHECK', PHASE.BATTLE_CHECK, ''], ['PREP', PHASE.PREP, ''], ['PREP + reward', PHASE.PREP, 'reward'],
+  ['BATTLE_CHECK', PHASE.BATTLE_CHECK, ''], ['PREP', PHASE.PREP, ''], ['PREP + 盟约速查', PHASE.PREP, 'flyout'], ['PREP 速查 + 队友淘汰', PHASE.PREP, 'flyout,teammatedead'], ['PREP + reward', PHASE.PREP, 'reward'],
   ['PREP + temp', PHASE.PREP, 'temp'], ['PREP frozen', PHASE.PREP, 'frozen'], ['PREP dead', PHASE.PREP, 'dead'],
   ['PREP boss (L)', PHASE.PREP, 'boss'], ['PREP boss (R)', PHASE.PREP, 'bossR'], ['PREP 标准 同构体 + 调和', PHASE.PREP, 'funny,morph,harmony'],
   ['SP bounty', PHASE.SP_DRAFT, 'bounty'], ['SP supply', PHASE.SP_DRAFT, 'supply'], ['SP shop', PHASE.SP_DRAFT, 'shop'], ['SP tactic', PHASE.SP_DRAFT, 'tactic'], ['SP solo', PHASE.SP_DRAFT, 'solo'],

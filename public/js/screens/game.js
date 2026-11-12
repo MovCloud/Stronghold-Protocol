@@ -97,7 +97,7 @@ import { useFieldView } from '../ui/fieldHost.js';
 import { TopBar, liveLp, ownLeaks, uniteRemaining, tempInfo, tempReadyReason } from '../ui/hud.js';
 import { uniteBudgetInfo } from '../ui/gameLogic/phases.js';
 import { BondStrip, BondPopup } from '../ui/bondStrip.js';
-import { TeamPanel, useRoster } from '../ui/teamPanel.js';
+import { TeamPanel, flyOpsFor, flyOpChessId, useRoster } from '../ui/teamPanel.js';
 import { Danmaku } from '../ui/danmaku.js';
 import { DamageBoard, uniteDamageOwners, bossDamageOwners } from '../ui/damageBoard.js';
 import { ShopBar } from '../ui/shopBar.js';
@@ -1865,6 +1865,9 @@ function MatchScreen() {
   const shownOps = [...(field?.units || []), ...spawnedOps];
   const bondPop = popupView({ open: bondOpen, pub, priv, myId, field, units: popOps || spawnedOps, live: liveLayers });
   const openBond = (id, ownerId, from) => { setBondOpen((b) => toggleBond(b, id, ownerId, from)); audio.sfx('click', { volume: 0.4 }); };
+  // 同盟盟约速查: the per-viewer operator lists. m.public carries no boardOps (PR #922 review): the own seat is
+  // m.private, and a teammate appears only while their scout / battle field is the one on screen.
+  const flyOps = flyOpsFor({ myId, priv, field, players, cc, runner: battleRunner });
   const watchingNow = combat ? (watching || field?.fieldId || home) : watching;
   const shopOpen = showShop && !barCollapsed;
   const ufShown = !!(selEntry && editable && !facing && !drag && showPrep && ufGeo);
@@ -1981,6 +1984,11 @@ function MatchScreen() {
 
       <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} roster=${roster} emoteTtl=${bubbleMs} onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
         spMarks=${sp ? spMarks(sp, { solo }) : null} onBond=${(id, ownerId) => openBond(id, ownerId, 'strip')}
+        flyOps=${flyOps} layersDisabled=${layersDisabled}
+        onOp=${(u, p) => {
+          const id = flyOpChessId(u);
+          if (id) setDetail({ kind: 'chess', id, foreign: p?.playerId !== myId, owner: p?.playerId ?? null, tap: ++cardTap.current });
+        }}
         self=${Number.isFinite(priv?.lp) ? { lp: priv.lp, pending: liveLpNow.pending, unite: liveLpNow.unite, left: liveLpNow.left } : null}
         observe=${cc ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null}
         halves=${layers.length ? { half: avatarHalf, onHalf: avatarPick } : null} />

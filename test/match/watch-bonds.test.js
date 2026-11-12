@@ -405,16 +405,18 @@ for (const elite of [false, true]) test(`runner: watched ${elite ? 'elite' : 'no
   assertHuang(ownerBoard(r.store.get().match.field, 'p_1', r.runner.ownerOps('p_1')));
 });
 
-test("m.public players[].boardOps: the operators on a seat's field for the 盟约 flyout column — lean, per seat", () => {
+test("m.private boardOps: the operators on a seat's own field for the 盟约 flyout column — lean; m.public never carries them", () => {
   const h = makeMatch({ mode: 'coop', humans: 2, seed: 93, fake: true }).start();
   h.toPrep(1);
   fieldCarrier(h, 'p_1', 'chess_char_1_01_a');
   // the same operator the scouted board shows (a 补位 body included), in board order
   const boardUnits = h.m.prepFieldMeta(h.ps('p_1')).units.filter((u) => u.area === 'board' && u.kind === 'op');
-  const ops = row(h, 'p_1').boardOps;
+  const ops = h.ps('p_1').privateView().boardOps;
   assert.deepEqual(ops.map((o) => o.id), boardUnits.map((u) => u.avatar), 'the chess id the thumbnail draws; no loadout / skin work');
   assert.deepEqual(ops.map((o) => !!o.golden), boardUnits.map((u) => !!u.golden), 'the elite bit the golden ring draws');
   assert.ok(ops.every((o) => Object.keys(o).every((k) => k === 'id' || k === 'golden')), 'lean entries only');
-  const other = h.m.publicView().players.find((p) => p.playerId !== 'p_1');
-  assert.deepEqual(other.boardOps, [], 'a seat at a time: another player has its own board');
+  // PR #922 review: m.public is one broadcast for every seat and the spectator bench, so it cannot follow g.watch —
+  // a teammate's operators reach the flyout only through the scout / battle field currently on screen.
+  for (const p of h.m.publicView().players) assert.ok(!('boardOps' in p), `${p.playerId}: m.public must not list operators`);
+  h.m.dispose();
 });
