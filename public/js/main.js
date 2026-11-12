@@ -385,7 +385,12 @@ function wireNet() {
   });
   net.on('m.public', (msg) => {
     matchAt = Date.now();
-    store.patch('match', { public: payload(msg) });
+    const pub = payload(msg);
+    const prev = store.get().match.public;
+    // 同盟盟约速查 (g.peek) belongs to one round/phase (peek.js drops the subscription on that boundary): the stored
+    // table must not outlive it, or a stale prep roster would render as if it were live
+    const rollover = !!prev && (prev.phase !== pub.phase || prev.round !== pub.round);
+    store.patch('match', { public: pub, ...(rollover ? { peek: null } : {}) });
     if (store.get().ui.resumed) store.patch('ui', { resumed: false });
     maybeFinishRestore();
   });

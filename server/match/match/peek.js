@@ -14,6 +14,12 @@
 // into m.public and nothing is written to disk. The payload is exactly the shape of m.private boardOps
 // (MatchViews._boardOps): board chess only, lean { id, golden? }, no hand / temp / equipment / summons / coordinates.
 //
+// This is the 状态通道 (status channel): a read-only roster stream separate from the battlefield channel
+// (g.watch → m.field / b.snap / b.start and the watchers map). It carries no battle state, never writes
+// MatchWatch.watchers and changes no g.watch rule; its own policy is the team membership below. That is why it can
+// answer while the viewer is in its own battle: a roster is static inside a battle window and was already visible in
+// prep through g.watch's scout, one seat at a time. What it must never do is cross a team boundary.
+//
 // Subscription: `open: true` subscribes for the CURRENT round and phase and answers the snapshot; `open: false`,
 // leaving and a disconnect drop it. The subscription also ends on its own when the round or the phase changes — the
 // flyout is a glance at the prep / battle window it was opened in, and the client collapses it on the same boundary

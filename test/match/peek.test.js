@@ -86,6 +86,23 @@ test('g.peek in 2V2: only the viewer\'s own team, never the opponent', () => {
   h.m.dispose();
 });
 
+test('g.peek is the status channel: it answers inside a battle window, the team boundary is the only filter', () => {
+  const h = makeMatch({ mode: 'coop', humans: 2, seed: 7104, fake: true }).start();
+  h.toPrep(1);
+  const b = h.ps('p_1');
+  clearSeat(b);
+  place(h, b, []);
+  h.m.phase = PHASE.COMBAT;
+  h.m.fields = [
+    { fieldId: 'n:p_0', kind: 'normal', live: true, cc: true, players: ['p_0'] },
+    { fieldId: 'n:p_1', kind: 'normal', live: true, cc: true, players: ['p_1'] },
+  ];
+  assert.ok(h.m.handle('p_0', { t: 'g.peek', open: true }).ok);
+  const snap = h.lastTo('p_0', 'm.peek');
+  assert.deepEqual(Object.keys(snap.ops), ['p_1'], 'the roster is not gated by the viewer\'s own battle (g.watch would be)');
+  h.m.dispose();
+});
+
 test('g.peek: the subscription ends with its round / phase, and drops on a disconnect', () => {
   const h = makeMatch({ mode: 'coop', humans: 2, seed: 7103, fake: true }).start();
   h.toPrep(1);

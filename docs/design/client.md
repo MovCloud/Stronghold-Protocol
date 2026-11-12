@@ -337,7 +337,9 @@ the strategy column in its own grid, an expanded row shifted that seat's strateg
 strategy is a button that opens its card beside the square, and a click anywhere else closes it. The operator lists are
 per-viewer: the own seat from `m.private boardOps`, a teammate's from the field on screen (§4) or from the peek
 (`g.peek` on expansion / `m.peek` while it stays open — the server's team-filtered snapshot and updates, merged by
-`mergeFlyOps` with the on-screen field winning), because `m.public` never carries a roster. A round or phase change
+`mergeFlyOps` with the on-screen field winning), because `m.public` never carries a roster. The peek is its own
+read-only status channel, separate from `g.watch`'s battlefield stream (no battle state, no watchers): it answers
+inside a battle window too, and only the team boundary filters it. A round or phase change
 collapses the flyout (`game.js` phaseKey, `teamPanel.js`): the peek is a glance at the prep / battle window it was
 opened in, and the same boundary ends the server-side subscription. A connection that comes back (the connection
 status's false → true edge) collapses it too: the server dropped the subscription on the disconnect, so the panel

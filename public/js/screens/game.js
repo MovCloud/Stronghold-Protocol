@@ -1868,7 +1868,8 @@ function MatchScreen() {
   const openBond = (id, ownerId, from) => { setBondOpen((b) => toggleBond(b, id, ownerId, from)); audio.sfx('click', { volume: 0.4 }); };
   // 同盟盟约速查: the per-viewer operator lists. m.public carries no boardOps (PR #922 review): the own seat is
   // m.private, a teammate appears while their scout / battle field is the one on screen, and the peek (g.peek, the
-  // flyout's open) fills in the teammates this viewer may see but is not looking at. What is on screen wins.
+  // status channel — a roster stream separate from g.watch's battlefield, so it also answers inside a battle window)
+  // fills in the teammates this viewer may see but is not looking at. What is on screen wins.
   const flyOps = mergeFlyOps(flyOpsFor({ myId, priv, field, players, cc, runner: battleRunner }), peek);
   // 阶段边界 (server/match/match/peek.js): the flyout is a glance at this round's prep / battle window — a phase or round
   // change collapses it (teamPanel.js), and the server ends the subscription on the same boundary. Its own key (not the

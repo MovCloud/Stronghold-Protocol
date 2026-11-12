@@ -987,7 +987,11 @@ boundary (so it sends the close), and the server drops the subscription on its n
 client that is connected but stuck (a frozen page, a lost close). The server filters with
 `teamIdOf`: 同盟 (coop) sends the whole roster, 2V2 sends the viewer's own team only — the opponent's seats never
 appear — and a spectator seat is refused (`SPECTATOR`, the same rule as `g.watch`). Nothing is broadcast and nothing is
-written to disk: the frame is the lean `boardOps` shape, no hand / temp / equipment / summons / coordinates.
+written to disk: the frame is the lean `boardOps` shape, no hand / temp / equipment / summons / coordinates. This is
+the 状态通道: a read-only roster channel separate from the battlefield channel (`g.watch` → `m.field` / `b.*`). It
+carries no battle state, never writes `MatchWatch.watchers` and changes no `g.watch` rule — the team filter is its own
+policy, which is why it answers inside the viewer's own battle window (a roster is static there and was already
+visible in prep through the scout, one seat at a time).
 
 Bond layers in the views (DESIGN §20.15): from the end of COMBAT (`_finishCombat`, every normal result in) until SETTLE,
 `m.private bonds` and `m.public players[].bonds` add the finished battle's IN_BATTLE gains (`PlayerState.pendingLayerGains`
