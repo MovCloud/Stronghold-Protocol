@@ -502,6 +502,9 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
     // itself; the measured px anchor is only written while the window is open
     if (!bondsOpen) {
       el.style.removeProperty('--fly-left');
+      const hud = el.closest('.gm__hud');
+      hud?.style.removeProperty('--bpop-right');
+      hud?.style.removeProperty('--bpop-w');
       return undefined;
     }
     let frame = null;
@@ -511,17 +514,19 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
     const layout = (heights) => {
       const box = el.getBoundingClientRect();
       const bar = el.querySelector('.team__bonds-toggle')?.getBoundingClientRect().width || 44;
-      const vw = globalThis.innerWidth || document.documentElement.clientWidth || 1920;
+      const hud = el.closest('.gm__hud') || document.querySelector('.gm__hud');
+      const hudRect = hud ? hud.getBoundingClientRect() : null;
+      const right = hudRect && hudRect.width > 0 ? hudRect.right : globalThis.innerWidth || document.documentElement.clientWidth || 1920;
       const square = heights.length ? Math.round(Math.min(...heights)) : 64;
       const left = anchor();
       // the right-hand 指令 / 效果 column (game.js .gm__effects): keep its width free, plus a small gutter
-      const fx = el.closest('.gm__hud')?.querySelector('.gm__effects') || document.querySelector('.gm__effects');
+      const fx = hud?.querySelector('.gm__effects') || document.querySelector('.gm__effects');
       const fxRect = fx ? fx.getBoundingClientRect() : null;
-      const reserve = fxRect && fxRect.width > 0 ? Math.round(vw - fxRect.left) + 8 : 18;
+      const reserve = fxRect && fxRect.width > 0 ? Math.round(right - fxRect.left) + 8 : 18;
       el.style.setProperty('--fly-left', `${left}px`);
       el.style.setProperty('--fly-square', `${square}px`);
       // the strategy square is a column of the window's row, so only the bar and the reserved gutter come off the width
-      let width = Math.round(vw - box.left - left - bar - reserve);
+      let width = Math.round(right - box.left - left - bar - reserve);
       // a short viewport (640×360) lifts the shop's 剩余可放置角色 / 冻结 / 刷新 into the roster's height: the window ends
       // left of them, so a tap there still reaches the button (and closes the flyout) instead of landing in `.team`
       const start = box.left + left + bar;
@@ -530,6 +535,24 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
         if (r.width > 0 && r.top < box.bottom && r.bottom > box.top && r.right > start) width = Math.min(width, Math.round(r.left - start - 8));
       }
       el.style.setProperty('--fly-w', `${Math.max(220, width)}px`);
+      // A bond card opened from the window docks at its right end (css .bpop--fly / .bpop-nav--fly): the card sits
+      // between this row's bond cell and the 指令 column, its ‹ › outside it. `--bpop-w` is what is left of that span
+      // once both arrows are placed, so the card covers neither the row's discs nor the command column; narrower than
+      // the seven-portrait card, its portraits shrink to fit. The cell is measured after --fly-w is written, so its
+      // edge is this frame's, not the last one's.
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 100;
+      const spui = parseFloat(getComputedStyle(el).getPropertyValue('--sp-ui')) || 1;
+      const arrow = Math.max(Math.round(0.6 * rem), 32, Math.round(44 * spui));
+      const arrowGap = Math.max(2, Math.round(0.06 * rem));
+      const cell = el.querySelector('.team__fly-row .team__fly-bonds');
+      if (cell && hud) {
+        const cellRight = cell.getBoundingClientRect().right;
+        const natural = Math.round(7 * 0.9 * rem + 6 * 0.08 * rem + 0.44 * rem + 2);
+        const limit = (fxRect && fxRect.width > 0 ? fxRect.left : right) - 8;
+        const w = Math.max(200, Math.min(natural, Math.round(limit - cellRight - 2 * (arrowGap + arrow))));
+        hud.style.setProperty('--bpop-w', `${w}px`);
+        hud.style.setProperty('--bpop-right', `${Math.round(right - cellRight - arrowGap - arrow - w)}px`);
+      }
     };
     const measure = () => {
       frame = null;
@@ -547,11 +570,18 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
     const observer = new ResizeObserver(schedule);
     observer.observe(el);
     for (const row of el.querySelectorAll('.team__row')) observer.observe(row);
+    // the 指令 column widens while the window is open (a long strategy line, a phase badge): the reserved gutter
+    // must shrink the window then, so watch it like the roster
+    const fxEl = el.closest('.gm__hud')?.querySelector('.gm__effects') || document.querySelector('.gm__effects');
+    if (fxEl) observer.observe(fxEl);
     measure();
     globalThis.addEventListener('resize', schedule);
     return () => {
       observer.disconnect();
       globalThis.removeEventListener('resize', schedule);
+      const hud = el.closest('.gm__hud');
+      hud?.style.removeProperty('--bpop-right');
+      hud?.style.removeProperty('--bpop-w');
       if (frame != null) cancelAnimationFrame(frame);
     };
   }, [bondsOpen, phaseKey, openPid, watching, players.length]);

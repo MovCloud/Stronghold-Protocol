@@ -254,8 +254,9 @@ export function BondStrip({ bonds, layersDisabled = false, onOpen, openId = null
  * @param {{ bondId: string, entry?: any, priv?: any, banned?: string[], onClose: Function,
  *   onPrevious?: (()=>void)|null, onNext?: (()=>void)|null,
  *   onMember?: (chessId:string, items?:string[]|null, standInFor?:string|null, diy?:any)=>void,
- *   place?: 'left'|'beside'|'besideR'|'right'|'center'|null, over?: boolean, beside?: 'left'|'right'|'center'|null, owner?: string|null, ownerId?: string|null, off?: boolean, morphMode?: string, modal?: boolean }} props —
- *   `place`: where it opens (gameLogic bondPopupPlace; `beside: 'left'` = the older spelling of 'beside'); `over`: above the
+ *   place?: 'left'|'beside'|'besideR'|'right'|'center'|'fly'|null, over?: boolean, beside?: 'left'|'right'|'center'|null, owner?: string|null, ownerId?: string|null, off?: boolean, morphMode?: string, modal?: boolean }} props —
+ *   `place`: where it opens (gameLogic bondPopupPlace; `beside: 'left'` = the older spelling of 'beside'; `'fly'` = the
+ *   「同盟盟约速查」 flyout, right-aligned at `--bpop-right`, teamPanel.js); `over`: above the
  *   detail card; `owner`: the watched teammate's name (`entry` / `priv` are then theirs: ui/watchBonds.js); `onMember`
  *   gets a 变形同构体 row's item ids too (its card shows the pair and the granted chip), null for a plain member, and a
  *   stand-in row's `standInFor` (0.2.0 补位: a teammate's card then shows the stand-in too), and a teammate's 自选 row's
@@ -363,7 +364,9 @@ export function BondPopup({ bondId, entry, priv, banned = [], onClose, onMember,
   </div>
   </div>`;
   if (!onPrevious && !onNext) return card;
-  return html`<div class="bpop-nav">
+  // the wrapper carries the place too: it is what positions the card (and its ‹ › outside it), and `.bpop-nav` is
+  // centred by default
+  return html`<div class=${cx('bpop-nav', `bpop-nav--${at}`)}>
     <button type="button" class="bpop-nav__arrow bpop-nav__arrow--prev" aria-label=${t('上一个盟约')} disabled=${!onPrevious} onClick=${onPrevious}><${Sprite} k="bondDetail/arrow" class="bpop-nav__image" fallback=${html`<${Icon} name="chevronRight" class="bpop-nav__image" />`} /></button>
     ${card}
     <button type="button" class="bpop-nav__arrow bpop-nav__arrow--next" aria-label=${t('下一个盟约')} disabled=${!onNext} onClick=${onNext}><${Sprite} k="bondDetail/arrow" class="bpop-nav__image" fallback=${html`<${Icon} name="chevronRight" class="bpop-nav__image" />`} /></button>

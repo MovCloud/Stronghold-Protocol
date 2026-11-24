@@ -63,6 +63,18 @@ describe('同盟盟约速查 flyout (PR #922)', { skip: !ENABLED && 'set SP_E2E=
       let s = await popup();
       assert.deepEqual([s.flyout, s.name, s.arrows], [true, discNames[0], 2]);
       assert.ok(s.label.includes(mate), `the popup names the teammate (${s.label})`);
+      // the flyout's card docks at the window's right end (§37.347 留给后续): it covers the operator / strategy
+      // columns but not that row's bond discs, and its ‹ › stay clear of the 指令 column
+      const geom = await page.evaluate((r) => {
+        const box = (sel) => { const b = document.querySelector(sel).getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right) }; };
+        return {
+          card: box('.bpop'), bonds: box(`.team__fly-row:nth-child(${r}) .team__fly-bonds`),
+          effects: box('.gm__effects'), place: document.querySelector('.bpop').dataset.place,
+        };
+      }, row);
+      assert.equal(geom.place, 'fly');
+      assert.ok(geom.card.left >= geom.bonds.right, `the card clears the row's discs (${JSON.stringify(geom)})`);
+      assert.ok(geom.card.right <= geom.effects.left, `the card clears the 指令 column (${JSON.stringify(geom)})`);
       await page.screenshot({ path: `${OUT}/team-flyout-bond-1600.png` });
 
       await page.click('.bpop-nav__arrow--next');
@@ -78,12 +90,15 @@ describe('同盟盟约速查 flyout (PR #922)', { skip: !ENABLED && 'set SP_E2E=
       assert.equal(s.flyout, true);
       assert.ok(s.label.includes(mate), '‹ wraps inside the teammate\'s row');
 
-      // another flyout disc switches the popup; a second tap on it closes the popup (like the strip's discs); the
-      // flyout stays open throughout (the centred popup covers the row's later discs, so the first one is tapped)
-      const first = () => page.$(`.team__fly-row:nth-child(${row}) .team__fly-bonds .bond`);
-      await (await first()).click();
-      await page.waitForFunction((n) => document.querySelector('.bpop .bpop__name')?.textContent.trim() === n, { timeout: 3000 }, discNames[0]);
-      await (await first()).click();
+      // the card no longer covers the row's later discs: the last ones are tappable behind it — the second-to-last
+      // switches the popup, the last one switches again and a second tap on it closes the popup (the flyout stays)
+      const last = discs.at(-1);
+      const secondLast = discs.at(-2);
+      await secondLast.click();
+      await page.waitForFunction((n) => document.querySelector('.bpop .bpop__name')?.textContent.trim() === n, { timeout: 3000 }, discNames.at(-2));
+      await last.click();
+      await page.waitForFunction((n) => document.querySelector('.bpop .bpop__name')?.textContent.trim() === n, { timeout: 3000 }, discNames.at(-1));
+      await last.click();
       await page.waitForFunction(() => !document.querySelector('.bpop'), { timeout: 3000 });
       assert.ok(await page.$('.team__fly-window'), 'the flyout is still open');
       assert.deepEqual(errors, []);

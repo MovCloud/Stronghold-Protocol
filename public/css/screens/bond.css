@@ -197,13 +197,15 @@
   animation: pop-in var(--t-med) var(--ease-out);
 }
 /* placement (gameLogic bondPopupPlace / BPOP — keep in sync): beside the left-docked detail card, left of the
-   right-docked one, against the right edge, or over the card it was opened from — never over the selected unit's
-   underframe when a place is free */
+   right-docked one, against the right edge, over the card it was opened from — never over the selected unit's
+   underframe when a place is free. `.bpop--fly` is the 「同盟盟约速查」 flyout's own place (game.js bpPlace),
+   right-aligned at the flyout's end (`--bpop-right`, ui/teamPanel.js). */
 .bpop--beside { left: 7.32rem; z-index: 10; }
 .bpop--besideR { left: auto; right: 5.92rem; z-index: 10; }
 .bpop--right { left: auto; right: .9rem; z-index: 10; }
-/* The top-strip card fits seven square portraits, their gaps and the card padding. */
-.bpop--center, .bpop-nav {
+/* The top-strip card fits seven square portraits, their gaps and the card padding; the flyout's card draws the same
+   seven portraits, so it shares the width and the member layout. */
+.bpop--center, .bpop--fly, .bpop-nav {
   --bond-member-size: .9rem;
   width: calc(7 * var(--bond-member-size) + 6 * .08rem + .44rem + 2px);
 }
@@ -211,9 +213,20 @@
   left: 50%; right: auto; translate: -50% 0;
   max-width: calc(100% - .32rem);
 }
-.bpop--center .bpop__members { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.bpop--center .bpop__member { min-width: 0; }
-.bpop--center .square-op-thumb { width: var(--bond-member-size); }
+/* the flyout's card: ui/teamPanel.js measures the span between the row's bond cell and the 指令 column and hands over
+   `--bpop-w` (the card, its ‹ › outside it, fits in what is left there) and `--bpop-right` (where the card ends), so it
+   covers neither that row's discs nor the command column; narrower than the seven portraits, they shrink to fit */
+.bpop--fly, .bpop-nav.bpop-nav--fly {
+  --bond-member-size: min(.9rem, calc((var(--bpop-w, 7.2rem) - 6 * .08rem - .44rem - 2px) / 7));
+  width: var(--bpop-w, calc(7 * .9rem + 6 * .08rem + .44rem + 2px));
+}
+.bpop--fly { left: auto; right: var(--bpop-right, .9rem); z-index: 10; max-width: calc(100% - .32rem); }
+/* the ‹ › wrapper is what positions a card with arrows (css .bpop-nav > .bpop drops the card's own offsets); two
+   classes: `.bpop-nav` itself is centred further down this file and would override a single-class rule */
+.bpop-nav.bpop-nav--fly { left: auto; right: var(--bpop-right, .9rem); translate: none; }
+.bpop--center .bpop__members, .bpop--fly .bpop__members { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.bpop--center .bpop__member, .bpop--fly .bpop__member { min-width: 0; }
+.bpop--center .square-op-thumb, .bpop--fly .square-op-thumb { width: var(--bond-member-size); }
 .bpop.is-over { z-index: 10; background: rgb(11, 15, 13); }
 /* Identity and stage stay left, stacks right; the compact header does not scroll. */
 .bpop__head {

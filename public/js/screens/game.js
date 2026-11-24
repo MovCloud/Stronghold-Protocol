@@ -1936,10 +1936,13 @@ function MatchScreen() {
     }
     return 'left';
   })();
-  // the bond popup: next to the card, never over the selected unit's underframe when a place is free (bondPopupPlace)
+  // the bond popup: next to the card, never over the selected unit's underframe when a place is free (bondPopupPlace).
+  // The strip's card sits centred under it; the flyout's card docks at the flyout's right end (teamPanel.js writes
+  // `--bpop-right`), so it covers the operator / strategy columns and leaves that row's bond discs in view.
   const bpPlace = (() => {
     if (!bondOpen) return 'left';
-    if (bondOpen.from === 'strip' || bondOpen.from === 'fly') return 'center';
+    if (bondOpen.from === 'strip') return 'center';
+    if (bondOpen.from === 'fly') return 'fly';
     const { rem, vp } = panelFrame();
     return bondPopupPlace(ufShown ? underframeRect(ufGeo, rem) : null, vp, rem, resolved ? dSide : null);
   })();
